@@ -12,8 +12,9 @@ byte-compatibly with the Rust implementation and targets feature parity with
   codecs, traversal + search + aggregation kernels, analytics (WCC/PageRank/
   CDLP/LCC/SSSP), full-text (BM25) and geo (k-d tree) indexes.
 - **Out of scope:** CSV/Parquet/S3 bulk loading--RCPG files are the interchange
-  format (loading stays a Rust-side capability); Cypher (future package, see
-  seam note below).
+  format (loading stays a Rust-side capability). The GQL query engine is its
+  own package tree (`gql/`, see the seam note below), ported from
+  rustychickpeas-cypher with an ISO GQL read-only surface.
 - **Terminology:** graph relationships are "rel(s)", never "edge(s)".
 
 ## Package layout
@@ -30,7 +31,9 @@ github.com/freeeve/gochickpeas      go 1.24; single dep: RoaringBitmap/roaring/v
 ├── internal/parallel/              For/Fold/Join chunked worker pools      [M3]
 ├── internal/bitset/                []uint64 bitset                         [M3]
 ├── (root) package chickpeas        the engine, one package, small files    [M3+]
-└── cypher/                         FUTURE — reserved path
+└── gql/                            GQL query engine (M10+): public API +
+    ├── value/                      runtime Value (exported)
+    └── internal/{ast,parser,semantics,graph,plan,eval,compile,exec,explain}
 ```
 
 Rules: `rcpg` never imports `internal/*` from the engine, so it can be
@@ -89,17 +92,24 @@ fetches unwanted/unknown sections (same asymmetry as the Rust codec).
 - NodeSet is roaring-only behind a private repr; the Rust adaptive
   small-set arm lands later only if Go benchmarks prove the win.
 
-## Cypher seam (future)
+## GQL seam
 
 The Rust cypher engine runs backend-generic over a `CypherGraph` trait; the
-future Go `cypher` package will define its own consumer-side interface over
-`*Snapshot` (Go idiom: interfaces live with the consumer). The engine must
-therefore keep its full read surface as methods on `*Snapshot`--schema
-introspection, atom/string resolution both directions, columnar access
-including rel columns by CSR position, `RelMatch` traversal, lazy indexes--
-never trapped in free functions an interface couldn't capture. The engine's
-4-kind `Value` stays columnar; richer runtime values (lists/maps/temporals)
-belong to the cypher package.
+Go `gql` package defines its own consumer-side interface over `*Snapshot`
+(`gql/internal/graph.Graph`; Go idiom: interfaces live with the consumer).
+The engine must therefore keep its full read surface as methods on
+`*Snapshot`--schema introspection, atom/string resolution both directions,
+columnar access including rel columns by CSR position, `RelMatch`
+traversal, lazy indexes--never trapped in free functions an interface
+couldn't capture. The engine's 4-kind `Value` stays columnar; richer
+runtime values (lists/maps/temporals/paths) live in `gql/value`. Kernel
+offload (CALL procedures, shortest paths, the columnar compiled eval path)
+reaches the full Snapshot through a capability assertion
+(`graph.Native`), not through the seam interface. The surface language is
+the ISO GQL read subset (the Rust engine speaks Cypher today and is
+expected to converge on GQL); the AST below the parser stays
+language-neutral, and behavioral tests port the Rust suites by translating
+each query to GQL while keeping the Rust-asserted expected rows.
 
 ## Milestones
 
@@ -118,6 +128,19 @@ Task files live in `tasks/` (Eve's numbered convention; rename to
 | M7 | Analytics: WCC/PageRank/CDLP/LCC/SSSP | done |
 | M8 | Full-text (BM25) + geo (k-d tree) | done |
 | M9 | Manager, benchmarks, v0.1.0 | done |
+| M10 | GQL scaffold: gql/value, errors, Row/Rows, graph seam + Snapshot adapter + matchers | done |
+| M11 | GQL parser: GRAMMAR.md subset spec, ast, hand-written lexer/Pratt parser | planned |
+| M12 | GQL semantics: desugar (GQL-form normalization), binder, autoparam | planned |
+| M13 | GQL planner: plan IR, buildSegment/lower/cost/mono/sp/call/rewrite, minimal EXPLAIN | planned |
+| M14 | GQL eval: interpreter, scalar/temporal funcs, EXISTS/COUNT subqueries | planned |
+| M15 | GQL exec core: scans, pushdown, project, ORDER BY/OFFSET/LIMIT | planned |
+| M16 | GQL compile: columnar CExpr path + dual-path test harness | planned |
+| M17 | GQL traversal: expand, var-length, paths, ANY/ALL SHORTEST, OPTIONAL | planned |
+| M18 | GQL aggregation/rows: aggregator, FOR, UNION, CALL{} subqueries | planned |
+| M19 | GQL CALL procs -> engine kernels | planned |
+| M20 | GQL EXPLAIN/PROFILE: counters, estimates | planned |
+| M21 | GQL Prepared + PlanCache | planned |
+| M22 | GQL cross-engine golden corpus, fuzz invariants, v0.2.0 | planned |
 
 Known deviations from Rust (deliberate, noted per-row in PARITY.md as it
 fills in): loader/dedup surfaces are out of scope (RCPG is the
