@@ -82,6 +82,36 @@ func columnToData(c Column) rcpg.ColumnData {
 			out[i] = rcpg.StrEntry{ID: id, Val: col.vals[i]}
 		}
 		return out
+	// Rank/select is an in-memory layout only; it serializes as the
+	// equivalent sparse column (matching the Rust codec).
+	case rankI64Col:
+		out := make(rcpg.SparseI64, 0, len(col.vals))
+		for pos, v := range col.Entries() {
+			x, _ := v.I64()
+			out = append(out, rcpg.I64Entry{ID: pos, Val: x})
+		}
+		return out
+	case rankF64Col:
+		out := make(rcpg.SparseF64, 0, len(col.vals))
+		for pos, v := range col.Entries() {
+			x, _ := v.F64()
+			out = append(out, rcpg.F64Entry{ID: pos, Val: x})
+		}
+		return out
+	case rankBoolCol:
+		out := make(rcpg.SparseBool, 0, col.vals.Len())
+		for pos, v := range col.Entries() {
+			x, _ := v.Bool()
+			out = append(out, rcpg.BoolEntry{ID: pos, Val: x})
+		}
+		return out
+	case rankStrCol:
+		out := make(rcpg.SparseStr, 0, len(col.vals))
+		for pos, v := range col.Entries() {
+			x, _ := v.StrID()
+			out = append(out, rcpg.StrEntry{ID: pos, Val: x})
+		}
+		return out
 	}
 	return nil
 }
