@@ -63,6 +63,11 @@ type Snapshot struct {
 	relColPosMu    sync.Mutex
 	relColPosIndex map[PropertyKey]posIndex
 
+	// rootsViaIndex caches the forest-root arrays of RootsVia per
+	// (direction, rel type); the returned slices index lock-free.
+	rootsMu       sync.Mutex
+	rootsViaIndex map[rootsKey]RootsVia
+
 	// relStats builds the per-type count store once on first access.
 	relStats func() map[string]RelStats
 }
@@ -93,6 +98,7 @@ func newSnapshot() *Snapshot {
 		propIndex:      map[propIndexKey]map[Value]*nodeset.Set{},
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
+		rootsViaIndex:  map[rootsKey]RootsVia{},
 	}
 	g.relStats = sync.OnceValue(g.buildRelStats)
 	return g
