@@ -206,30 +206,17 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 				g.labelIndex[l] = nodeset.FromBitmap(bm)
 			}
 		},
-		func() {
-			// Type index by outgoing-CSR position, per FORMAT.md. (The Rust
-			// builder currently keys by builder rel index, which matches
-			// only when rels are staged grouped by ascending source --
-			// tracked as a rustychickpeas task.)
-			byType := map[RelType][]uint32{}
-			for idx, t := range b.relTypes {
-				byType[t] = append(byType[t], uint32(idx))
-			}
-			for t, relIdxs := range byType {
-				bm := roaring.New()
-				for _, idx := range relIdxs {
-					bm.Add(idx)
-				}
-				g.typeIndex[t] = nodeset.FromBitmap(bm)
-			}
-		},
 	)
-	// The type index built above holds rel indexes; remap to CSR positions.
-	for t, set := range g.typeIndex {
+	// Type index by outgoing-CSR position (FORMAT.md section 4), built from
+	// the finalized outTypes so it stays correct when rels are staged out of
+	// source order -- mirroring the Rust fix (rustychickpeas 96243bb).
+	byType := map[RelType][]uint32{}
+	for pos, t := range g.outTypes {
+		byType[t] = append(byType[t], uint32(pos))
+	}
+	for t, positions := range byType {
 		bm := roaring.New()
-		for idx := range set.Iter() {
-			bm.Add(relToOutCSR[idx])
-		}
+		bm.AddMany(positions) // ascending CSR order, duplicate-free
 		g.typeIndex[t] = nodeset.FromBitmap(bm)
 	}
 
