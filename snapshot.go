@@ -68,6 +68,14 @@ type Snapshot struct {
 	rootsMu       sync.Mutex
 	rootsViaIndex map[rootsKey]RootsVia
 
+	// fulltextIndex / geoIndex cache the lazily built per-field search
+	// indexes; the shared values are cloned out under a brief lock so
+	// queries run off the mutex.
+	fulltextMu    sync.Mutex
+	fulltextIndex map[propIndexKey]*FullTextField
+	geoMu         sync.Mutex
+	geoIndex      map[geoKey]*GeoIndex
+
 	// relStats builds the per-type count store once on first access.
 	relStats func() map[string]RelStats
 }
@@ -99,6 +107,8 @@ func newSnapshot() *Snapshot {
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
 		rootsViaIndex:  map[rootsKey]RootsVia{},
+		fulltextIndex:  map[propIndexKey]*FullTextField{},
+		geoIndex:       map[geoKey]*GeoIndex{},
 	}
 	g.relStats = sync.OnceValue(g.buildRelStats)
 	return g

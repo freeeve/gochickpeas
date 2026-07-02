@@ -5,18 +5,39 @@ a high-performance in-memory graph database using Roaring bitmaps and CSR
 adjacency. Reads and writes RCPG graph files byte-compatibly with the Rust
 implementation.
 
-**Status:** early. The RCPG/RRSR codecs are complete and conformance-tested
-byte-for-byte against the Rust codec (both directions). The engine (builder,
-snapshot, query kernels) is being ported milestone by milestone -- see
-[DESIGN.md](DESIGN.md) and `tasks/`.
+**Status:** the engine core is ported (v0.1.0): Builder -> immutable
+Snapshot -> Manager, CSR traversal, columnar properties with lazy equality/
+full-text/geo indexes, search kernels (BFS family, Dijkstra, bidirectional
+weighted shortest path), aggregation kernels (RootsVia/FoldVia/CoOccurring/
+CommonNeighborCounts/NeighborGroups + a fluent Aggregation), and the
+Graphalytics analytics set (WCC/PageRank/CDLP/LCC/SSSP). The RCPG/RRSR
+codecs are conformance-tested byte-for-byte against the Rust codec in both
+directions, and Builder-finalized snapshots serialize byte-identically to
+Rust-generated golden files. See [DESIGN.md](DESIGN.md) and `tasks/`.
 
 ## Packages
 
+- `chickpeas` (root) -- the engine: `NewBuilder(...)` -> `Finalize()` ->
+  `*Snapshot` queries; `ReadRCPGFile`/`WriteRCPGFile` for interchange.
 - `rcpg` -- the RCPG graph-file codec: `Parse`/`Write`, topology-only
   options, and lazy section-planned loading (`ParseLazy`/`SectionFetch`)
   for range-fetched transports.
 - `rcpg/rrsr` -- the RRSR record store (roaringrange RECORDS.md-compatible):
   batched range planning over per-node payloads.
+- `nodeset` -- the roaring-backed node-id set query results compose
+  through.
+
+```go
+b := chickpeas.NewBuilder(0, 0)
+alice, _ := b.AddNode("Person")
+bob, _ := b.AddNode("Person")
+b.SetProp(alice, "name", "Alice")
+b.AddRel(alice, bob, "KNOWS")
+g := b.Finalize()
+for n := range g.Neighbors(alice, chickpeas.Outgoing, "KNOWS") {
+    _ = g.Prop(n, "name").StrOr("?")
+}
+```
 
 ```go
 raw, _ := os.ReadFile("graph.rcpg")
