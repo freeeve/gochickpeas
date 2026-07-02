@@ -387,6 +387,88 @@ func (b *Builder) Prop(node NodeID, key string) (Value, bool) {
 	return Value{}, false
 }
 
+// ResolveString resolves an interner atom back to its string (for reading
+// staged Prop values); ok is false when out of range.
+func (b *Builder) ResolveString(id uint32) (string, bool) {
+	return b.interner.Resolve(id)
+}
+
+// NodesWithProperty lists the label-carrying nodes whose staged property
+// key equals value, in staging order -- an O(pairs) pre-finalization scan.
+// A string value never interned in this builder can't be on any node, so
+// the probe returns empty WITHOUT interning it (reads must not grow the
+// atom table).
+func (b *Builder) NodesWithProperty(label, key string, value any) []NodeID {
+	labelAtom, ok := b.interner.Get(label)
+	if !ok {
+		return nil
+	}
+	k, ok := b.interner.Get(key)
+	if !ok {
+		return nil
+	}
+	var want Value
+	switch v := value.(type) {
+	case Value:
+		want = v
+	case string:
+		atom, interned := b.interner.Get(v)
+		if !interned {
+			return nil
+		}
+		want = StrValue(atom)
+	default:
+		staged, err := b.stageValue(value) // numeric/bool: never interns
+		if err != nil {
+			return nil
+		}
+		want = staged
+	}
+	hasLabel := func(node NodeID) bool {
+		if int(node) >= len(b.nodeLabels) {
+			return false
+		}
+		for _, l := range b.nodeLabels[node] {
+			if l.ID() == labelAtom {
+				return true
+			}
+		}
+		return false
+	}
+	var nodes []NodeID
+	// Scan only the column whose type matches the probe value.
+	switch want.Kind() {
+	case KindI64:
+		target, _ := want.I64()
+		for _, p := range b.nodeColI64[k] {
+			if p.val == target && hasLabel(p.id) {
+				nodes = append(nodes, p.id)
+			}
+		}
+	case KindF64:
+		for _, p := range b.nodeColF64[k] {
+			if F64Value(p.val) == want && hasLabel(p.id) {
+				nodes = append(nodes, p.id)
+			}
+		}
+	case KindBool:
+		target, _ := want.Bool()
+		for _, p := range b.nodeColBool[k] {
+			if p.val == target && hasLabel(p.id) {
+				nodes = append(nodes, p.id)
+			}
+		}
+	case KindStr:
+		target, _ := want.StrID()
+		for _, p := range b.nodeColStr[k] {
+			if p.val == target && hasLabel(p.id) {
+				nodes = append(nodes, p.id)
+			}
+		}
+	}
+	return nodes
+}
+
 // NodeLabels lists node's staged labels in insertion order.
 func (b *Builder) NodeLabels(node NodeID) []string {
 	if int(node) >= len(b.nodeLabels) {

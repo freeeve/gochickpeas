@@ -15,15 +15,19 @@ if [[ ! -d "$core" ]]; then
   exit 1
 fi
 
-# "file<TAB>symbol" pairs for every pub fn outside test code.
-symbols=$(grep -rn --include='*.rs' -E '^\s*pub (async )?fn [a-z_0-9]+' "$core" \
-  | grep -v '/tests\.rs' \
-  | sed -E "s|^$core/||; s|:[0-9]+:[[:space:]]*pub (async )?fn ([a-z_0-9]+).*|	\2|" \
-  | sort -u)
+tmp_symbols=$(mktemp)
+tmp_prev=$(mktemp)
+tmp_out=$(mktemp)
+trap 'rm -f "$tmp_symbols" "$tmp_prev" "$tmp_out"' EXIT
 
-prior=""
+# "file|symbol" pairs for every pub fn outside test code.
+grep -rn --include='*.rs' -E '^\s*pub (async )?fn [a-z_0-9]+' "$core" \
+  | grep -v '/tests\.rs' \
+  | sed -E "s|^$core/||; s|:[0-9]+:[[:space:]]*pub (async )?fn ([a-z_0-9]+).*|\|\2|" \
+  | sort -u > "$tmp_symbols"
+
 if [[ -f "$out" ]]; then
-  prior=$(cat "$out")
+  cp "$out" "$tmp_prev"
 fi
 
 {
@@ -34,26 +38,25 @@ fi
   echo
   echo "| file | rust symbol | go symbol | status | notes |"
   echo "|------|-------------|-----------|--------|-------|"
-  awk -F'\t' -v prior="$prior" '
-    BEGIN {
-      # Index existing rows by "file|symbol" so regeneration keeps progress.
-      n = split(prior, lines, "\n")
-      for (i = 1; i <= n; i++) {
-        line = lines[i]
-        if (line !~ /^\|/) continue
-        split(line, cells, "|")
-        file = trim(cells[2]); sym = trim(cells[3])
-        if (file == "file" || file ~ /^-+$/ || file == "") continue
-        kept[file "|" sym] = line
-      }
-    }
+  # Two-input awk: the previous checklist first (indexing rows by
+  # "file|symbol" so filled columns survive), then the fresh symbol list.
+  awk -F'|' '
     function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-    {
-      key = $1 "|" $2
-      if (key in kept) print kept[key]
-      else printf "| %s | %s | | todo | |\n", $1, $2
+    FNR == NR {
+      if ($0 !~ /^\|/) next
+      file = trim($2); sym = trim($3)
+      if (file == "file" || file ~ /^-+$/ || file == "") next
+      kept[file "|" sym] = $0
+      next
     }
-  ' <<< "$symbols"
-} > "$out"
+    {
+      file = trim($1); sym = trim($2)
+      key = file "|" sym
+      if (key in kept) print kept[key]
+      else printf "| %s | %s | | todo | |\n", file, sym
+    }
+  ' "$tmp_prev" "$tmp_symbols"
+} > "$tmp_out"
 
-echo "wrote $out ($(echo "$symbols" | wc -l | xargs) symbols)"
+mv "$tmp_out" "$out"
+echo "wrote $out ($(wc -l < "$tmp_symbols" | xargs) symbols)"

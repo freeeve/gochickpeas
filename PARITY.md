@@ -5,219 +5,219 @@ Statuses: todo / done / wontport (with a reason in notes).
 
 | file | rust symbol | go symbol | status | notes |
 |------|-------------|-----------|--------|-------|
-| aggregate.rs | aggregate | | todo | |
-| aggregate.rs | bin | | todo | |
-| aggregate.rs | by | | todo | |
-| aggregate.rs | by_label | | todo | |
-| aggregate.rs | by_label_membership | | todo | |
-| aggregate.rs | filter | | todo | |
-| aggregate.rs | filter_via | | todo | |
-| aggregate.rs | having | | todo | |
-| aggregate.rs | hop | | todo | |
-| aggregate.rs | labels | | todo | |
-| aggregate.rs | only_neighbors | | todo | |
-| aggregate.rs | parse | | todo | |
-| aggregate.rs | require_present | | todo | |
-| aggregate.rs | run | | todo | |
-| aggregate.rs | sum | | todo | |
-| aggregate.rs | temporal_component | | todo | |
-| aggregate.rs | test | | todo | |
-| aggregate.rs | through | | todo | |
-| analytics.rs | cdlp | | todo | |
-| analytics.rs | cdlp_seeded | | todo | |
-| analytics.rs | lcc | | todo | |
-| analytics.rs | pagerank | | todo | |
-| analytics.rs | sssp | | todo | |
-| analytics.rs | wcc | | todo | |
-| analytics.rs | weakly_connected_components | | todo | |
-| bitmap.rs | as_range | | todo | |
-| bitmap.rs | contains | | todo | |
-| bitmap.rs | empty | | todo | |
-| bitmap.rs | insert | | todo | |
-| bitmap.rs | is_empty | | todo | |
-| bitmap.rs | iter | | todo | |
-| bitmap.rs | len | | todo | |
-| bitmap.rs | max | | todo | |
-| bitmap.rs | min | | todo | |
-| bitmap.rs | par_fold | | todo | |
-| bitmap.rs | remove | | todo | |
-| column.rs | as_bool_slice | | todo | |
-| column.rs | as_f64_slice | | todo | |
-| column.rs | as_i64_slice | | todo | |
-| column.rs | as_ids | | todo | |
-| column.rs | as_slice | | todo | |
-| column.rs | as_str_ids | | todo | |
-| column.rs | bool | | todo | |
-| column.rs | dtype | | todo | |
-| column.rs | f64 | | todo | |
-| column.rs | from_f64 | | todo | |
-| column.rs | get | | todo | |
-| column.rs | get_dense | | todo | |
-| column.rs | get_id | | todo | |
-| column.rs | get_sparse | | todo | |
-| column.rs | i64 | | todo | |
-| column.rs | id | | todo | |
-| column.rs | iter_entries | | todo | |
-| column.rs | new | | todo | |
-| column.rs | resolve | | todo | |
-| column.rs | str | | todo | |
-| column.rs | to_f64 | | todo | |
-| column.rs | value | | todo | |
-| fulltext.rs | build | | todo | |
-| fulltext.rs | doc_count | | todo | |
-| fulltext.rs | query | | todo | |
-| fulltext.rs | query_ranked | | todo | |
-| fulltext.rs | term_count | | todo | |
-| fulltext.rs | tokenize | | todo | |
-| geo.rs | build | | todo | |
-| geo.rs | haversine_km | | todo | |
-| geo.rs | is_empty | | todo | |
-| geo.rs | knn | | todo | |
-| geo.rs | len | | todo | |
-| geo.rs | within_bbox | | todo | |
-| geo.rs | within_radius | | todo | |
-| graph_builder_csv.rs | load_nodes_from_csv | | todo | |
-| graph_builder_csv.rs | load_relationships_from_csv | | todo | |
-| graph_builder_csv.rs | load_relationships_from_csv_multi | | todo | |
-| graph_builder_parquet.rs | build_composite_property_index | | todo | |
-| graph_builder_parquet.rs | build_property_index | | todo | |
-| graph_builder_parquet.rs | load_nodes_from_parquet | | todo | |
-| graph_builder_parquet.rs | load_relationships_from_parquet | | todo | |
-| graph_builder_parquet.rs | read_from_parquet | | todo | |
-| graph_builder.rs | add_node | | todo | |
-| graph_builder.rs | add_relationship | | todo | |
-| graph_builder.rs | disable_node_deduplication | | todo | |
-| graph_builder.rs | enable_node_deduplication | | todo | |
-| graph_builder.rs | intern_property_key | | todo | |
-| graph_builder.rs | neighbor_ids | | todo | |
-| graph_builder.rs | new | | todo | |
-| graph_builder.rs | node_count | | todo | |
-| graph_builder.rs | node_labels | | todo | |
-| graph_builder.rs | nodes_with_property | | todo | |
-| graph_builder.rs | prop | | todo | |
-| graph_builder.rs | property_key_id | | todo | |
-| graph_builder.rs | relationship_count | | todo | |
-| graph_builder.rs | resolve_string | | todo | |
-| graph_builder.rs | set_prop | | todo | |
-| graph_builder.rs | set_prop_bool | | todo | |
-| graph_builder.rs | set_prop_by_key | | todo | |
-| graph_builder.rs | set_prop_f64 | | todo | |
-| graph_builder.rs | set_prop_i64 | | todo | |
-| graph_builder.rs | set_prop_str | | todo | |
-| graph_builder.rs | set_relationship_prop_bool | | todo | |
-| graph_builder.rs | set_relationship_prop_f64 | | todo | |
-| graph_builder.rs | set_relationship_prop_i64 | | todo | |
-| graph_builder.rs | set_relationship_prop_str | | todo | |
-| graph_builder.rs | set_relationship_props | | todo | |
-| graph_builder.rs | set_relationship_props_by_index | | todo | |
-| graph_builder.rs | set_version | | todo | |
-| graph_builder.rs | update_prop_bool | | todo | |
-| graph_builder.rs | update_prop_f64 | | todo | |
-| graph_builder.rs | update_prop_i64 | | todo | |
-| graph_builder.rs | update_prop_str | | todo | |
-| graph_builder.rs | with_version | | todo | |
-| graph_builder/finalize.rs | finalize | | todo | |
-| graph_snapshot.rs | avg_degree | | todo | |
-| graph_snapshot.rs | distance | | todo | |
-| graph_snapshot.rs | first_neighbor | | todo | |
-| graph_snapshot.rs | follow | | todo | |
-| graph_snapshot.rs | from_parquet | | todo | |
-| graph_snapshot.rs | has_label | | todo | |
-| graph_snapshot.rs | has_neighbor_with_property | | todo | |
-| graph_snapshot.rs | has_rel | | todo | |
-| graph_snapshot.rs | into_distances | | todo | |
-| graph_snapshot.rs | labels | | todo | |
-| graph_snapshot.rs | neighbors_in_set | | todo | |
-| graph_snapshot.rs | new | | todo | |
-| graph_snapshot.rs | node_count | | todo | |
-| graph_snapshot.rs | node_with_label_property | | todo | |
-| graph_snapshot.rs | node_with_property | | todo | |
-| graph_snapshot.rs | nodes_with_label | | todo | |
-| graph_snapshot.rs | nodes_with_property | | todo | |
-| graph_snapshot.rs | path_to | | todo | |
-| graph_snapshot.rs | project | | todo | |
-| graph_snapshot.rs | reached | | todo | |
-| graph_snapshot.rs | rel_type_count | | todo | |
-| graph_snapshot.rs | relationship_count | | todo | |
-| graph_snapshot.rs | relationship_count_by_type | | todo | |
-| graph_snapshot.rs | relationship_types | | todo | |
-| graph_snapshot.rs | relationships_with_type | | todo | |
-| graph_snapshot.rs | sizes | | todo | |
-| graph_snapshot.rs | top_by_size | | todo | |
-| graph_snapshot/index.rs | full_text_search | | todo | |
-| graph_snapshot/index.rs | full_text_search_ranked | | todo | |
-| graph_snapshot/index.rs | geo_knn | | todo | |
-| graph_snapshot/index.rs | geo_within_bbox | | todo | |
-| graph_snapshot/index.rs | geo_within_radius | | todo | |
-| graph_snapshot/kernels.rs | co_occurring | | todo | |
-| graph_snapshot/kernels.rs | common_neighbor_counts | | todo | |
-| graph_snapshot/kernels.rs | common_neighbors | | todo | |
-| graph_snapshot/kernels.rs | fold_via | | todo | |
-| graph_snapshot/kernels.rs | neighbor_counts | | todo | |
-| graph_snapshot/kernels.rs | neighbor_groups | | todo | |
-| graph_snapshot/kernels.rs | neighbor_via | | todo | |
-| graph_snapshot/kernels.rs | root_via | | todo | |
-| graph_snapshot/kernels.rs | roots_via | | todo | |
-| graph_snapshot/props.rs | col | | todo | |
-| graph_snapshot/props.rs | col_indexed | | todo | |
-| graph_snapshot/props.rs | label_from_str | | todo | |
-| graph_snapshot/props.rs | node_property_keys | | todo | |
-| graph_snapshot/props.rs | prop | | todo | |
-| graph_snapshot/props.rs | prop_str | | todo | |
-| graph_snapshot/props.rs | property_key_from_str | | todo | |
-| graph_snapshot/props.rs | rel_col | | todo | |
-| graph_snapshot/props.rs | rel_col_indexed | | todo | |
-| graph_snapshot/props.rs | rel_endpoints | | todo | |
-| graph_snapshot/props.rs | rel_prop | | todo | |
-| graph_snapshot/props.rs | rel_type | | todo | |
-| graph_snapshot/props.rs | relationship_type_from_str | | todo | |
-| graph_snapshot/props.rs | resolve_string | | todo | |
-| graph_snapshot/props.rs | value_id_from_str | | todo | |
-| graph_snapshot/props.rs | version | | todo | |
-| graph_snapshot/search.rs | bfs | | todo | |
-| graph_snapshot/search.rs | bfs_distances | | todo | |
-| graph_snapshot/search.rs | bidirectional_bfs | | todo | |
-| graph_snapshot/search.rs | can_reach | | todo | |
-| graph_snapshot/search.rs | dijkstra | | todo | |
-| graph_snapshot/search.rs | neighborhood | | todo | |
-| graph_snapshot/search.rs | weighted_shortest_path | | todo | |
-| graph_snapshot/traverse.rs | all | | todo | |
-| graph_snapshot/traverse.rs | neighbors | | todo | |
-| graph_snapshot/traverse.rs | neighbors_by_type | | todo | |
-| graph_snapshot/traverse.rs | one | | todo | |
-| graph_snapshot/traverse.rs | par_neighbor_fold | | todo | |
-| graph_snapshot/traverse.rs | relationships | | todo | |
-| interner.rs | batch_intern | | todo | |
-| interner.rs | get | | todo | |
-| interner.rs | get_or_intern | | todo | |
-| interner.rs | into_vec | | todo | |
-| interner.rs | is_empty | | todo | |
-| interner.rs | len | | todo | |
-| interner.rs | new | | todo | |
-| interner.rs | resolve_with | | todo | |
-| interner.rs | try_resolve_with | | todo | |
-| rusty_chickpeas.rs | add_snapshot | | todo | |
-| rusty_chickpeas.rs | add_snapshot_with_version | | todo | |
-| rusty_chickpeas.rs | clear | | todo | |
-| rusty_chickpeas.rs | create_builder | | todo | |
-| rusty_chickpeas.rs | graph_snapshot | | todo | |
-| rusty_chickpeas.rs | is_empty | | todo | |
-| rusty_chickpeas.rs | len | | todo | |
-| rusty_chickpeas.rs | new | | todo | |
-| rusty_chickpeas.rs | remove_snapshot | | todo | |
-| rusty_chickpeas.rs | versions | | todo | |
-| serialize.rs | from_graph_section | | todo | |
-| serialize.rs | read_rcpg | | todo | |
-| serialize.rs | read_rcpg_file | | todo | |
-| serialize.rs | to_graph_section | | todo | |
-| serialize.rs | write_rcpg | | todo | |
-| serialize.rs | write_rcpg_file | | todo | |
-| serialize.rs | write_rcpg_with | | todo | |
-| types.rs | as_str | | todo | |
-| types.rs | as_string | | todo | |
-| types.rs | composite | | todo | |
-| types.rs | from_slice | | todo | |
-| types.rs | id | | todo | |
-| types.rs | keep_last | | todo | |
-| types.rs | new | | todo | |
-| types.rs | property | | todo | |
+| aggregate.rs | aggregate | Snapshot.Aggregate | done | variadic labels |
+| aggregate.rs | bin | Aggregation.Bin | done | variadic bounds |
+| aggregate.rs | by | Aggregation.By | done | |
+| aggregate.rs | by_label | Aggregation.ByLabel | done | |
+| aggregate.rs | by_label_membership | Aggregation.ByLabelMembership | done | |
+| aggregate.rs | filter | Aggregation.Filter | done | |
+| aggregate.rs | filter_via | Aggregation.FilterVia | done | allowed values variadic |
+| aggregate.rs | having | Aggregation.Having | done | |
+| aggregate.rs | hop | Aggregation.Hop | done | walk-count semantics identical |
+| aggregate.rs | labels | | wontport | the caller passed the labels and still holds them |
+| aggregate.rs | only_neighbors | Aggregation.OnlyNeighbors | done | |
+| aggregate.rs | parse | ParseAggOp | done | |
+| aggregate.rs | require_present | Aggregation.RequirePresent | done | |
+| aggregate.rs | run | Aggregation.Run | done | absent group value bails with ErrSchema, as Rust |
+| aggregate.rs | sum | Aggregation.Sum | done | |
+| aggregate.rs | temporal_component | Aggregation.TemporalComponent | done | same Hinnant civil-date algorithm |
+| aggregate.rs | test | AggOp.Test | done | |
+| aggregate.rs | through | Aggregation.Through | done | |
+| analytics.rs | cdlp | Snapshot.CDLP | done | |
+| analytics.rs | cdlp_seeded | Snapshot.CDLPSeeded | done | short seed defaults to node id, as Rust |
+| analytics.rs | lcc | Snapshot.LCC | done | incl. galloping intersection |
+| analytics.rs | pagerank | Snapshot.PageRank | done | sink redistribution pinned to Rust values |
+| analytics.rs | sssp | Snapshot.SSSP | done | output sized by CSR id space (Rust uses node_count; sparse-id safe here) |
+| analytics.rs | wcc | Snapshot.WCC | done | |
+| analytics.rs | weakly_connected_components | Snapshot.WCCVia | done | takes RelMatch instead of a type name |
+| bitmap.rs | as_range | nodeset.Set.AsRange | done | (lo, hi, ok) tuple; MaxUint32 member falls back |
+| bitmap.rs | contains | nodeset.Set.Contains | done | |
+| bitmap.rs | empty | nodeset.New | done | |
+| bitmap.rs | insert | nodeset.Set.Insert | done | roaring-only repr (no BitVec arm; add if benchmarks justify) |
+| bitmap.rs | is_empty | nodeset.Set.IsEmpty | done | |
+| bitmap.rs | iter | nodeset.Set.Iter | done | iter.Seq |
+| bitmap.rs | len | nodeset.Set.Len | done | |
+| bitmap.rs | max | nodeset.Set.Max | done | comma-ok |
+| bitmap.rs | min | nodeset.Set.Min | done | comma-ok |
+| bitmap.rs | par_fold | nodeset.ParFold | done | package-level generic (methods can't have type params) |
+| bitmap.rs | remove | nodeset.Set.Remove | done | |
+| column.rs | as_bool_slice | BoolCol.Bits | done | dense bit vector |
+| column.rs | as_f64_slice | F64Col.Slice | done | |
+| column.rs | as_i64_slice | I64Col.Slice | done | |
+| column.rs | as_ids | StrCol.IDs | done | |
+| column.rs | as_slice | I64Col.Slice / F64Col.Slice | done | per typed reader |
+| column.rs | as_str_ids | StrCol.IDs | done | |
+| column.rs | bool | Col.Bool / Prop.Bool | done | |
+| column.rs | dtype | Col.Dtype | done | |
+| column.rs | f64 | Col.F64 / Prop.F64 | done | |
+| column.rs | from_f64 | F64Value | done | bit-pattern storage |
+| column.rs | get | Column.Get | done | comma-ok instead of Option |
+| column.rs | get_dense | | wontport | repr detail; Column.Get covers |
+| column.rs | get_id | Atoms.ID | done | |
+| column.rs | get_sparse | | wontport | repr detail; Column.Get covers |
+| column.rs | i64 | Col.I64 / Prop.I64 | done | |
+| column.rs | id | StrCol.ID | done | raw reader exposes atom 0; Prop.Str folds it |
+| column.rs | iter_entries | Column.Entries | done | iter.Seq2 |
+| column.rs | new | NewAtoms | done | |
+| column.rs | resolve | Atoms.Resolve | done | |
+| column.rs | str | Col.Str / Prop.Str | done | Prop.Str folds the empty-string-missing rule |
+| column.rs | to_f64 | Value.F64 | done | comma-ok |
+| column.rs | value | Prop.Value | done | comma-ok (Prop zero value = absent) |
+| fulltext.rs | build | BuildFullTextField | done | push-iterator input |
+| fulltext.rs | doc_count | FullTextField.DocCount | done | |
+| fulltext.rs | query | FullTextField.Query | done | boolean AND |
+| fulltext.rs | query_ranked | FullTextField.QueryRanked | done | BM25, ties by node id |
+| fulltext.rs | term_count | FullTextField.TermCount | done | |
+| fulltext.rs | tokenize | Tokenize | done | returns a slice |
+| geo.rs | build | BuildGeoIndex | done | invalid coordinates skipped |
+| geo.rs | haversine_km | HaversineKM | done | |
+| geo.rs | is_empty | | done | Len() == 0 |
+| geo.rs | knn | GeoIndex.KNN | done | ties by node id |
+| geo.rs | len | GeoIndex.Len | done | |
+| geo.rs | within_bbox | GeoIndex.WithinBBox | done | antimeridian wrap when minLon > maxLon |
+| geo.rs | within_radius | GeoIndex.WithinRadius | done | |
+| graph_builder_csv.rs | load_nodes_from_csv | | wontport | loaders out of scope; RCPG is the interchange |
+| graph_builder_csv.rs | load_relationships_from_csv | | wontport | loaders out of scope |
+| graph_builder_csv.rs | load_relationships_from_csv_multi | | wontport | loaders out of scope |
+| graph_builder_parquet.rs | build_composite_property_index | | wontport | loaders out of scope |
+| graph_builder_parquet.rs | build_property_index | | wontport | loaders out of scope |
+| graph_builder_parquet.rs | load_nodes_from_parquet | | wontport | loaders out of scope |
+| graph_builder_parquet.rs | load_relationships_from_parquet | | wontport | loaders out of scope |
+| graph_builder_parquet.rs | read_from_parquet | | wontport | loaders out of scope |
+| graph_builder.rs | add_node | Builder.AddNode / AddNodeWithID | done | Option id split into two methods |
+| graph_builder.rs | add_relationship | Builder.AddRel | done | returns rel index |
+| graph_builder.rs | disable_node_deduplication | | wontport | dedup is loader-driven; loaders out of scope |
+| graph_builder.rs | enable_node_deduplication | | wontport | dedup is loader-driven; loaders out of scope |
+| graph_builder.rs | intern_property_key | Builder.InternPropertyKey | done | |
+| graph_builder.rs | neighbor_ids | Builder.NeighborIDs | done | |
+| graph_builder.rs | new | NewBuilder | done | 0 caps = the 2^20 default |
+| graph_builder.rs | node_count | Builder.NodeCount | done | |
+| graph_builder.rs | node_labels | Builder.NodeLabels | done | |
+| graph_builder.rs | nodes_with_property | Builder.NodesWithProperty | done | non-interning probe semantics preserved |
+| graph_builder.rs | prop | Builder.Prop | done | first staged write, as Rust |
+| graph_builder.rs | property_key_id | | wontport | non-mutating key lookup; InternPropertyKey + SetPropByKey cover the bulk path |
+| graph_builder.rs | relationship_count | Builder.RelCount | done | |
+| graph_builder.rs | resolve_string | Builder.ResolveString | done | comma-ok instead of panic-on-miss |
+| graph_builder.rs | set_prop | Builder.SetProp | done | auto-typed via any |
+| graph_builder.rs | set_prop_bool | Builder.SetProp | done | one auto-typed setter replaces the typed four |
+| graph_builder.rs | set_prop_by_key | Builder.SetPropByKey | done | |
+| graph_builder.rs | set_prop_f64 | Builder.SetProp | done | via SetProp |
+| graph_builder.rs | set_prop_i64 | Builder.SetProp | done | via SetProp |
+| graph_builder.rs | set_prop_str | Builder.SetProp | done | via SetProp; key interns before value (atom order) |
+| graph_builder.rs | set_relationship_prop_bool | Builder.SetRelProp | done | one auto-typed setter replaces the typed four |
+| graph_builder.rs | set_relationship_prop_f64 | Builder.SetRelProp | done | via SetRelProp |
+| graph_builder.rs | set_relationship_prop_i64 | Builder.SetRelProp | done | via SetRelProp |
+| graph_builder.rs | set_relationship_prop_str | Builder.SetRelProp | done | via SetRelProp |
+| graph_builder.rs | set_relationship_props | | wontport | bulk-loader helper; loop SetRelProp/SetRelPropAt |
+| graph_builder.rs | set_relationship_props_by_index | Builder.SetRelPropAt | done | bounds-checked error instead of debug_assert |
+| graph_builder.rs | set_version | Builder.SetVersion | done | |
+| graph_builder.rs | update_prop_bool | Builder.UpdateProp | done | one auto-typed update replaces the typed four |
+| graph_builder.rs | update_prop_f64 | Builder.UpdateProp | done | via UpdateProp |
+| graph_builder.rs | update_prop_i64 | Builder.UpdateProp | done | via UpdateProp |
+| graph_builder.rs | update_prop_str | Builder.UpdateProp | done | via UpdateProp |
+| graph_builder.rs | with_version | | wontport | consuming-builder form; SetVersion covers |
+| graph_builder/finalize.rs | finalize | Builder.Finalize | done | exact thresholds; byte-identical output pinned by golden tests |
+| graph_snapshot.rs | avg_degree | Snapshot.AvgDegree | done | |
+| graph_snapshot.rs | distance | ShortestPaths.Distance | done | comma-ok |
+| graph_snapshot.rs | first_neighbor | Snapshot.FirstNeighbor / FirstNeighborMatch | done | |
+| graph_snapshot.rs | follow | Snapshot.Follow | done | variadic Step |
+| graph_snapshot.rs | from_parquet | | wontport | loaders out of scope |
+| graph_snapshot.rs | has_label | Snapshot.HasLabel | done | |
+| graph_snapshot.rs | has_neighbor_with_property | Snapshot.HasNeighborWithProperty | done | value as any; types variadic last |
+| graph_snapshot.rs | has_rel | Snapshot.HasRel | done | |
+| graph_snapshot.rs | into_distances | ShortestPaths.Distances | done | returns the result's map |
+| graph_snapshot.rs | labels | Snapshot.Labels | done | sorted |
+| graph_snapshot.rs | neighbors_in_set | Snapshot.NeighborsInSet | done | |
+| graph_snapshot.rs | new | | wontport | snapshots come from Finalize / ReadRCPG / FromGraphSection |
+| graph_snapshot.rs | node_count | Snapshot.NodeCount | done | |
+| graph_snapshot.rs | node_with_label_property | Snapshot.NodeWithLabelProperty | done | |
+| graph_snapshot.rs | node_with_property | Snapshot.NodeWithProperty | done | |
+| graph_snapshot.rs | nodes_with_label | Snapshot.NodesWithLabel | done | shared set; do not mutate |
+| graph_snapshot.rs | nodes_with_property | Snapshot.NodesWithProperty | done | any boundary + typed NodesWithValue core |
+| graph_snapshot.rs | path_to | ShortestPaths.PathTo | done | |
+| graph_snapshot.rs | project | NeighborGroups.Project | done | variadic Step |
+| graph_snapshot.rs | reached | ShortestPaths.Reached | done | |
+| graph_snapshot.rs | rel_type_count | Snapshot.RelTypeCount | done | + RelTypeStats for the full entry |
+| graph_snapshot.rs | relationship_count | Snapshot.RelCount | done | |
+| graph_snapshot.rs | relationship_count_by_type | Snapshot.RelCountByType | done | |
+| graph_snapshot.rs | relationship_types | Snapshot.RelTypes | done | sorted |
+| graph_snapshot.rs | relationships_with_type | Snapshot.RelsWithType | done | outgoing-CSR positions per FORMAT.md (Rust fixed in 96243bb) |
+| graph_snapshot.rs | sizes | NeighborGroups.Sizes | done | output follows source order |
+| graph_snapshot.rs | top_by_size | NeighborGroups.TopBySize | done | "" tieKey = source-id ties |
+| graph_snapshot/index.rs | full_text_search | Snapshot.FullTextSearch | done | |
+| graph_snapshot/index.rs | full_text_search_ranked | Snapshot.FullTextSearchRanked | done | |
+| graph_snapshot/index.rs | geo_knn | Snapshot.GeoKNN | done | |
+| graph_snapshot/index.rs | geo_within_bbox | Snapshot.GeoWithinBBox | done | flat min/max args |
+| graph_snapshot/index.rs | geo_within_radius | Snapshot.GeoWithinRadius | done | |
+| graph_snapshot/kernels.rs | co_occurring | Snapshot.CoOccurring | done | CoCount / CoDistinct weights |
+| graph_snapshot/kernels.rs | common_neighbor_counts | Snapshot.CommonNeighborCounts | done | deterministic source-order output |
+| graph_snapshot/kernels.rs | common_neighbors | Snapshot.CommonNeighbors | done | |
+| graph_snapshot/kernels.rs | fold_via | Snapshot.FoldVia | done | NodePair keys |
+| graph_snapshot/kernels.rs | neighbor_counts | Snapshot.NeighborCounts | done | |
+| graph_snapshot/kernels.rs | neighbor_groups | Snapshot.NeighborGroups | done | |
+| graph_snapshot/kernels.rs | neighbor_via | Snapshot.NeighborVia | done | NoNeighbor sentinel |
+| graph_snapshot/kernels.rs | root_via | Snapshot.RootVia | done | |
+| graph_snapshot/kernels.rs | roots_via | Snapshot.RootsVia | done | cached; RootsVia slice |
+| graph_snapshot/props.rs | col | Snapshot.Col | done | comma-ok |
+| graph_snapshot/props.rs | col_indexed | Snapshot.ColIndexed | done | |
+| graph_snapshot/props.rs | label_from_str | Snapshot.Label | done | |
+| graph_snapshot/props.rs | node_property_keys | Snapshot.NodePropertyKeys | done | sorted; dense-str atom 0 counts present, as Rust |
+| graph_snapshot/props.rs | prop | Snapshot.Prop | done | zero Prop = absent (folds PropExt) |
+| graph_snapshot/props.rs | prop_str | | done | Prop(...).Str() / StrOr() |
+| graph_snapshot/props.rs | property_key_from_str | Snapshot.PropertyKey | done | |
+| graph_snapshot/props.rs | rel_col | Snapshot.RelCol | done | |
+| graph_snapshot/props.rs | rel_col_indexed | Snapshot.RelColIndexed | done | |
+| graph_snapshot/props.rs | rel_endpoints | Snapshot.RelEndpoints | done | |
+| graph_snapshot/props.rs | rel_prop | Snapshot.RelProp | done | |
+| graph_snapshot/props.rs | rel_type | Snapshot.RelType | done | |
+| graph_snapshot/props.rs | relationship_type_from_str | Snapshot.RelType | done | one name covers both |
+| graph_snapshot/props.rs | resolve_string | Snapshot.ResolveString | done | |
+| graph_snapshot/props.rs | value_id_from_str | Snapshot.ValueFromString | done | |
+| graph_snapshot/props.rs | version | Snapshot.Version | done | comma-ok; present-empty distinct from absent |
+| graph_snapshot/search.rs | bfs | Snapshot.BFS | done | RelMatch + nil-able filters |
+| graph_snapshot/search.rs | bfs_distances | Snapshot.BFSDistances | done | pooled gen-stamped scratch |
+| graph_snapshot/search.rs | bidirectional_bfs | Snapshot.BidirectionalBFS | done | |
+| graph_snapshot/search.rs | can_reach | Snapshot.CanReach | done | DEVIATION: unknown type names match nothing (Rust: all-unknown matches everything) |
+| graph_snapshot/search.rs | dijkstra | Snapshot.Dijkstra / DijkstraTo | done | Option target split into two methods |
+| graph_snapshot/search.rs | neighborhood | Snapshot.Neighborhood | done | loHops/hiHops closed range |
+| graph_snapshot/search.rs | weighted_shortest_path | Snapshot.WeightedShortestPath | done | per-call state (no TLS); differential-tested vs Dijkstra |
+| graph_snapshot/traverse.rs | all | MatchAll | done | + MatchNone |
+| graph_snapshot/traverse.rs | neighbors | Snapshot.Neighbors | done | iter.Seq; variadic types (zero = all) |
+| graph_snapshot/traverse.rs | neighbors_by_type | Snapshot.Neighbors / NeighborsMatch | done | string convenience + RelMatch hot path |
+| graph_snapshot/traverse.rs | one | MatchType | done | |
+| graph_snapshot/traverse.rs | par_neighbor_fold | ParNeighborFold | done | package-level generic |
+| graph_snapshot/traverse.rs | relationships | Snapshot.Rels / RelsMatch | done | RelRef.Pos valid both directions |
+| interner.rs | batch_intern | | wontport | loader batch path; GetOrIntern in a loop |
+| interner.rs | get | Interner.Get | done | |
+| interner.rs | get_or_intern | Interner.GetOrIntern | done | |
+| interner.rs | into_vec | Interner.Atoms | done | snapshots to an immutable table |
+| interner.rs | is_empty | | done | Len() == 0 (never true: atom 0 pre-interned) |
+| interner.rs | len | Interner.Len | done | |
+| interner.rs | new | NewInterner | done | atom 0 = "" pre-interned |
+| interner.rs | resolve_with | Interner.Resolve | done | returns the string; no closure needed |
+| interner.rs | try_resolve_with | Interner.Resolve | done | comma-ok |
+| rusty_chickpeas.rs | add_snapshot | Manager.AddSnapshot | done | keys by version or "latest" |
+| rusty_chickpeas.rs | add_snapshot_with_version | Manager.AddSnapshotWithVersion | done | |
+| rusty_chickpeas.rs | clear | Manager.Clear | done | |
+| rusty_chickpeas.rs | create_builder | | wontport | NewBuilder + SetVersion cover |
+| rusty_chickpeas.rs | graph_snapshot | Manager.Snapshot | done | comma-ok |
+| rusty_chickpeas.rs | is_empty | | done | Len() == 0 |
+| rusty_chickpeas.rs | len | Manager.Len | done | |
+| rusty_chickpeas.rs | new | NewManager | done | |
+| rusty_chickpeas.rs | remove_snapshot | Manager.RemoveSnapshot | done | |
+| rusty_chickpeas.rs | versions | Manager.Versions | done | |
+| serialize.rs | from_graph_section | FromGraphSection | done | rebuilds inToOut by k-th pairing |
+| serialize.rs | read_rcpg | ReadRCPG | done | |
+| serialize.rs | read_rcpg_file | ReadRCPGFile | done | |
+| serialize.rs | to_graph_section | Snapshot.ToGraphSection | done | sorted-by-atom output |
+| serialize.rs | write_rcpg | Snapshot.WriteRCPG | done | byte-identical round trips pinned |
+| serialize.rs | write_rcpg_file | Snapshot.WriteRCPGFile | done | |
+| serialize.rs | write_rcpg_with | Snapshot.WriteRCPGWith | done | topology-only options |
+| types.rs | as_str | | wontport | Label/RelType text via Snapshot.ResolveString(t.ID()) |
+| types.rs | as_string | | wontport | PropertyValue not ported; Value covers the value model |
+| types.rs | composite | | wontport | NodeReference is loader endpoint resolution; out of scope |
+| types.rs | from_slice | | wontport | DedupKey is loader dedup machinery; out of scope |
+| types.rs | id | Label.ID / RelType.ID | done | |
+| types.rs | keep_last | | wontport | NodeDeduplication is loader machinery; out of scope |
+| types.rs | new | | done | plain conversions Label(atom) / RelType(atom) |
+| types.rs | property | | wontport | NodeReference is loader machinery; out of scope |
