@@ -73,3 +73,26 @@ the 2026-07-03 emission at 29284c3; fill top offenders first.
 | SPB/a6 | 67,097 | 2,028,128 | 3 |
 
 Suite total: 85,342,501 allocs. Rust floor: BI ~0, IC 45-61k, IC12 ~1k.
+
+### Round 1+2 (traversal accessors e1ab6f8^, Set.Iter e1ab6f8) -- emitted at e1ab6f8
+
+| query | allocs 29284c3 | allocs e1ab6f8 | ms before | ms after |
+|---|---:|---:|---:|---:|
+| BI/Q15 | 34,694,274 | 18,729 | 114.24 | 35.92 |
+| IC/IC5 | 12,864,253 | 2,012 | 692.82 | 513.68 |
+| IC/IC3 | 10,655,771 | 249 | 350.86 | 205.60 |
+| BI/Q2 | 6,078,097 | 5,409 | 20.47 | 9.32 |
+| BI/Q6 | 5,760,484 | 2,746 | 142.50 | 41.10 |
+| IC/IC6 | 3,641,088 | 3,669 | 110.79 | 45.19 |
+| IC/IC12 | 3,630,682 | 1,375 | 99.37 | 48.54 |
+| SPB/a13 | 1,311,207 | 1,009,015 | 62.36 | 56.79 |
+| SPB/a14 | 1,259,844 | 46,413 | 36.24 | 18.74 |
+| BI/Q4 | 547,811 | 11,132 | 78.04 | 71.73 |
+| SPB/a5 | 519,710 | 217,505 | 64.07 | 53.13 |
+| BI/Q9 | 490,543 | 42,820 | 17.04 | 12.13 |
+| BI/Q14 | 423,001 | 2,943 | 13.85 | 7.49 |
+| SPB/a7 | 331,598 | 67,401 | 21.29 | 15.90 |
+| IC/IC10 | 284,055 | 1,823 | 10.36 | 7.18 |
+
+Suite: 85,342,501 -> 2,267,808 allocs (97.3% reduction); summed warm medians 2156ms -> 1465ms.
+Remaining allocs are dominated by result-row [][]any boxing (per-row, matches the rust side's own per-row materialization) and kernel-local maps.
