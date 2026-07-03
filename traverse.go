@@ -6,6 +6,7 @@ package chickpeas
 
 import (
 	"iter"
+	"slices"
 
 	"github.com/freeeve/gochickpeas/internal/parallel"
 	"github.com/freeeve/gochickpeas/nodeset"
@@ -54,23 +55,31 @@ func (m RelMatch) matches(t RelType) bool {
 	case 1:
 		return m.one == t
 	}
-	for _, x := range m.many {
-		if x == t {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.many, t)
 }
 
 // Match resolves relationship-type names to a reusable filter: resolve once
 // and pass to the *Match traversal methods in a hot loop to skip the
 // per-call string lookups. Zero names match every type; unknown names are
 // dropped (an unresolvable name has no rels), so all-unknown matches
-// nothing.
+// nothing. The zero- and one-name paths are allocation-free, so the
+// string-typed traversal conveniences stay cheap in hot loops.
 func (g *Snapshot) Match(relTypes ...string) RelMatch {
-	if len(relTypes) == 0 {
+	switch len(relTypes) {
+	case 0:
 		return MatchAll()
+	case 1:
+		if t, ok := g.RelType(relTypes[0]); ok {
+			return MatchType(t)
+		}
+		return MatchNone()
 	}
+	return g.matchMany(relTypes)
+}
+
+// matchMany is Match's two-or-more-names path, split out so the common
+// zero/one-name paths stay within the inlining budget.
+func (g *Snapshot) matchMany(relTypes []string) RelMatch {
 	resolved := make([]RelType, 0, len(relTypes))
 	for _, name := range relTypes {
 		if t, ok := g.RelType(name); ok {
@@ -101,27 +110,40 @@ func relRange(offsets []uint32, node NodeID) (int, int) {
 // matching outgoing neighbors then matching incoming ones; duplicate rels
 // yield duplicate neighbors, so counting composes. For per-rel type or
 // property access during traversal use Rels.
+//
+// Both accessors are thin inlinable closure constructors over
+// neighborsYield, so a direct `for range` over them is allocation-free
+// (the closure and its captures stay on the stack).
 func (g *Snapshot) Neighbors(node NodeID, dir Direction, relTypes ...string) iter.Seq[NodeID] {
-	return g.NeighborsMatch(node, dir, g.Match(relTypes...))
+	return func(yield func(NodeID) bool) {
+		g.neighborsYield(node, dir, g.Match(relTypes...), yield)
+	}
 }
 
 // NeighborsMatch is Neighbors over a pre-resolved RelMatch, for hot loops.
 func (g *Snapshot) NeighborsMatch(node NodeID, dir Direction, m RelMatch) iter.Seq[NodeID] {
 	return func(yield func(NodeID) bool) {
-		if dir == Outgoing || dir == Both {
-			lo, hi := relRange(g.outOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
-					return
-				}
+		g.neighborsYield(node, dir, m, yield)
+	}
+}
+
+// neighborsYield walks the CSR ranges, yielding matching neighbors. The
+// yield parameter never escapes, keeping range-over-func callers
+// allocation-free.
+func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield func(NodeID) bool) {
+	if dir == Outgoing || dir == Both {
+		lo, hi := relRange(g.outOffsets, node)
+		for k := lo; k < hi; k++ {
+			if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
+				return
 			}
 		}
-		if dir == Incoming || dir == Both {
-			lo, hi := relRange(g.inOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
-					return
-				}
+	}
+	if dir == Incoming || dir == Both {
+		lo, hi := relRange(g.inOffsets, node)
+		for k := lo; k < hi; k++ {
+			if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
+				return
 			}
 		}
 	}
@@ -129,41 +151,51 @@ func (g *Snapshot) NeighborsMatch(node NodeID, dir Direction, m RelMatch) iter.S
 
 // Rels iterates the relationships incident to node in direction, each
 // carrying the CSR position for property reads (see RelRef), outgoing
-// matches then incoming ones. Zero types match all.
+// matches then incoming ones. Zero types match all. Like Neighbors,
+// both accessors are thin inlinable closure constructors, so a direct
+// `for range` over them is allocation-free.
 func (g *Snapshot) Rels(node NodeID, dir Direction, relTypes ...string) iter.Seq[RelRef] {
-	return g.RelsMatch(node, dir, g.Match(relTypes...))
+	return func(yield func(RelRef) bool) {
+		g.relsYield(node, dir, g.Match(relTypes...), yield)
+	}
 }
 
 // RelsMatch is Rels over a pre-resolved RelMatch, for hot loops.
 func (g *Snapshot) RelsMatch(node NodeID, dir Direction, m RelMatch) iter.Seq[RelRef] {
 	return func(yield func(RelRef) bool) {
-		if dir == Outgoing || dir == Both {
-			lo, hi := relRange(g.outOffsets, node)
-			for k := lo; k < hi; k++ {
-				t := g.outTypes[k]
-				if !m.matches(t) {
-					continue
-				}
-				if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
-					return
-				}
+		g.relsYield(node, dir, m, yield)
+	}
+}
+
+// relsYield walks the CSR ranges, yielding matching RelRefs; yield never
+// escapes.
+func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(RelRef) bool) {
+	if dir == Outgoing || dir == Both {
+		lo, hi := relRange(g.outOffsets, node)
+		for k := lo; k < hi; k++ {
+			t := g.outTypes[k]
+			if !m.matches(t) {
+				continue
+			}
+			if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
+				return
 			}
 		}
-		if dir == Incoming || dir == Both {
-			lo, hi := relRange(g.inOffsets, node)
-			for k := lo; k < hi; k++ {
-				t := g.inTypes[k]
-				if !m.matches(t) {
-					continue
-				}
-				// Map the incoming position to where the property is stored.
-				pos := uint32(k)
-				if k < len(g.inToOut) {
-					pos = g.inToOut[k]
-				}
-				if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
-					return
-				}
+	}
+	if dir == Incoming || dir == Both {
+		lo, hi := relRange(g.inOffsets, node)
+		for k := lo; k < hi; k++ {
+			t := g.inTypes[k]
+			if !m.matches(t) {
+				continue
+			}
+			// Map the incoming position to where the property is stored.
+			pos := uint32(k)
+			if k < len(g.inToOut) {
+				pos = g.inToOut[k]
+			}
+			if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
+				return
 			}
 		}
 	}
@@ -211,14 +243,17 @@ func (g *Snapshot) HasRel(node NodeID, dir Direction, relTypes ...string) bool {
 // set -- a label's nodes, a search result, or any precomputed set. Duplicate
 // rels are preserved, so it composes with counting.
 func (g *Snapshot) NeighborsInSet(node NodeID, dir Direction, set *nodeset.Set, relTypes ...string) iter.Seq[NodeID] {
-	m := g.Match(relTypes...)
 	return func(yield func(NodeID) bool) {
-		for n := range g.NeighborsMatch(node, dir, m) {
-			if set.Contains(n) && !yield(n) {
-				return
-			}
-		}
+		g.neighborsInSetYield(node, dir, set, g.Match(relTypes...), yield)
 	}
+}
+
+// neighborsInSetYield is NeighborsInSet's non-inlined walker; yield
+// never escapes.
+func (g *Snapshot) neighborsInSetYield(node NodeID, dir Direction, set *nodeset.Set, m RelMatch, yield func(NodeID) bool) {
+	g.neighborsYield(node, dir, m, func(n NodeID) bool {
+		return !set.Contains(n) || yield(n)
+	})
 }
 
 // HasNeighborWithProperty reports whether any typed neighbor of node in

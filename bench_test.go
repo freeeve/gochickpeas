@@ -108,3 +108,67 @@ func BenchmarkRCPGRoundTrip(b *testing.B) {
 		_ = section
 	}
 }
+
+// BenchmarkNeighborsStringTypes measures the per-call cost of the
+// string-typed Neighbors accessor in a hot loop (task 028: the alloc
+// pass) -- resolve-per-call vs the pre-resolved NeighborsMatch above.
+func BenchmarkNeighborsStringTypes(b *testing.B) {
+	g := benchGraph(b, 20_000, 100_000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		total := 0
+		for v := range chickpeas.NodeID(20_000) {
+			for range g.Neighbors(v, chickpeas.Outgoing, "KNOWS") {
+				total++
+			}
+		}
+		if total != 100_000 {
+			b.Fatal("scan lost rels")
+		}
+	}
+}
+
+// BenchmarkNeighborsMatchAllocs is BenchmarkNeighborsScan with alloc
+// reporting, isolating the closure/iterator overhead of the fast path.
+func BenchmarkNeighborsMatchAllocs(b *testing.B) {
+	g := benchGraph(b, 20_000, 100_000)
+	m := g.Match("KNOWS")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		total := 0
+		for v := range chickpeas.NodeID(20_000) {
+			for range g.NeighborsMatch(v, chickpeas.Outgoing, m) {
+				total++
+			}
+		}
+		if total != 100_000 {
+			b.Fatal("scan lost rels")
+		}
+	}
+}
+
+// BenchmarkPropStrReads measures per-read allocation of the Prop
+// accessor chain (g.Prop(n, key).Str()) in a scan.
+func BenchmarkPropStrReads(b *testing.B) {
+	builder := chickpeas.NewBuilder(20_000, 0)
+	for i := range chickpeas.NodeID(20_000) {
+		builder.AddNodeWithID(i, "Node")
+		builder.SetProp(i, "name", "node-name")
+	}
+	g := builder.Finalize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		total := 0
+		for v := range chickpeas.NodeID(20_000) {
+			if _, ok := g.Prop(v, "name").Str(); ok {
+				total++
+			}
+		}
+		if total != 20_000 {
+			b.Fatal("missing props")
+		}
+	}
+}
