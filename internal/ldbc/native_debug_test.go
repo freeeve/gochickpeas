@@ -71,3 +71,44 @@ func TestDebugNativeQuery(t *testing.T) {
 	}
 	t.Logf("%d got rows, %d want rows", len(got), len(want))
 }
+
+// BenchmarkDebugNativeQuery times/profiles one kernel's runnable -- the
+// alloc-pass harness (task 028), active only with the env vars set:
+//
+//	GOCHICKPEAS_DEBUG_RCPG=<graph> GOCHICKPEAS_DEBUG_QUERY=IC/IC6 \
+//	go test ./internal/ldbc -run xxx -bench BenchmarkDebugNativeQuery -benchmem -memprofile mem.out
+func BenchmarkDebugNativeQuery(b *testing.B) {
+	rcpg := os.Getenv("GOCHICKPEAS_DEBUG_RCPG")
+	query := os.Getenv("GOCHICKPEAS_DEBUG_QUERY")
+	if rcpg == "" || query == "" {
+		b.Skip("debug env vars unset")
+	}
+	g, err := chickpeas.ReadRCPGFile(rcpg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	var family, q string
+	for i, c := range query {
+		if c == '/' {
+			family, q = query[:i], query[i+1:]
+		}
+	}
+	kernel, ok := NativeKernelFor(family, q)
+	if !ok {
+		b.Fatalf("no kernel %s", query)
+	}
+	run, err := kernel(g)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err := run(); err != nil { // warm lazy indexes outside the loop
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := run(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -161,23 +161,35 @@ func (idx *srcIndex) indexFile(name string, file *ast.File) error {
 	return bad
 }
 
-// slice cuts one function's text (doc comment included) out of its file.
+// slice cuts one function's text (doc comment included) out of its
+// file. A `<fn>Rows` companion -- the named body a prepare-style kernel
+// hoists its hot loops into so they compile outside a closure (task
+// 028) -- is appended, so the emitted code is still the query that ran.
 func (idx *srcIndex) slice(family, query, fn string) (KernelSource, error) {
 	loc, ok := idx.funcs[fn]
 	if !ok {
 		return KernelSource{}, fmt.Errorf("kernel %s/%s: func %s not found in embedded sources", family, query, fn)
 	}
-	start := loc.decl.Pos()
-	if loc.decl.Doc != nil {
-		start = loc.decl.Doc.Pos()
+	source := idx.funcText(loc)
+	if body, ok := idx.funcs[fn+"Rows"]; ok {
+		source += "\n\n" + idx.funcText(body)
 	}
 	return KernelSource{
 		Family: family,
 		Query:  query,
 		Func:   fn,
 		SrcRef: fmt.Sprintf("internal/ldbc/%s:%d", loc.file, idx.fset.Position(loc.decl.Pos()).Line),
-		Source: string(idx.files[loc.file][idx.fset.Position(start).Offset:idx.fset.Position(loc.decl.End()).Offset]),
+		Source: source,
 	}, nil
+}
+
+// funcText is one function's source text, doc comment included.
+func (idx *srcIndex) funcText(loc srcFunc) string {
+	start := loc.decl.Pos()
+	if loc.decl.Doc != nil {
+		start = loc.decl.Doc.Pos()
+	}
+	return string(idx.files[loc.file][idx.fset.Position(start).Offset:idx.fset.Position(loc.decl.End()).Offset])
 }
 
 // stringLit unquotes a string-literal argument.

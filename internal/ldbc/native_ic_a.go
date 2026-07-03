@@ -318,55 +318,60 @@ func icIC5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 }
 
 // icIC6 -- tag co-occurrence on friends/FoF Posts carrying the seed
-// tag; [tagName, postCount], (count desc, name asc), top 10.
+// tag; [tagName, postCount], (count desc, name asc), top 10. The hot
+// loops live in icIC6Rows: a named function compiles the nested
+// traversal ranges allocation-free, which a closure body does not.
 func icIC6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
-		target, ok := nodeByName(g, "Tag", icSeedTag)
-		if !ok {
-			return [][]any{}, nil
-		}
-		posts, _ := g.NodesWithLabel("Post")
-		reach := g.Neighborhood(person, chickpeas.Both, g.Match("KNOWS"), 1, 2)
-		counts := map[chickpeas.NodeID]int64{}
-		var tags []chickpeas.NodeID
-		for p := range reach.Iter() {
-			for post := range g.Neighbors(p, chickpeas.Incoming, "HAS_CREATOR") {
-				if posts == nil || !posts.Contains(post) {
-					continue
+	return func() ([][]any, error) { return icIC6Rows(g, person) }, nil
+}
+
+// icIC6Rows is icIC6's query body.
+func icIC6Rows(g *chickpeas.Snapshot, person chickpeas.NodeID) ([][]any, error) {
+	target, ok := nodeByName(g, "Tag", icSeedTag)
+	if !ok {
+		return [][]any{}, nil
+	}
+	posts, _ := g.NodesWithLabel("Post")
+	reach := g.Neighborhood(person, chickpeas.Both, g.Match("KNOWS"), 1, 2)
+	counts := map[chickpeas.NodeID]int64{}
+	var tags []chickpeas.NodeID
+	for p := range reach.Iter() {
+		for post := range g.Neighbors(p, chickpeas.Incoming, "HAS_CREATOR") {
+			if posts == nil || !posts.Contains(post) {
+				continue
+			}
+			tags = tags[:0]
+			hasTarget := false
+			for t := range g.Neighbors(post, chickpeas.Outgoing, "HAS_TAG") {
+				if t == target {
+					hasTarget = true
 				}
-				tags = tags[:0]
-				hasTarget := false
-				for t := range g.Neighbors(post, chickpeas.Outgoing, "HAS_TAG") {
-					if t == target {
-						hasTarget = true
-					}
-					tags = append(tags, t)
-				}
-				if !hasTarget {
-					continue
-				}
-				for _, t := range tags {
-					if t != target {
-						counts[t]++
-					}
+				tags = append(tags, t)
+			}
+			if !hasTarget {
+				continue
+			}
+			for _, t := range tags {
+				if t != target {
+					counts[t]++
 				}
 			}
 		}
-		rows := make([][]any, 0, len(counts))
-		for t, c := range counts {
-			rows = append(rows, []any{strAt(g, t, "name"), c})
-		}
-		return sortTruncate(rows, 10, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpStrAsc(a[0].(string), b[0].(string)),
-			)
-		}), nil
-	}, nil
+	}
+	rows := make([][]any, 0, len(counts))
+	for t, c := range counts {
+		rows = append(rows, []any{strAt(g, t, "name"), c})
+	}
+	return sortTruncate(rows, 10, func(a, b []any) bool {
+		return cmpChain(
+			cmpI64Desc(a[1].(int64), b[1].(int64)),
+			cmpStrAsc(a[0].(string), b[0].(string)),
+		)
+	}), nil
 }
 
 // icIC7 -- the 20 most recent likers of the seed's messages (latest

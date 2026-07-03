@@ -101,12 +101,28 @@ func (s *Set) AsRange() (lo, hi uint32, ok bool) {
 	return mn, mx + 1, true
 }
 
-// Iter iterates the set's ids in ascending order.
+// Iter iterates the set's ids in ascending order. The accessor is a
+// thin inlinable closure constructor over iterYield, so a direct
+// `for range` over it devirtualizes at the call site and the loop body
+// compiles as straight code rather than a heap-allocated yield closure.
 func (s *Set) Iter() iter.Seq[uint32] {
 	return func(yield func(uint32) bool) {
-		it := s.bm.Iterator()
-		for it.HasNext() {
-			if !yield(it.Next()) {
+		s.iterYield(yield)
+	}
+}
+
+// iterYield walks the bitmap in ascending order via the buffered many
+// iterator (one 64-id chunk at a time); yield never escapes.
+func (s *Set) iterYield(yield func(uint32) bool) {
+	it := s.bm.ManyIterator()
+	var buf [64]uint32
+	for {
+		n := it.NextMany(buf[:])
+		if n == 0 {
+			return
+		}
+		for _, id := range buf[:n] {
+			if !yield(id) {
 				return
 			}
 		}
