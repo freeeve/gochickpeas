@@ -129,18 +129,18 @@ Task files live in `tasks/` (Eve's numbered convention; rename to
 | M8 | Full-text (BM25) + geo (k-d tree) | done |
 | M9 | Manager, benchmarks, v0.1.0 | done |
 | M10 | GQL scaffold: gql/value, errors, Row/Rows, graph seam + Snapshot adapter + matchers | done |
-| M11 | GQL parser: GRAMMAR.md subset spec, ast, hand-written lexer/Pratt parser | planned |
-| M12 | GQL semantics: desugar (GQL-form normalization), binder, autoparam | planned |
-| M13 | GQL planner: plan IR, buildSegment/lower/cost/mono/sp/call/rewrite, minimal EXPLAIN | planned |
-| M14 | GQL eval: interpreter, scalar/temporal funcs, EXISTS/COUNT subqueries | planned |
-| M15 | GQL exec core: scans, pushdown, project, ORDER BY/OFFSET/LIMIT | planned |
-| M16 | GQL compile: columnar CExpr path + dual-path test harness | planned |
-| M17 | GQL traversal: expand, var-length, paths, ANY/ALL SHORTEST, OPTIONAL | planned |
-| M18 | GQL aggregation/rows: aggregator, FOR, UNION, CALL{} subqueries | planned |
-| M19 | GQL CALL procs -> engine kernels | planned |
-| M20 | GQL EXPLAIN/PROFILE: counters, estimates | planned |
-| M21 | GQL Prepared + PlanCache | planned |
-| M22 | GQL cross-engine golden corpus, fuzz invariants, v0.2.0 | planned |
+| M11 | GQL parser: GRAMMAR.md subset spec, ast, hand-written lexer/Pratt parser | done |
+| M12 | GQL semantics: desugar (GQL-form normalization), binder, autoparam | done |
+| M13 | GQL planner: plan IR, buildSegment/lower/cost/mono/sp/call/rewrite, minimal EXPLAIN | done |
+| M14 | GQL eval: interpreter, scalar/temporal funcs, EXISTS/COUNT subqueries | done |
+| M15 | GQL exec core: scans, pushdown, project, ORDER BY/OFFSET/LIMIT | done |
+| M16 | GQL compile: columnar CExpr path + dual-path test harness | done |
+| M17 | GQL traversal: expand, var-length, paths, ANY/ALL SHORTEST, OPTIONAL | done |
+| M18 | GQL aggregation/rows: aggregator, FOR, UNION, CALL{} subqueries | done |
+| M19 | GQL CALL procs -> engine kernels | done |
+| M20 | GQL EXPLAIN/PROFILE: counters, estimates | done |
+| M21 | GQL Prepared + PlanCache | done |
+| M22 | GQL cross-engine golden corpus, fuzz invariants, v0.2.0 | done |
 
 Known deviations from Rust (deliberate, noted per-row in PARITY.md as it
 fills in): loader/dedup surfaces are out of scope (RCPG is the

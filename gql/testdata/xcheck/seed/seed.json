@@ -1,0 +1,590 @@
+[
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) WHERE p.age \u003e 30 RETURN p.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person) WHERE p.age \u003e 30 RETURN p.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "age"
+    ],
+    "cypher": "MATCH (p:Person {name: 'Alice'}) RETURN p.age AS age",
+    "gql": "MATCH (p:Person {name: 'Alice'}) RETURN p.age AS age",
+    "graph": "social",
+    "rows": [
+      [
+        30
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ],
+      [
+        "Dave"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) WHERE p.age IN [30.0, 35] RETURN p.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person) WHERE p.age IN [30.0, 35] RETURN p.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ],
+      [
+        "Bob"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) WHERE p.city IS NULL RETURN p.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person) WHERE p.city IS NULL RETURN p.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Dave"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p) WHERE id(p) = 2 RETURN p.name AS name",
+    "gql": "MATCH (p) WHERE id(p) = 2 RETURN p.name AS name",
+    "graph": "social",
+    "rows": [
+      [
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "y"
+    ],
+    "cypher": "MATCH (p:Person) RETURN DISTINCT toString(p.joined / 10000) AS y ORDER BY y",
+    "gql": "MATCH (p:Person) RETURN DISTINCT toString(p.joined / 10000) AS y ORDER BY y",
+    "graph": "social",
+    "rows": [
+      [
+        "2010"
+      ],
+      [
+        "2011"
+      ],
+      [
+        "2012"
+      ],
+      [
+        "2013"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC SKIP 1 LIMIT 2",
+    "gql": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC OFFSET 1 LIMIT 2",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Alice"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person {name: 'Alice'})-[:KNOWS]-\u003e(f) RETURN f.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person {name: 'Alice'})-[:KNOWS]-\u003e(f) RETURN f.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-\u003e(f)-[:WORKS_AT]-\u003e(c) RETURN c.name AS name ORDER BY name",
+    "gql": "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-\u003e(f)-[:WORKS_AT]-\u003e(c) RETURN c.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Acme"
+      ],
+      [
+        "Globex"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person {name: 'Alice'})-[:KNOWS*1..2]-\u003e(f:Person) RETURN DISTINCT f.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person {name: 'Alice'})-[:KNOWS]-\u003e{1,2}(f:Person) RETURN DISTINCT f.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ],
+      [
+        "Dave"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (a:Person {name: 'Alice'})-[:KNOWS*]-\u003e(b) RETURN DISTINCT b.name AS name ORDER BY name",
+    "gql": "MATCH (a:Person {name: 'Alice'})-[:KNOWS]-\u003e+(b) RETURN DISTINCT b.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ],
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ],
+      [
+        "Dave"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name",
+      "company"
+    ],
+    "cypher": "MATCH (p:Person) OPTIONAL MATCH (p)-[:WORKS_AT]-\u003e(c) RETURN p.name AS name, c.name AS company ORDER BY name",
+    "gql": "MATCH (p:Person) OPTIONAL MATCH (p)-[:WORKS_AT]-\u003e(c) RETURN p.name AS name, c.name AS company ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice",
+        "Acme"
+      ],
+      [
+        "Bob",
+        "Acme"
+      ],
+      [
+        "Carol",
+        "Globex"
+      ],
+      [
+        "Dave",
+        null
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "l",
+      "name"
+    ],
+    "cypher": "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]-\u003e(b) RETURN length(p) AS l, b.name AS name ORDER BY name",
+    "gql": "MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]-\u003e(b) RETURN length(p) AS l, b.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        1,
+        "Bob"
+      ],
+      [
+        1,
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "l"
+    ],
+    "cypher": "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = shortestPath((a)-[:KNOWS*]-\u003e(b)) RETURN length(p) AS l",
+    "gql": "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = ANY SHORTEST (a)-[:KNOWS]-\u003e{1,}(b) RETURN length(p) AS l",
+    "graph": "social",
+    "rows": [
+      [
+        2
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "l",
+      "n"
+    ],
+    "cypher": "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = allShortestPaths((a)-[:KNOWS*]-\u003e(b)) RETURN length(p) AS l, size(nodes(p)) AS n",
+    "gql": "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = ALL SHORTEST (a)-[:KNOWS]-\u003e{1,}(b) RETURN length(p) AS l, size(nodes(p)) AS n",
+    "graph": "social",
+    "rows": [
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        3
+      ]
+    ],
+    "unordered": true
+  },
+  {
+    "columns": [
+      "company",
+      "n"
+    ],
+    "cypher": "MATCH (c:Company)\u003c-[:WORKS_AT]-(p:Person) RETURN c.name AS company, count(*) AS n ORDER BY n DESC",
+    "gql": "MATCH (c:Company)\u003c-[:WORKS_AT]-(p:Person) RETURN c.name AS company, count(*) AS n ORDER BY n DESC",
+    "graph": "social",
+    "rows": [
+      [
+        "Acme",
+        2
+      ],
+      [
+        "Globex",
+        1
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "s",
+      "a",
+      "lo",
+      "hi"
+    ],
+    "cypher": "MATCH (p:Person) RETURN sum(p.age) AS s, avg(p.age) AS a, min(p.age) AS lo, max(p.age) AS hi",
+    "gql": "MATCH (p:Person) RETURN sum(p.age) AS s, avg(p.age) AS a, min(p.age) AS lo, max(p.age) AS hi",
+    "graph": "social",
+    "rows": [
+      [
+        130,
+        {
+          "float": "32.5"
+        },
+        25,
+        40
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "n"
+    ],
+    "cypher": "MATCH (p:Person) WHERE p.age \u003e 30 WITH collect(p.name) AS names UNWIND names AS n RETURN n AS n ORDER BY n",
+    "gql": "MATCH (p:Person) WHERE p.age \u003e 30 RETURN collect(p.name) AS names NEXT FOR n IN names RETURN n AS n ORDER BY n",
+    "graph": "social",
+    "rows": [
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (c:Company)\u003c-[:WORKS_AT]-(p:Person) WITH c.name AS name, count(*) AS n WHERE n \u003e 1 RETURN name",
+    "gql": "MATCH (c:Company)\u003c-[:WORKS_AT]-(p:Person) RETURN c.name AS name, count(*) AS n NEXT FILTER n \u003e 1 RETURN name",
+    "graph": "social",
+    "rows": [
+      [
+        "Acme"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]-\u003e(q:Person) WHERE q.age \u003e 30 } RETURN p.name AS name ORDER BY name",
+    "gql": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]-\u003e(q:Person) WHERE q.age \u003e 30 } RETURN p.name AS name ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ],
+      [
+        "Bob"
+      ],
+      [
+        "Carol"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name",
+      "friends"
+    ],
+    "cypher": "MATCH (p:Person) RETURN p.name AS name, COUNT { MATCH (p)-[:KNOWS]-\u003e(q) } AS friends ORDER BY name",
+    "gql": "MATCH (p:Person) RETURN p.name AS name, COUNT { MATCH (p)-[:KNOWS]-\u003e(q) } AS friends ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice",
+        2
+      ],
+      [
+        "Bob",
+        2
+      ],
+      [
+        "Carol",
+        2
+      ],
+      [
+        "Dave",
+        1
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name",
+      "friends"
+    ],
+    "cypher": "MATCH (p:Person) CALL { WITH p MATCH (p)-[:KNOWS]-\u003e(f) RETURN count(f) AS friends } RETURN p.name AS name, friends ORDER BY name",
+    "gql": "MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]-\u003e(f) RETURN count(f) AS friends } RETURN p.name AS name, friends ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice",
+        2
+      ],
+      [
+        "Bob",
+        2
+      ],
+      [
+        "Carol",
+        2
+      ],
+      [
+        "Dave",
+        1
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "n"
+    ],
+    "cypher": "MATCH (p:Person {name: 'Alice'}) RETURN p.name AS n UNION MATCH (c:Company) RETURN c.name AS n",
+    "gql": "MATCH (p:Person {name: 'Alice'}) RETURN p.name AS n UNION MATCH (c:Company) RETURN c.name AS n",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ],
+      [
+        "Acme"
+      ],
+      [
+        "Globex"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "age"
+    ],
+    "cypher": "MATCH (p:Person {name: $who}) RETURN p.age AS age",
+    "gql": "MATCH (p:Person {name: $who}) RETURN p.age AS age",
+    "graph": "social",
+    "params": {
+      "who": "Carol"
+    },
+    "rows": [
+      [
+        40
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name",
+      "era"
+    ],
+    "cypher": "MATCH (p:Person) RETURN p.name AS name, CASE WHEN p.joined \u003e 20110000 THEN 'new' ELSE 'old' END AS era ORDER BY name",
+    "gql": "MATCH (p:Person) RETURN p.name AS name, CASE WHEN p.joined \u003e 20110000 THEN 'new' ELSE 'old' END AS era ORDER BY name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice",
+        "old"
+      ],
+      [
+        "Bob",
+        "new"
+      ],
+      [
+        "Carol",
+        "new"
+      ],
+      [
+        "Dave",
+        "new"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "y",
+      "d",
+      "t"
+    ],
+    "cypher": "RETURN datetime('2020-03-15T10:30:00').year AS y, date('2020-03-15') AS d, datetime({epochMillis: 0}) AS t",
+    "gql": "RETURN datetime('2020-03-15T10:30:00').year AS y, date('2020-03-15') AS d, datetime({epochMillis: 0}) AS t",
+    "graph": "social",
+    "rows": [
+      [
+        2020,
+        20200315,
+        {
+          "kind": 1,
+          "temporal": 0
+        }
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "n"
+    ],
+    "cypher": "CALL wcc('KNOWS') YIELD node, component RETURN count(DISTINCT component) AS n",
+    "gql": "CALL wcc('KNOWS') YIELD node, component RETURN count(DISTINCT component) AS n",
+    "graph": "social",
+    "rows": [
+      [
+        3
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "CALL fts.search('Person', 'name', 'alice') YIELD node RETURN node.name AS name",
+    "gql": "CALL fts.search('Person', 'name', 'alice') YIELD node RETURN node.name AS name",
+    "graph": "social",
+    "rows": [
+      [
+        "Alice"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "MATCH (c:Msg {name: 'c'})-[:replyOf*0..]-\u003e(x) RETURN x.name AS name ORDER BY name",
+    "gql": "MATCH (c:Msg {name: 'c'})-[:replyOf]-\u003e*(x) RETURN x.name AS name ORDER BY name",
+    "graph": "replies",
+    "rows": [
+      [
+        "a"
+      ],
+      [
+        "c"
+      ],
+      [
+        "root"
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name",
+      "w"
+    ],
+    "cypher": "MATCH (a:N {name: 's'})-[r:E]-\u003e(b) RETURN b.name AS name, r.w AS w ORDER BY w",
+    "gql": "MATCH (a:N {name: 's'})-[r:E]-\u003e(b) RETURN b.name AS name, r.w AS w ORDER BY w",
+    "graph": "weighted",
+    "rows": [
+      [
+        "a",
+        {
+          "float": "0.5"
+        }
+      ],
+      [
+        "t",
+        {
+          "float": "5"
+        }
+      ]
+    ]
+  },
+  {
+    "columns": [
+      "name"
+    ],
+    "cypher": "CALL geo.withinRadius('Place', 'lat', 'lon', 48.85, 2.35, 30.0) YIELD node RETURN node.name AS name ORDER BY name",
+    "gql": "CALL geo.withinRadius('Place', 'lat', 'lon', 48.85, 2.35, 30.0) YIELD node RETURN node.name AS name ORDER BY name",
+    "graph": "geo",
+    "rows": [
+      [
+        "Paris"
+      ],
+      [
+        "Versailles"
+      ]
+    ]
+  }
+]
