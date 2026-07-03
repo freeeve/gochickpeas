@@ -39,16 +39,22 @@ type Record struct {
 }
 
 // Meta self-describes the emitted point: which port, at what conformance
-// level, against which fixture, on which Go toolchain.
+// level, against which fixture, on which Go toolchain. The format/bytes/
+// mb_s/rec_s fields appear on family=LOAD records only, mirroring the
+// rcp-native load emissions' meta.
 type Meta struct {
-	Port            string `json:"port"`
-	CoreConformance string `json:"coreConformance,omitempty"`
-	CoreCommit      string `json:"coreCommit,omitempty"`
-	GQLVersion      string `json:"gqlVersion,omitempty"`
-	Graph           string `json:"graph,omitempty"`
-	GoVersion       string `json:"goVersion"`
-	Nodes           uint32 `json:"nodes"`
-	Rels            uint64 `json:"rels"`
+	Port            string  `json:"port"`
+	CoreConformance string  `json:"coreConformance,omitempty"`
+	CoreCommit      string  `json:"coreCommit,omitempty"`
+	GQLVersion      string  `json:"gqlVersion,omitempty"`
+	Graph           string  `json:"graph,omitempty"`
+	GoVersion       string  `json:"goVersion"`
+	Nodes           uint32  `json:"nodes"`
+	Rels            uint64  `json:"rels"`
+	Format          string  `json:"format,omitempty"`
+	Bytes           int64   `json:"bytes,omitempty"`
+	MbS             float64 `json:"mb_s,omitempty"`
+	RecS            int64   `json:"rec_s,omitempty"`
 }
 
 // Stamp is the emitting repo's HEAD identity -- gochickpeas points plot
