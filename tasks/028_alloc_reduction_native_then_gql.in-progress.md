@@ -162,11 +162,50 @@ machine (load avg 28); interleaved A/B and post-quiet reruns confirmed the wins.
 TestPlanCacheConcurrent flaked once (Len()=0) -- reproduced on the UNMODIFIED
 baseline worktree, pre-existing, needs its own look.
 
-Results (warm medians / alloc profiles, 143e9ae baseline -> post-round):
-Q18 4266ms/28.5M -> ~3805ms/2.0M; Q6 1315ms/22.1M -> ~780ms/3.5M; IC9 6325ms/10.3M ->
-~3954ms/9.2k; CR1 2227ms/4.9M -> ~175ms; IC5 3296ms/3.4M -> ~3190ms/0.67M; Q1 629ms/3.9M
--> ~537ms/1.2k; IC3 751ms/4.7M -> ~678ms; Q12 1817ms/3.3M -> ~1532ms/3.1M. (Emission
-tables below after the full 49-query run.)
+Results from the full 49-query emission at 56ce1a9 (49/49 MATCH; top 12 by baseline
+allocs):
+
+| query | allocs 143e9ae | allocs 56ce1a9 | ms before | ms after |
+|---|---:|---:|---:|---:|
+| BI/Q18 | 28,517,896 | 1,980,271 | 4266.25 | 3737.67 |
+| BI/Q6 | 22,097,949 | 3,519,610 | 1314.86 | 868.04 |
+| IC/IC9 | 10,275,687 | 9,228 | 6324.68 | 3817.77 |
+| FinBench/CR1 | 4,945,885 | 2,951,396 | 2226.65 | 171.44 |
+| IC/IC3 | 4,687,976 | 4,252,190 | 750.53 | 652.38 |
+| BI/Q1 | 3,932,766 | 1,195 | 628.56 | 559.31 |
+| IC/IC5 | 3,425,713 | 645,773 | 3296.13 | 3078.65 |
+| BI/Q12 | 3,268,572 | 3,091,197 | 1816.76 | 1582.75 |
+| IC/IC10 | 1,646,430 | 2,611 | 422.55 | 290.80 |
+| IC/IC2 | 1,264,326 | 416 | 532.29 | 348.39 |
+| BI/Q2 | 572,288 | 12,305 | 124.43 | 124.86 |
+| BI/Q11 | 488,844 | 30,688 | 159.26 | 138.83 |
+
+gql suite: 87,056,543 -> 17,455,156 allocs (80% reduction); summed warm medians
+22335ms -> 15724ms (30% faster). v0.5.0 tagged (value.SameBacking is a public
+gql/value addition).
+
+### Round 5 candidates (next session: profile first, don't trust this ranking)
+
+Remaining top allocators after round 4: IC3 4.25M, Q6 3.5M, Q12 3.1M, CR1 2.95M,
+Q18 2.0M. Known threads to pull, in rough order:
+
+1. Per-query -memprofile the five above (`go run ./cmd/gqlbench -manifest
+   ~/rustychickpeas-ldbc/viz/data/gql_variants.tsv -only IC3 -runs 1 -memprofile
+   /tmp/x.allocs -out /tmp/a -plans-out /tmp/b -profiles-out /tmp/c`, then
+   `go tool pprof -sample_index=alloc_objects -top <binary> /tmp/x.allocs`;
+   ignore load-phase rows: computeInToOutFromCSR, rcpg.*, ReadRCPG).
+   Last combined profile's non-load leaders: value.AppendKey growth in
+   DISTINCT-agg seen-set inserts (inherent unless keys go comparable),
+   eval.extendRow / evalScalarFunc / evalListComp / applyRange (interpreted
+   eval per-call slices), exec.varReach (per-call BFS state -- shape-cache
+   like the eval subqueries), value.List in var-expand RelSlot binding.
+2. Deferred streaming pieces: bounded top-k heap for ORDER BY+LIMIT terminals,
+   LIMIT early-abort (sink push returning bool), UNION branch streaming.
+3. Native side (round 2 leftovers): result-row [][]any boxing via flat
+   chickpeas.Value arena rows (native kernels only, internal/ldbc surface);
+   SPB a13 1.0M / a5 218k row-proportional.
+4. TestPlanCacheConcurrent flake (Len()=0, pre-existing at a252f48) -- diagnose
+   separately before it muddies a future round's gate.
 
 ### Next round (open)
 
