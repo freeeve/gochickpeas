@@ -14,87 +14,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"time"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/internal/ldbc"
 )
-
-// record is one emitted timing row in the suite's shared JSONL schema.
-type record struct {
-	Family         string     `json:"family"`
-	Query          string     `json:"query"`
-	Variant        string     `json:"variant"`
-	Engine         string     `json:"engine"`
-	Warmth         string     `json:"warmth"`
-	Ms             float64    `json:"ms"`
-	Rows           int        `json:"rows"`
-	SF             int        `json:"sf"`
-	Shape          string     `json:"shape"`
-	Parity         string     `json:"parity"`
-	EngineCommit   string     `json:"engineCommit"`
-	EngineDate     string     `json:"engineDate"`
-	EngineDateTime string     `json:"engineDateTime"`
-	EngineSubject  string     `json:"engineSubject"`
-	LdbcCommit     *string    `json:"ldbcCommit"`
-	LdbcDate       *string    `json:"ldbcDate"`
-	LdbcDirty      bool       `json:"ldbcDirty"`
-	MeasuredDate   string     `json:"measuredDate"`
-	Source         string     `json:"source"`
-	MsMin          float64    `json:"msMin"`
-	MsP25          float64    `json:"msP25"`
-	MsP75          float64    `json:"msP75"`
-	MsN            int        `json:"msN"`
-	Meta           recordMeta `json:"meta"`
-}
-
-// recordMeta self-describes the point: which port, at what core
-// conformance level, against which fixture core commit.
-type recordMeta struct {
-	Port            string `json:"port"`
-	CoreConformance string `json:"coreConformance"`
-	CoreCommit      string `json:"coreCommit"`
-	GoVersion       string `json:"goVersion"`
-	Nodes           uint32 `json:"nodes"`
-	Rels            uint64 `json:"rels"`
-}
-
-// gitStamp is the emitting repo's HEAD identity -- gochickpeas points
-// plot on this repo's own commit timeline.
-type gitStamp struct {
-	commit, date, dateTime, subject string
-}
-
-func headStamp() (gitStamp, error) {
-	out, err := exec.Command("git", "log", "-1", "--format=%H%x00%cs%x00%cI%x00%s").Output()
-	if err != nil {
-		return gitStamp{}, fmt.Errorf("git log: %w", err)
-	}
-	parts := strings.Split(strings.TrimRight(string(out), "\n"), "\x00")
-	if len(parts) != 4 {
-		return gitStamp{}, fmt.Errorf("git log returned %d fields, want 4", len(parts))
-	}
-	return gitStamp{commit: parts[0][:7], date: parts[1], dateTime: parts[2], subject: parts[3]}, nil
-}
-
-// percentile linearly interpolates over an ascending-sorted sample.
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 1 {
-		return sorted[0]
-	}
-	pos := p * float64(len(sorted)-1)
-	lo := int(pos)
-	frac := pos - float64(lo)
-	if lo+1 >= len(sorted) {
-		return sorted[len(sorted)-1]
-	}
-	return sorted[lo]*(1-frac) + sorted[lo+1]*frac
-}
 
 // verifyStructural mirrors TestLDBCStructural's checks as an emit gate.
 func verifyStructural(g *chickpeas.Snapshot, s *ldbc.Structural) error {
@@ -139,7 +66,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	stamp, err := headStamp()
+	stamp, err := ldbc.HeadStamp()
 	if err != nil {
 		return err
 	}
@@ -204,28 +131,28 @@ func run() error {
 			samples[i] = float64(time.Since(t0).Microseconds()) / 1000.0
 		}
 		slices.Sort(samples)
-		rec := record{
+		rec := ldbc.Record{
 			Family:         "native",
 			Query:          c.kernel.Name,
 			Variant:        "committed",
 			Engine:         "gochickpeas (go)",
 			Warmth:         "warm",
-			Ms:             percentile(samples, 0.5),
+			Ms:             ldbc.Percentile(samples, 0.5),
 			Rows:           c.rows,
 			SF:             1,
 			Shape:          "native kernel",
 			Parity:         "MATCH",
-			EngineCommit:   stamp.commit,
-			EngineDate:     stamp.date,
-			EngineDateTime: stamp.dateTime,
-			EngineSubject:  stamp.subject,
+			EngineCommit:   stamp.Commit,
+			EngineDate:     stamp.Date,
+			EngineDateTime: stamp.DateTime,
+			EngineSubject:  stamp.Subject,
 			MeasuredDate:   time.Now().UTC().Format("2006-01-02"),
 			Source:         "emitted",
 			MsMin:          samples[0],
-			MsP25:          percentile(samples, 0.25),
-			MsP75:          percentile(samples, 0.75),
+			MsP25:          ldbc.Percentile(samples, 0.25),
+			MsP75:          ldbc.Percentile(samples, 0.75),
 			MsN:            len(samples),
-			Meta: recordMeta{
+			Meta: ldbc.Meta{
 				Port:            "gochickpeas",
 				CoreConformance: *conformance,
 				CoreCommit:      exp.Meta.CoreCommit,
@@ -240,7 +167,7 @@ func run() error {
 		fmt.Printf("%-28s %10.3f ms  (min %.3f, p25 %.3f, p75 %.3f, n=%d)\n",
 			c.kernel.Name, rec.Ms, rec.MsMin, rec.MsP25, rec.MsP75, rec.MsN)
 	}
-	fmt.Printf("emitted %d records to %s at %s\n", len(kernels), *out, stamp.commit)
+	fmt.Printf("emitted %d records to %s at %s\n", len(kernels), *out, stamp.Commit)
 	return nil
 }
 

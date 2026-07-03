@@ -332,7 +332,7 @@ func extractAgg(expr ast.Expr, outIdx int) (AggCol, error) {
 		kind = AggMin
 	case "max":
 		kind = AggMax
-	case "collect":
+	case "collect", "collect_list":
 		kind = AggCollect
 	default:
 		return AggCol{}, planErrf("aggregate function `%s` is not supported (Tier 1)", f.Name)

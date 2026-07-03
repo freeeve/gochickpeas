@@ -14,7 +14,7 @@ import (
 // aggNames are the aggregate functions the engine recognises. Execution
 // support is a subset (see plan/exec); collect binds but may be rejected
 // at planning.
-var aggNames = []string{"count", "sum", "avg", "min", "max", "collect"}
+var aggNames = []string{"count", "sum", "avg", "min", "max", "collect", "collect_list"}
 
 // IsAggName reports whether name is an aggregate function
 // (case-insensitive).

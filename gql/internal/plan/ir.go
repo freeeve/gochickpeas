@@ -89,6 +89,9 @@ type BindOp struct {
 	RelPred        *RelHopPred
 	MonoHop        *MonoHopSpec
 	DedupEndpoints bool
+	// Acyclic forbids repeated nodes within the expansion (the ACYCLIC
+	// path mode); the default trail semantics forbids repeated rels only.
+	Acyclic bool
 }
 
 // RelHopPred is a per-hop relationship predicate lifted from

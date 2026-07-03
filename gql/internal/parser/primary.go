@@ -79,6 +79,10 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 		if p.peekAt(1).Kind == TokLParen && p.peekAt(2).Kind == TokIdent && kwIs(p.peekAt(3), "in") {
 			return p.parseListPred(kw)
 		}
+	case "cast":
+		if p.peekAt(1).Kind == TokLParen {
+			return p.parseCast()
+		}
 	case "reduce":
 		return nil, errf(t.Pos, "reduce(...) is not in the GQL subset")
 	case "shortestpath", "allshortestpaths", "weightedshortestpath":
@@ -98,10 +102,16 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 	return &ast.Var{Name: t.Text}, nil
 }
 
-// parseListLit parses a list literal, rejecting comprehension syntax with
-// a targeted error (a WHERE or '|' after the first element).
+// parseListLit parses a list literal, or a list comprehension
+// [x IN xs [WHERE pred] [| map]] -- an extension with no ISO GQL
+// spelling, matching the Rust grammar's ordered choice: a leading
+// `ident IN` always opens a comprehension (parenthesize a membership
+// test to keep it a literal element).
 func (p *parser) parseListLit() (ast.Expr, error) {
 	p.i++ // '['
+	if t := p.peek(); t.Kind == TokIdent && !reserved[strings.ToLower(t.Text)] && kwIs(p.peekAt(1), "in") {
+		return p.parseListComp()
+	}
 	list := &ast.ListExpr{}
 	for p.peek().Kind != TokRBracket {
 		e, err := p.parseExpr()
@@ -109,7 +119,7 @@ func (p *parser) parseListLit() (ast.Expr, error) {
 			return nil, err
 		}
 		if p.peekKw("where") || p.peek().Kind == TokPipe {
-			return nil, errf(p.peek().Pos, "list/pattern comprehensions are not in the GQL subset")
+			return nil, errf(p.peek().Pos, "pattern comprehensions are not in the GQL subset")
 		}
 		list.Elems = append(list.Elems, e)
 		if !p.acceptTok(TokComma) {
@@ -120,6 +130,75 @@ func (p *parser) parseListLit() (ast.Expr, error) {
 		return nil, err
 	}
 	return list, nil
+}
+
+// parseListComp parses the comprehension body after '[': var IN list
+// [WHERE pred] ['|' map] ']'.
+func (p *parser) parseListComp() (ast.Expr, error) {
+	name, err := p.identName("a comprehension variable")
+	if err != nil {
+		return nil, err
+	}
+	if kerr := p.expectKw("in"); kerr != nil {
+		return nil, kerr
+	}
+	list, lerr := p.parseExpr()
+	if lerr != nil {
+		return nil, lerr
+	}
+	lc := &ast.ListComp{Var: name, List: list}
+	if p.acceptKw("where") {
+		f, ferr := p.parseExpr()
+		if ferr != nil {
+			return nil, ferr
+		}
+		lc.Filter = f
+	}
+	if p.acceptTok(TokPipe) {
+		m, merr := p.parseExpr()
+		if merr != nil {
+			return nil, merr
+		}
+		lc.Map = m
+	}
+	if _, err := p.expect(TokRBracket, "']' closing a comprehension"); err != nil {
+		return nil, err
+	}
+	return lc, nil
+}
+
+// parseCast parses CAST(expr AS TYPE) -- the GQL cast spelling, lowered
+// to the matching conversion function.
+func (p *parser) parseCast() (ast.Expr, error) {
+	p.i += 2 // 'cast' '('
+	e, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if kerr := p.expectKw("as"); kerr != nil {
+		return nil, kerr
+	}
+	t, terr := p.expect(TokIdent, "a CAST target type")
+	if terr != nil {
+		return nil, terr
+	}
+	var fn string
+	switch strings.ToLower(t.Text) {
+	case "float", "double":
+		fn = "tofloat"
+	case "int", "integer", "bigint":
+		fn = "tointeger"
+	case "string", "varchar":
+		fn = "tostring"
+	case "bool", "boolean":
+		fn = "toboolean"
+	default:
+		return nil, errf(t.Pos, "CAST target %q is not supported (FLOAT, INTEGER, STRING, BOOLEAN)", t.Text)
+	}
+	if _, err := p.expect(TokRParen, "')' closing the CAST"); err != nil {
+		return nil, err
+	}
+	return &ast.Func{Name: fn, Args: []ast.Expr{e}}, nil
 }
 
 // parseMapLit parses {key: expr, ...} in expression position.
@@ -191,15 +270,14 @@ func (p *parser) parseCase() (ast.Expr, error) {
 	return c, nil
 }
 
-// parseBracedMatch parses { MATCH pattern [WHERE expr] } -- the body of
-// EXISTS / COUNT subqueries.
+// parseBracedMatch parses { [MATCH] pattern [WHERE expr] } -- the body of
+// EXISTS / COUNT subqueries. The MATCH keyword is optional (GQL's bare
+// EXISTS { <pattern> } spelling).
 func (p *parser) parseBracedMatch(what string) (*ast.Pattern, ast.Expr, error) {
 	if _, err := p.expect(TokLBrace, "'{' after "+what); err != nil {
 		return nil, nil, err
 	}
-	if err := p.expectKw("match"); err != nil {
-		return nil, nil, err
-	}
+	p.acceptKw("match")
 	pat, perr := p.parsePattern()
 	if perr != nil {
 		return nil, nil, perr

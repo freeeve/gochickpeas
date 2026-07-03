@@ -143,8 +143,26 @@ func (p *parser) parsePostfix(lhs ast.Expr) (ast.Expr, error) {
 		case kwIs(t, "is"):
 			p.i++
 			negated := p.acceptKw("not")
-			if err := p.expectKw("null"); err != nil {
-				return nil, err
+			if p.acceptKw("labeled") {
+				// IS [NOT] LABELED <labelexpr> -- the GQL spelling of the
+				// label predicate; desugars to the ':' postfix form.
+				le, lerr := p.parseLabelOr()
+				if lerr != nil {
+					return nil, lerr
+				}
+				v, isVar := lhs.(*ast.Var)
+				if !isVar {
+					return nil, errf(t.Pos, "IS LABELED must apply to a variable (e.g. n IS LABELED Comment)")
+				}
+				var e ast.Expr = &ast.HasLabelExpr{Var: v.Name, Expr: le}
+				if negated {
+					e = &ast.Unary{Op: ast.Not, Expr: e}
+				}
+				lhs = e
+				continue
+			}
+			if !p.acceptKw("null") {
+				return nil, errf(p.peek().Pos, "expected NULL or LABELED after IS")
 			}
 			lhs = &ast.IsNull{Expr: lhs, Negated: negated}
 		case t.Kind == TokLBracket:

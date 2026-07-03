@@ -64,10 +64,10 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 				if i == last {
 					w = c.Where
 				}
-				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional})
+				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional, acyclic: c.Acyclic})
 			}
 		case *ast.PathBind:
-			cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar})
+			cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar, acyclic: c.Acyclic})
 		case *ast.ShortestPath:
 			cur = append(cur, stageSpec{kind: specShortest, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar, all: c.All, weight: c.Weight})
 		case *ast.CallProc:

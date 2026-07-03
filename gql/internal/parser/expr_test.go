@@ -313,11 +313,36 @@ func TestStringsNoEscapeProcessing(t *testing.T) {
 }
 
 func TestExcludedSurfaceRejections(t *testing.T) {
-	mustErr(t, "MATCH (a) RETURN [x IN a.xs WHERE x > 1 | x] AS ys", "comprehensions are not")
-	mustErr(t, "MATCH (a) RETURN [x IN a.xs WHERE x > 1] AS ys", "comprehensions are not")
 	mustErr(t, "RETURN reduce(total = 0, x IN [1] | total + x) AS s", "reduce")
 	mustErr(t, "MATCH (p) RETURN p{.name} AS m", "map projections")
 	mustErr(t, "MATCH (p) RETURN p{.*} AS m", "map projections")
+}
+
+// TestListComprehension covers the [x IN xs [WHERE p] [| m]] extension:
+// a leading `ident IN` after '[' opens a comprehension (the Rust
+// grammar's ordered choice); all three optional-part combinations parse.
+func TestListComprehension(t *testing.T) {
+	e := retExpr(t, "MATCH (a) RETURN [x IN a.xs WHERE x > 1 | x * 2] AS ys")
+	lc, ok := e.(*ast.ListComp)
+	if !ok {
+		t.Fatalf("expected ListComp, got %#v", e)
+	}
+	if lc.Var != "x" || lc.Filter == nil || lc.Map == nil {
+		t.Fatalf("comprehension parts: %+v", lc)
+	}
+	e2 := retExpr(t, "MATCH (a) RETURN [x IN a.xs WHERE x > 1] AS ys")
+	if lc2 := e2.(*ast.ListComp); lc2.Filter == nil || lc2.Map != nil {
+		t.Fatalf("filter-only comprehension: %+v", lc2)
+	}
+	e3 := retExpr(t, "MATCH (a) RETURN [r IN rels(a) | r.ts] AS ts")
+	if lc3 := e3.(*ast.ListComp); lc3.Filter != nil || lc3.Map == nil {
+		t.Fatalf("map-only comprehension: %+v", lc3)
+	}
+	// A parenthesized membership test stays a list literal element.
+	e4 := retExpr(t, "MATCH (a) RETURN [(1 IN a.xs), 2] AS ys")
+	if _, isList := e4.(*ast.ListExpr); !isList {
+		t.Fatalf("expected list literal, got %#v", e4)
+	}
 }
 
 func TestReservedWordsRejectedAsIdents(t *testing.T) {

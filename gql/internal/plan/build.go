@@ -276,6 +276,12 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 		if err != nil {
 			return nil, err
 		}
+		if spec.acyclic && op.Kind == OpVarExpand {
+			if op.Min == 0 || op.Max == nil {
+				return nil, planErrf("ACYCLIC requires a bounded quantifier with min >= 1 -- a zero-length or unbounded pattern resolves a reachable set, not paths")
+			}
+			op.Acyclic = true
+		}
 		ops = append(ops, op)
 		prev = sn
 	}

@@ -265,3 +265,79 @@ func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
 		"MATCH (a:Msg {name: 'a'})-[:replyOf]-{1,2}(x) RETURN DISTINCT x.name AS name", "name"),
 		"b", "c", "root")
 }
+
+// pingPong is two nodes with one R edge each way -- a 2-hop trail
+// a->b->a exists (two distinct rels) but revisits a, so ACYCLIC prunes
+// it while TRAIL keeps it.
+func pingPong(t *testing.T) *chickpeas.Snapshot {
+	t.Helper()
+	b := chickpeas.NewBuilder(2, 2)
+	for _, n := range []string{"a", "b"} {
+		id, _ := b.AddNode("Msg")
+		_ = b.SetProp(id, "name", n)
+	}
+	for _, e := range [][2]chickpeas.NodeID{{0, 1}, {1, 0}} {
+		if _, err := b.AddRel(e[0], e[1], "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return b.Finalize("name")
+}
+
+// TestExistsQuantifiedHop: a quantified rel inside EXISTS/COUNT resolves
+// the reachable set (min 0 includes the anchor itself), not a single hop
+// (IC12's shape: EXISTS { (tc)-[:IS_SUBCLASS_OF]->{0,10}(:X {..}) }).
+func TestExistsQuantifiedHop(t *testing.T) {
+	g := replyForest(t)
+	// root at 0 hops, a and b at 1, c at 2 -- everything reaches root.
+	wantStrs(t, strCol(t, g,
+		"MATCH (x:Msg) WHERE EXISTS { (x)-[:replyOf]->{0,2}(:Msg {name: 'root'}) } RETURN x.name AS name", "name"),
+		"a", "b", "c", "root")
+	wantStrs(t, strCol(t, g,
+		"MATCH (x:Msg) WHERE EXISTS { (x)-[:replyOf]->{2,2}(:Msg {name: 'root'}) } RETURN x.name AS name", "name"),
+		"c")
+}
+
+// TestDurationISOString: duration('P100D') parses the ISO-8601 string
+// form and adds calendar-correctly to a zoned datetime.
+func TestDurationISOString(t *testing.T) {
+	g := replyForest(t)
+	got := intCol(t, g,
+		"RETURN (zoned_datetime('2012-06-01') + duration('P100D')).epochMillis AS ms", "ms")
+	if len(got) != 1 || got[0] != 1347148800000 {
+		t.Fatalf("2012-06-01 + P100D = %v, want 1347148800000 (2012-09-09)", got)
+	}
+	got2 := intCol(t, g,
+		"RETURN (zoned_datetime('2020-01-31') + duration('P1M'))"+
+			".epochMillis AS ms NEXT LET d = zoned_datetime(ms) RETURN d.day AS day", "day")
+	if len(got2) != 1 || got2[0] != 29 {
+		t.Fatalf("2020-01-31 + P1M day = %v, want 29 (clamped leap February)", got2)
+	}
+	got3 := intCol(t, g,
+		"RETURN (zoned_datetime('2012-06-01T00:00:00') + duration('PT12H30M')).epochMillis AS ms", "ms")
+	if len(got3) != 1 || got3[0] != 1338508800000+12*3_600_000+30*60_000 {
+		t.Fatalf("PT12H30M = %v", got3)
+	}
+}
+
+func TestAcyclicPathMode(t *testing.T) {
+	g := pingPong(t)
+	// Trail semantics (bare and with the no-op TRAIL prefix): the 2-hop
+	// round trip lands back on a.
+	wantStrs(t, strCol(t, g,
+		"MATCH (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"), "a")
+	wantStrs(t, strCol(t, g,
+		"MATCH TRAIL (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"), "a")
+	// ACYCLIC rejects the revisit -- both bare and path-bind positions.
+	wantStrs(t, strCol(t, g,
+		"MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"))
+	wantStrs(t, strCol(t, g,
+		"MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{1,2}(x) RETURN x.name AS name", "name"), "b")
+	wantStrs(t, strCol(t, g,
+		"MATCH p = ACYCLIC (a:Msg {name: 'a'})-[:R]->{1,2}(x) RETURN x.name AS name", "name"), "b")
+	// ACYCLIC needs bounded, min >= 1 quantifiers (reach mode has no
+	// per-path node stack).
+	if _, err := Run(g, "MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{0,}(x) RETURN x.name AS name"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("unbounded ACYCLIC: %v", err)
+	}
+}

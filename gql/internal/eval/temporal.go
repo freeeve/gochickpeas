@@ -131,6 +131,64 @@ func ParseISO(s string) (int64, bool) {
 	return millis, true
 }
 
+// ParseISODuration parses an ISO-8601 duration string (PnYnMnWnD[TnHnMnS],
+// e.g. 'P100D', 'PT12H', 'P1Y2M3DT4H5M6S') into calendar components:
+// months, days, and sub-day milliseconds. Fractional fields and a leading
+// sign are not supported; ok is false on a malformed string.
+func ParseISODuration(s string) (months, days, ms int64, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || (s[0] != 'P' && s[0] != 'p') {
+		return 0, 0, 0, false
+	}
+	inTime := false
+	num := int64(-1)
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			if num < 0 {
+				num = 0
+			}
+			num = num*10 + int64(c-'0')
+		case c == 'T' || c == 't':
+			if num >= 0 || inTime {
+				return 0, 0, 0, false
+			}
+			inTime = true
+		default:
+			if num < 0 {
+				return 0, 0, 0, false
+			}
+			switch {
+			case !inTime && (c == 'Y' || c == 'y'):
+				months += num * 12
+			case c == 'M' || c == 'm':
+				if inTime {
+					ms += num * 60_000
+				} else {
+					months += num
+				}
+			case !inTime && (c == 'W' || c == 'w'):
+				days += num * 7
+			case !inTime && (c == 'D' || c == 'd'):
+				days += num
+			case inTime && (c == 'H' || c == 'h'):
+				ms += num * 3_600_000
+			case inTime && (c == 'S' || c == 's'):
+				ms += num * 1000
+			default:
+				return 0, 0, 0, false
+			}
+			num = -1
+		}
+	}
+	// A trailing bare number (or a lone 'P'/'PT') is malformed.
+	if num >= 0 {
+		return 0, 0, 0, false
+	}
+	return months, days, ms, true
+}
+
 // Component is a temporal component accessor (.year/.month/.day/.hour/...
 // /.epochMillis) on an epoch-millis temporal; ok is false for an unknown
 // component (the caller yields Null).

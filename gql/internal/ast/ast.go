@@ -55,6 +55,10 @@ type Match struct {
 	Patterns []Pattern
 	Where    Expr // nil when absent
 	Optional bool
+	// Acyclic is the ACYCLIC path-mode prefix: no repeated node within
+	// each quantified segment. TRAIL needs no flag -- it is the engine's
+	// native traversal semantics.
+	Acyclic bool
 }
 
 // With is the projection boundary: project columns forward, then
@@ -101,6 +105,8 @@ type PathBind struct {
 	Pattern  Pattern
 	Optional bool
 	Where    Expr // nil when absent
+	// Acyclic is the ACYCLIC path-mode prefix (see Match.Acyclic).
+	Acyclic bool
 }
 
 // Unwind is GQL `FOR var IN expr`: expand a list to rows -- for each input

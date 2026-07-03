@@ -85,6 +85,7 @@ type stageSpec struct {
 	where    ast.Expr
 	optional bool
 	pathVar  string // named-path bind ("" none)
+	acyclic  bool   // ACYCLIC path mode (specMatch only)
 
 	// specShortest
 	all    bool

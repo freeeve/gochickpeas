@@ -440,3 +440,74 @@ func TestLabelExpressions(t *testing.T) {
 		t.Fatalf("grouped = %+v", p6.Start)
 	}
 }
+
+// TestCorpusSurface covers the constructs the LDBC GQL manifest added to
+// the dialect (task 012 deliverable 3): CAST, IS [NOT] LABELED, path-mode
+// prefixes, the standalone ORDER BY statement, and MATCH-less
+// EXISTS/COUNT subquery bodies.
+func TestCorpusSurface(t *testing.T) {
+	// CAST lowers to the matching conversion function.
+	e := retExpr(t, "MATCH (a) RETURN CAST(a.x AS FLOAT) AS f")
+	f, ok := e.(*ast.Func)
+	if !ok || f.Name != "tofloat" || len(f.Args) != 1 {
+		t.Fatalf("CAST float = %#v", e)
+	}
+	if g := retExpr(t, "MATCH (a) RETURN CAST(a.x AS INTEGER) AS i").(*ast.Func); g.Name != "tointeger" {
+		t.Fatalf("CAST integer = %+v", g)
+	}
+	mustErr(t, "MATCH (a) RETURN CAST(a.x AS BLOB) AS b", "CAST target")
+
+	// IS LABELED desugars to the label predicate; IS NOT LABELED negates.
+	le := retExpr(t, "MATCH (m) RETURN m IS LABELED Comment AS c")
+	if h, ok := le.(*ast.HasLabelExpr); !ok || h.Var != "m" {
+		t.Fatalf("IS LABELED = %#v", le)
+	}
+	ne := retExpr(t, "MATCH (m) RETURN m IS NOT LABELED Comment AS c")
+	if u, ok := ne.(*ast.Unary); !ok || u.Op != ast.Not {
+		t.Fatalf("IS NOT LABELED = %#v", ne)
+	}
+	mustErr(t, "MATCH (m) RETURN m IS TRUTHY AS c", "expected NULL or LABELED")
+
+	// Path modes: TRAIL is a no-op, ACYCLIC sets the flag, WALK/SIMPLE
+	// are rejected; both positions parse.
+	q := mustParse(t, "MATCH TRAIL (a)-[:R]-{1,2}(b) RETURN b")
+	if m := q.Parts[0].Clauses[0].(*ast.Match); m.Acyclic {
+		t.Fatalf("TRAIL should not set Acyclic: %+v", m)
+	}
+	q2 := mustParse(t, "MATCH p = ACYCLIC (a)-[:R]->{1,3}(b) RETURN b")
+	if pb := q2.Parts[0].Clauses[0].(*ast.PathBind); !pb.Acyclic || pb.PathVar != "p" {
+		t.Fatalf("ACYCLIC path bind = %+v", pb)
+	}
+	mustErr(t, "MATCH WALK (a)-[:R]-{1,2}(b) RETURN b", "WALK path mode")
+	mustErr(t, "MATCH SIMPLE (a)-[:R]-{1,2}(b) RETURN b", "SIMPLE path mode")
+
+	// Standalone ORDER BY [LIMIT] lowers to a star projection boundary.
+	q3 := mustParse(t, "MATCH (a:L) RETURN a NEXT ORDER BY a.x DESC LIMIT 1 MATCH (a)-[:R]->(b) RETURN b")
+	w, ok := q3.Parts[0].Clauses[2].(*ast.With)
+	if !ok || !w.Proj.Star || len(w.Proj.OrderBy) != 1 || !w.Proj.OrderBy[0].Desc || w.Proj.Limit == nil {
+		t.Fatalf("standalone ORDER BY = %#v", q3.Parts[0].Clauses[2])
+	}
+
+	// EXISTS / COUNT subqueries accept a bare pattern body.
+	be := retExpr(t, "MATCH (f) RETURN NOT EXISTS { (f)-[:R]->(:City) } AS c")
+	if u, ok := be.(*ast.Unary); !ok || u.Op != ast.Not {
+		t.Fatalf("bare EXISTS = %#v", be)
+	}
+	ce := retExpr(t, "MATCH (f) RETURN COUNT { (f)-[:R]->(:City) } AS c")
+	if _, ok := ce.(*ast.CountSub); !ok {
+		t.Fatalf("bare COUNT = %#v", ce)
+	}
+
+	// zoned_datetime / collect_list spellings parse as calls.
+	q4 := mustParse(t, "MATCH (m) FILTER m.d < zoned_datetime('2011-12-01') RETURN collect_list(DISTINCT m.x) AS xs")
+	if agg := q4.Parts[0].Ret.Items[0].Expr.(*ast.Func); agg.Name != "collect_list" || !agg.Distinct {
+		t.Fatalf("collect_list = %+v", agg)
+	}
+
+	// A bare NEXT between statements is a no-op separator (the binding
+	// table flows forward); RETURN ... NEXT stays the projecting boundary.
+	q5 := mustParse(t, "MATCH (a) LET x = a.v NEXT MATCH (a)-[:R]->(b) RETURN b")
+	if n := len(q5.Parts[0].Clauses); n != 3 {
+		t.Fatalf("bare NEXT should not add a clause: %d clauses", n)
+	}
+}

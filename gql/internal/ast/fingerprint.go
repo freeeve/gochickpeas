@@ -40,6 +40,9 @@ func fpClause(b *strings.Builder, c Clause) {
 		if n.Optional {
 			b.WriteByte('?')
 		}
+		if n.Acyclic {
+			b.WriteByte('a')
+		}
 		for i := range n.Patterns {
 			fpPattern(b, &n.Patterns[i])
 		}
@@ -82,6 +85,9 @@ func fpClause(b *strings.Builder, c Clause) {
 		b.WriteString(";PB")
 		if n.Optional {
 			b.WriteByte('?')
+		}
+		if n.Acyclic {
+			b.WriteByte('a')
 		}
 		b.WriteString(strconv.Quote(n.PathVar))
 		fpPattern(b, &n.Pattern)

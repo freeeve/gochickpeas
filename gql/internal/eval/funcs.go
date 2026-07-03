@@ -52,7 +52,7 @@ func ResolveFuncOp(name string) (FuncOp, bool) {
 	switch strings.ToLower(name) {
 	case "date":
 		return FuncDate, true
-	case "datetime":
+	case "datetime", "zoned_datetime":
 		return FuncDateTime, true
 	case "localdatetime":
 		return FuncLocalDateTime, true
@@ -167,6 +167,11 @@ func ApplyFunc(op FuncOp, argv []value.Value) value.Value {
 	case FuncDuration:
 		if m, ok := arg(argv, 0).AsMap(); ok {
 			return buildDuration(m)
+		}
+		if s, ok := arg(argv, 0).AsStr(); ok {
+			if months, days, ms, ok := ParseISODuration(s); ok {
+				return value.Duration(months, days, ms)
+			}
 		}
 		return value.Null()
 	case FuncID:

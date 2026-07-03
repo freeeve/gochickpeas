@@ -47,11 +47,13 @@ loosely (`<-` is `<` `-`), so `< -[...]-` parses like `<-[...]-`
 ```
 query        = ['EXPLAIN' | 'PROFILE'] part ('UNION' ['ALL'] part)*
 part         = statement* return
-statement    = match | filter | let | for | call | boundary
+statement    = match | filter | let | for | call | orderby | boundary
 boundary     = return 'NEXT'                -- projection boundary between segments
 return       = 'RETURN' ['DISTINCT'] item (',' item)*
                ['ORDER' 'BY' sort (',' sort)*] [('OFFSET'|'SKIP') integer]
                ['LIMIT' integer]
+orderby      = 'ORDER' 'BY' sort (',' sort)* [('OFFSET'|'SKIP') integer]
+               ['LIMIT' integer]             -- sort/cut the binding table
 item         = '*' | expr ['AS' ident]
 sort         = expr ['ASC' | 'DESC']
 ```
@@ -60,8 +62,11 @@ sort         = expr ['ASC' | 'DESC']
 - `RETURN ... NEXT` composes multi-part queries (GQL linear composition);
   it is exactly Cypher's `WITH`. `WITH` itself is rejected **[cypher]**.
 - `OFFSET` is the GQL keyword; `SKIP` is accepted as a synonym.
-- `ORDER BY` / `OFFSET` / `LIMIT` attach to a `RETURN` only -- GQL's
-  standalone ordering statement is not supported **[restriction]**.
+- The standalone `ORDER BY [OFFSET] [LIMIT]` statement sorts (and cuts)
+  the binding table mid-pipeline -- it lowers to a star projection
+  carrying only the ordering, the analogue of Cypher's
+  `WITH * ORDER BY ... LIMIT n`. A downstream `collect`/`collect_list`
+  aggregates rows in that order.
 - UNION combines whole linear parts; `len(union) = len(parts) - 1`.
 
 ```
@@ -76,17 +81,23 @@ for          = 'FOR' ident 'IN' expr        -- list to rows (Cypher UNWIND [cyph
 
 ```
 match        = ['OPTIONAL'] 'MATCH' body ['WHERE' expr]
-body         = pathsearch | pathbind | pattern (',' pattern)*
-pathbind     = ident '=' pattern
+body         = pathsearch | pathbind | [mode] pattern (',' pattern)*
+pathbind     = ident '=' [mode] pattern
 pathsearch   = ident '=' ('ANY' | 'ALL') 'SHORTEST' pattern
+mode         = 'TRAIL' | 'ACYCLIC'
 ```
 
 - `ANY SHORTEST` binds the single hop-minimal path; `ALL SHORTEST` emits
   one row per minimal path. These replace Cypher's `shortestPath()` /
-  `allShortestPaths()` **[cypher]**. `SHORTEST k`, path modes (`TRAIL`,
-  `ACYCLIC`, ...), and selective-search prefixes beyond ANY/ALL are not
-  supported **[restriction]** -- the engine's traversal semantics is TRAIL
-  (no repeated relationship), matching the GQL default for these searches.
+  `allShortestPaths()` **[cypher]**. `SHORTEST k` and selective-search
+  prefixes beyond ANY/ALL are not supported **[restriction]**.
+- Path modes: the engine's traversal semantics is TRAIL (no repeated
+  relationship), so the `TRAIL` prefix is accepted as a no-op; `ACYCLIC`
+  additionally forbids repeated nodes within each quantified segment (the
+  start included) and requires a bounded quantifier with min >= 1. `WALK`
+  (ISO's repeats-allowed default) and `SIMPLE` are rejected with targeted
+  errors **[restriction]**; a path mode does not combine with ANY/ALL
+  SHORTEST (the search normalizes the mode away).
 - `weightedShortestPath` / `cost(shortestPath(...))` have no surface: the
   weighted kernels will be CALL procedures **[cypher]**.
 
@@ -154,24 +165,39 @@ Precedence, loosest to tightest (all infix left-associative):
 Primaries, with the ambiguity orderings that matter:
 
 ```
-primary      = '(' expr ')' | list | maplit | literal | param | case
-             | existssub | countsub | listpred | funccall | ident
+primary      = '(' expr ')' | list | listcomp | maplit | literal | param
+             | case | existssub | countsub | listpred | cast | funccall
+             | ident
 list         = '[' [expr (',' expr)*] ']'
+listcomp     = '[' ident 'IN' expr ['WHERE' expr] ['|' expr] ']'
 maplit       = '{' [ident ':' expr (',' ident ':' expr)*] '}'
 case         = 'CASE' [expr] ('WHEN' expr 'THEN' expr)+ ['ELSE' expr] 'END'
-existssub    = 'EXISTS' '{' 'MATCH' pattern ['WHERE' expr] '}'
-countsub     = 'COUNT'  '{' 'MATCH' pattern ['WHERE' expr] '}'
+existssub    = 'EXISTS' '{' ['MATCH'] pattern ['WHERE' expr] '}'
+countsub     = 'COUNT'  '{' ['MATCH'] pattern ['WHERE' expr] '}'
 listpred     = ('all'|'any'|'none'|'single') '(' ident 'IN' expr 'WHERE' expr ')'
+cast         = 'CAST' '(' expr 'AS' typename ')'
 funccall     = ident '(' ['DISTINCT'] ('*' | expr (',' expr)*) ')'
 literal      = integer | float | string | 'true' | 'false' | 'null'
 ```
 
 - `COUNT { ... }` (brace) is the counting subquery; `count(...)` (paren)
-  stays the aggregate. Same trick as the Rust grammar.
+  stays the aggregate. Same trick as the Rust grammar. The `MATCH`
+  keyword inside either subquery body is optional (GQL's bare
+  `EXISTS { <pattern> }` spelling).
 - A quantifier name followed by `( ident IN` is a list predicate;
   otherwise it is an ordinary function call.
-- The label predicate `:` applies only to a variable (`n:Comment`).
-- `EXISTS { <pattern> }` without `MATCH` is not accepted **[restriction]**.
+- The label predicate `:` applies only to a variable (`n:Comment`);
+  `x IS [NOT] LABELED <labelexpr>` is the GQL spelling of the same
+  predicate (postfix, desugared to it).
+- List comprehensions `[x IN xs [WHERE p] [| m]]` are an extension with
+  no ISO spelling **[extension]**: a leading `ident IN` after `[` always
+  opens a comprehension (the Rust grammar's ordered choice); parenthesize
+  a membership test to keep it a literal element. Pattern comprehensions
+  stay rejected.
+- `CAST(expr AS FLOAT|INTEGER|STRING|BOOLEAN)` lowers to the matching
+  conversion function (`toFloat` etc.); other target types are rejected.
+- `zoned_datetime` is a synonym of `datetime`, and `collect_list` of the
+  `collect` aggregate (the GQL-flavored spellings the LDBC corpus uses).
 
 ## Excluded surface (engine Expr nodes exist; parser rejects)
 
@@ -181,8 +207,7 @@ unchanged, and adding syntax later is parser-only work.
 
 | construct | rejection |
 |---|---|
-| list comprehension `[x IN xs WHERE p \| m]` | "comprehensions are not in the GQL subset" |
-| pattern comprehension `[(a)-[]->(b) \| e]` | same (detected at the `WHERE`/`\|`) |
+| pattern comprehension `[(a)-[]->(b) \| e]` | detected at the `WHERE`/`\|` |
 | `reduce(acc = init, x IN xs \| e)` | targeted error |
 | map projection `n{.key, .*}` | targeted error ('{' postfix) |
 | bare pattern predicate in WHERE | write `EXISTS { MATCH ... }` |
@@ -197,8 +222,9 @@ unchanged, and adding syntax later is parser-only work.
   by that quote.
 - No comments, no session/catalog/transaction statements, no write
   statements (reserved keywords give the read-only error).
-- Only linear path patterns (no parenthesized path patterns, path modes,
-  or graph-pattern `WHERE` inside the pattern).
+- Only linear path patterns (no parenthesized path patterns or
+  graph-pattern `WHERE` inside the pattern; path modes are limited to
+  TRAIL/ACYCLIC prefixes).
 - `GROUP BY` is implicit (Cypher-style, by the non-aggregate projection
   keys); the explicit GQL `GROUP BY` clause is not accepted
   **[restriction]** -- revisit if the corpus needs it.

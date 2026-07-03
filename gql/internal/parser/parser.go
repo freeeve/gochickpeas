@@ -172,6 +172,16 @@ func (p *parser) parsePart() (*ast.QueryPart, error) {
 				return nil, err
 			}
 			part.Clauses = append(part.Clauses, c)
+		case "order":
+			// Standalone ORDER BY [OFFSET] [LIMIT]: sort (and cut) the
+			// binding table mid-pipeline -- a star projection carrying
+			// only the ordering, the GQL analogue of Cypher's
+			// `WITH * ORDER BY ... LIMIT n`.
+			proj := ast.Projection{Star: true}
+			if err := p.parseProjectionTail(&proj); err != nil {
+				return nil, err
+			}
+			part.Clauses = append(part.Clauses, &ast.With{Proj: proj})
 		case "return":
 			p.i++
 			proj, err := p.parseProjection()
@@ -184,12 +194,18 @@ func (p *parser) parsePart() (*ast.QueryPart, error) {
 			}
 			part.Ret = *proj
 			return part, nil
+		case "next":
+			// A bare NEXT between statements is the ISO statement
+			// separator: the binding table flows forward unchanged, so
+			// it is a no-op here (RETURN ... NEXT is the projecting
+			// boundary).
+			p.i++
 		case "with":
 			return nil, errf(t.Pos, "WITH is not GQL: use RETURN ... NEXT (projection boundary), LET (bindings), or FILTER (predicate)")
 		case "unwind":
 			return nil, errf(t.Pos, "UNWIND is not GQL: use FOR x IN <list>")
 		default:
-			return nil, errf(t.Pos, "expected a statement (MATCH, FILTER, LET, FOR, CALL, RETURN), found %q", t.Text)
+			return nil, errf(t.Pos, "expected a statement (MATCH, FILTER, LET, FOR, CALL, ORDER BY, RETURN), found %q", t.Text)
 		}
 	}
 }
@@ -245,9 +261,10 @@ func (p *parser) acceptTok(kind TokKind) bool {
 	return false
 }
 
-// parseMatch is: [OPTIONAL] MATCH <body> [WHERE expr]. The body is either
-// comma-separated patterns, a path bind `p = <pattern>`, or a path search
-// `p = ANY|ALL SHORTEST <pattern>`.
+// parseMatch is: [OPTIONAL] MATCH [mode] <body> [WHERE expr]. The body is
+// either comma-separated patterns, a path bind `p = [mode] <pattern>`, or
+// a path search `p = ANY|ALL SHORTEST <pattern>`; mode is a path-mode
+// prefix (TRAIL / ACYCLIC -- see parsePathMode).
 func (p *parser) parseMatch() (ast.Clause, error) {
 	optional := p.acceptKw("optional")
 	if err := p.expectKw("match"); err != nil {
@@ -257,6 +274,10 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 	if p.peek().Kind == TokIdent && !reserved[strings.ToLower(p.peek().Text)] && p.peekAt(1).Kind == TokEq {
 		pathVar, _ := p.identName("a path variable")
 		p.i++ // '='
+		acyclic, merr := p.parsePathMode()
+		if merr != nil {
+			return nil, merr
+		}
 		all := false
 		search := false
 		switch {
@@ -271,6 +292,9 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		case p.peekKw("shortestpath"), p.peekKw("allshortestpaths"), p.peekKw("weightedshortestpath"):
 			return nil, errf(p.peek().Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern>", p.peek().Text)
 		}
+		if acyclic && search {
+			return nil, errf(p.peek().Pos, "a path mode does not combine with ANY/ALL SHORTEST (the search normalizes the mode away)")
+		}
 		pat, err := p.parsePattern()
 		if err != nil {
 			return nil, err
@@ -282,7 +306,11 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		if search {
 			return &ast.ShortestPath{PathVar: pathVar, Pattern: *pat, Optional: optional, All: all, Where: where}, nil
 		}
-		return &ast.PathBind{PathVar: pathVar, Pattern: *pat, Optional: optional, Where: where}, nil
+		return &ast.PathBind{PathVar: pathVar, Pattern: *pat, Optional: optional, Where: where, Acyclic: acyclic}, nil
+	}
+	acyclic, merr := p.parsePathMode()
+	if merr != nil {
+		return nil, merr
 	}
 	var patterns []ast.Pattern
 	for {
@@ -299,7 +327,31 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 	if werr != nil {
 		return nil, werr
 	}
-	return &ast.Match{Patterns: patterns, Where: where, Optional: optional}, nil
+	return &ast.Match{Patterns: patterns, Where: where, Optional: optional, Acyclic: acyclic}, nil
+}
+
+// parsePathMode consumes an optional path-mode prefix. TRAIL is accepted
+// as a no-op -- relationship-unique traversal is the engine's native
+// semantics; ACYCLIC additionally forbids repeated nodes within each
+// quantified segment. WALK (repeats allowed) and SIMPLE are rejected with
+// targeted errors.
+func (p *parser) parsePathMode() (acyclic bool, err error) {
+	t := p.peek()
+	if t.Kind != TokIdent {
+		return false, nil
+	}
+	switch strings.ToLower(t.Text) {
+	case "trail":
+		p.i++
+	case "acyclic":
+		p.i++
+		return true, nil
+	case "walk":
+		return false, errf(t.Pos, "the WALK path mode is not supported: traversal is TRAIL (no repeated relationship)")
+	case "simple":
+		return false, errf(t.Pos, "the SIMPLE path mode is not supported (TRAIL and ACYCLIC are)")
+	}
+	return false, nil
 }
 
 // parseOptionalWhere parses a trailing WHERE expr if present.
@@ -337,14 +389,24 @@ func (p *parser) parseProjection() (*ast.Projection, error) {
 			break
 		}
 	}
+	if err := p.parseProjectionTail(proj); err != nil {
+		return nil, err
+	}
+	return proj, nil
+}
+
+// parseProjectionTail parses the optional ORDER BY / OFFSET / LIMIT
+// suffix into proj -- shared by RETURN and the standalone ORDER BY
+// statement (which sorts the binding table mid-pipeline).
+func (p *parser) parseProjectionTail(proj *ast.Projection) error {
 	if p.acceptKw("order") {
 		if err := p.expectKw("by"); err != nil {
-			return nil, err
+			return err
 		}
 		for {
 			e, err := p.parseExpr()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			item := ast.SortItem{Expr: e}
 			if p.acceptKw("desc") {
@@ -361,18 +423,18 @@ func (p *parser) parseProjection() (*ast.Projection, error) {
 	if p.acceptKw("offset") || p.acceptKw("skip") {
 		n, err := p.parseCount("OFFSET")
 		if err != nil {
-			return nil, err
+			return err
 		}
 		proj.Skip = &n
 	}
 	if p.acceptKw("limit") {
 		n, err := p.parseCount("LIMIT")
 		if err != nil {
-			return nil, err
+			return err
 		}
 		proj.Limit = &n
 	}
-	return proj, nil
+	return nil
 }
 
 // parseCount reads a non-negative integer argument of OFFSET/LIMIT.

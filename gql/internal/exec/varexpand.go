@@ -81,6 +81,9 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 		max:         *op.Max,
 		cand:        cand, relData: relData, relRanges: relRanges,
 	}
+	if op.Acyclic {
+		w.visited = append(w.visited, start)
+	}
 	if op.MonoHop != nil {
 		scope := map[string]int{"__r": 0}
 		w.mono = &monoFilter{
@@ -167,7 +170,10 @@ type varWalk struct {
 
 	pathRels []uint32
 	used     [][2]graph.NodeID
-	scratch  [][]nodePos
+	// visited is the ACYCLIC mode's node stack (seeded with the start
+	// node); empty means trail semantics (rel uniqueness only).
+	visited []graph.NodeID
+	scratch [][]nodePos
 
 	cand      *[]graph.NodeID
 	relData   *[]uint32
@@ -216,7 +222,15 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bo
 		if containsEdge(w.used, edge) {
 			continue
 		}
+		// ACYCLIC additionally rejects a hop that revisits any node on
+		// this path (the start included).
+		if w.op.Acyclic && containsNode(w.visited, nb) {
+			continue
+		}
 		w.used = append(w.used, edge)
+		if w.op.Acyclic {
+			w.visited = append(w.visited, nb)
+		}
 		// Monotonic pruning: the hop's key must strictly continue the
 		// order vs the previous hop, else this trail can't satisfy it.
 		curVal, haveCur := prevVal, havePrev
@@ -243,8 +257,22 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bo
 		if w.collectRels {
 			w.pathRels = w.pathRels[:len(w.pathRels)-1]
 		}
+		if w.op.Acyclic {
+			w.visited = w.visited[:len(w.visited)-1]
+		}
 		w.used = w.used[:len(w.used)-1]
 	}
+}
+
+// containsNode is the acyclic stack's membership test -- same short
+// linear scan rationale as containsEdge.
+func containsNode(visited []graph.NodeID, n graph.NodeID) bool {
+	for _, v := range visited {
+		if v == n {
+			return true
+		}
+	}
+	return false
 }
 
 // containsEdge is the trail stack's membership test -- a short linear scan

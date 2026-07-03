@@ -182,9 +182,18 @@ func (f *subqueryFrame) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 			}
 			bound, isBound = b, true
 		}
-		for nid := range existsNeighbors(ctx, fromID, rel) {
+		keep := func(nid graph.NodeID) {
 			if (!isBound || bound == nid) && NodeMatches(ctx, nid, node.Labels, node.Props) {
 				candidates = append(candidates, nid)
+			}
+		}
+		if rel.Length != nil {
+			for _, nid := range existsReach(ctx, fromID, rel) {
+				keep(nid)
+			}
+		} else {
+			for nid := range existsNeighbors(ctx, fromID, rel) {
+				keep(nid)
 			}
 		}
 	}
@@ -229,4 +238,48 @@ func existsNeighbors(ctx *Ctx, from graph.NodeID, rel *ast.RelPat) func(func(gra
 		return ctx.G.Neighbors(from, dir)
 	}
 	return ctx.G.NeighborsByType(from, dir, rel.Types)
+}
+
+// existsReach is a quantified hop's candidate set inside a subquery: the
+// distinct nodes reachable in min..=max hops (dedup'd BFS; min 0 includes
+// the start, a nil max is unbounded). An existence test needs the
+// reachable set, not per-path enumeration -- the same collapse varReach
+// applies in the main pipeline.
+func existsReach(ctx *Ctx, from graph.NodeID, rel *ast.RelPat) []graph.NodeID {
+	var minHops uint64
+	if rel.Length.Min != nil {
+		minHops = *rel.Length.Min
+	}
+	maxHops := uint64(1<<63 - 1)
+	if rel.Length.Max != nil {
+		maxHops = *rel.Length.Max
+	}
+	var out []graph.NodeID
+	expanded := map[graph.NodeID]struct{}{from: {}}
+	emitted := map[graph.NodeID]struct{}{}
+	if minHops == 0 {
+		emitted[from] = struct{}{}
+		out = append(out, from)
+	}
+	frontier := []graph.NodeID{from}
+	for depth := uint64(0); len(frontier) > 0 && depth < maxHops; depth++ {
+		d := depth + 1
+		var next []graph.NodeID
+		for _, u := range frontier {
+			for nb := range existsNeighbors(ctx, u, rel) {
+				if d >= minHops {
+					if _, dup := emitted[nb]; !dup {
+						emitted[nb] = struct{}{}
+						out = append(out, nb)
+					}
+				}
+				if _, seen := expanded[nb]; !seen {
+					expanded[nb] = struct{}{}
+					next = append(next, nb)
+				}
+			}
+		}
+		frontier = next
+	}
+	return out
 }
