@@ -96,3 +96,36 @@ Suite total: 85,342,501 allocs. Rust floor: BI ~0, IC 45-61k, IC12 ~1k.
 
 Suite: 85,342,501 -> 2,267,808 allocs (97.3% reduction); summed warm medians 2156ms -> 1465ms.
 Remaining allocs are dominated by result-row [][]any boxing (per-row, matches the rust side's own per-row materialization) and kernel-local maps.
+
+### Round 3 (gql pass, commit 97cdc78) -- batch Append* on the Graph seam
+
+Root cause found for the gql side: the executor traverses through the graph.Graph
+INTERFACE, and an interface-returned iter.Seq can never devirtualize -- every expand /
+var-expand hop paid heap closures per row. Fix: seam-conformant batch methods
+(AppendNeighborsMatched / AppendNeighborsByType / AppendRelationships) filling
+caller-pooled buffers; expandCandidates filters the appended tail in place, varReach and
+varWalk.dfs reuse per-walk buffers.
+
+| gql query | allocs eb74933 | after core fixes (669e756) | after batch (97cdc78) | ms 669e756 | ms after |
+|---|---:|---:|---:|---:|---:|
+| BI/Q6 | 58,432,686 | 40,293,667 | 22,097,892 | 1387 | 1094 |
+| BI/Q18 | 29,929,298 | 28,586,884 | 28,517,896 | 4152 | (unchanged) |
+| BI/Q12 | 21,211,214 | 21,211,213 | 3,268,572 | 1979 | 1565 |
+| IC/IC5 | 14,115,179 | 14,074,932 | 3,425,714 | 3019 | ~3094 |
+| IC/IC3 | 13,182,798 | 13,152,743 | 4,687,981 | 782 | 666 |
+| IC/IC9 | 10,311,444 | 10,310,594 | 10,275,687 | 5186 | (unchanged) |
+| IC/IC6 | 3,841,509 | 3,840,657 | 155,648 | 133 | 81 |
+| IC/IC12 | 3,256,988 | 3,256,747 | 436,160 | 126 | 74 |
+
+### Next round (open)
+
+- gql Q18 / IC9 / CR1: allocations sit in eval/aggregate/projection (28.5M / 10.3M /
+  4.9M) -- profile the segment pipeline (per-row []value.Value copies in rowsrc/project,
+  aggregate group state, value boxing in date/list functions), then the deferred
+  streaming top-k/aggregate segments from [[gql-port-progress]] if profiles point there.
+- native: remaining ~2.3M suite allocs are result-row [][]any boxing (proportional to
+  emitted rows, same materialization cost the rust side pays) and kernel-local maps
+  (BI/Q18 199k, SPB a13 1.0M for 336k rows). Only worth touching with a general
+  mechanism (e.g. arena rows), not per-kernel tweaks.
+- shortest.go filteredNeighbors still uses the iter.Seq seam (low volume; convert if a
+  profile ever surfaces it).
