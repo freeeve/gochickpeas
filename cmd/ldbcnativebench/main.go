@@ -8,6 +8,11 @@
 // registered kernel skip loudly (coverage is incremental by design); a
 // DIFF fails the run.
 //
+// Alongside each timing it emits the viz artifacts of task 027: a
+// per-query allocation profile (profiles_gochickpeas.jsonl) and, per
+// MATCHed kernel, its sliced Go source (code_gochickpeas.jsonl), both in
+// the schemas the ldbc side's import_gochickpeas.sh folds (tasks/266).
+//
 //	go run ./cmd/ldbcnativebench -manifest bench-out/native_variants.tsv
 package main
 
@@ -38,6 +43,8 @@ func run() error {
 	manifest := flag.String("manifest", os.Getenv("GOCHICKPEAS_NATIVE_MANIFEST"),
 		"path to native_variants.tsv (default $GOCHICKPEAS_NATIVE_MANIFEST)")
 	out := flag.String("out", "bench-out/emitted_gochickpeas.jsonl", "append-only JSONL output")
+	codeOut := flag.String("code-out", "bench-out/code_gochickpeas.jsonl", "append-only kernel-source JSONL output")
+	profilesOut := flag.String("profiles-out", "bench-out/profiles_gochickpeas.jsonl", "append-only alloc-profile JSONL output")
 	runs := flag.Int("runs", 5, "timed runs per matched query (median emitted)")
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
@@ -65,18 +72,21 @@ func run() error {
 		return err
 	}
 
-	var f *os.File
-	var enc *json.Encoder
+	var f, pf, cf *os.File
+	var enc, profEnc, codeEnc *json.Encoder
 	if !*verifyOnly {
-		if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
-			return err
-		}
-		f, err = os.OpenFile(*out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
+		if f, enc, err = ldbc.AppendJSONL(*out); err != nil {
 			return err
 		}
 		defer f.Close()
-		enc = json.NewEncoder(f)
+		if pf, profEnc, err = ldbc.AppendJSONL(*profilesOut); err != nil {
+			return err
+		}
+		defer pf.Close()
+		if cf, codeEnc, err = ldbc.AppendJSONL(*codeOut); err != nil {
+			return err
+		}
+		defer cf.Close()
 	}
 
 	// One load per distinct graph, in first-seen manifest order.
@@ -189,6 +199,47 @@ func run() error {
 		emitted++
 		fmt.Printf("%-16s MATCH %9.3f ms  (min %.3f, p75 %.3f, n=%d, %d rows)\n",
 			id, rec.Ms, rec.MsMin, rec.MsP75, rec.MsN, len(cells))
+
+		nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { _, err := krun(); return err })
+		if err != nil {
+			return fmt.Errorf("%s (profiled run): %w", id, err)
+		}
+		if err := profEnc.Encode(ldbc.ProfileRecord{
+			Family: row.Family, Query: row.Query, Engine: "gochickpeas (go)",
+			Allocs: nAllocs, Bytes: nBytes, Rows: len(cells), Measure: ldbc.ProfileMeasure,
+			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Kernel source for every MATCHed (family, query), sliced from the
+	// embedded sources so the code shown is the code that ran.
+	codeEmitted := 0
+	if !*verifyOnly {
+		matched := map[string]bool{}
+		for _, o := range outcomes {
+			if o.status == "MATCH" {
+				matched[o.row.Family+"/"+o.row.Query] = true
+			}
+		}
+		sources, err := ldbc.NativeKernelSources()
+		if err != nil {
+			return err
+		}
+		for _, ks := range sources {
+			if !matched[ks.Family+"/"+ks.Query] {
+				continue
+			}
+			if err := codeEnc.Encode(ldbc.CodeRecord{
+				Family: ks.Family, Query: ks.Query, Engine: "gochickpeas (go)", Lang: "go",
+				Source: ks.Source, SrcRef: ks.SrcRef,
+				EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+			}); err != nil {
+				return err
+			}
+			codeEmitted++
+		}
 	}
 
 	match, diff, skip := 0, 0, 0
@@ -202,8 +253,8 @@ func run() error {
 			skip++
 		}
 	}
-	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d records emitted at %s\n",
-		match, len(outcomes), diff, skip, emitted, stamp.Commit)
+	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d timing+profile pairs, %d source records emitted at %s\n",
+		match, len(outcomes), diff, skip, emitted, codeEmitted, stamp.Commit)
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
 	}

@@ -8,6 +8,11 @@
 // reference emit unvalidated with an empty parity field, matching the
 // rcp-native harness.
 //
+// Alongside each timing it emits the viz artifacts of task 027: a
+// per-algorithm allocation profile (profiles_gochickpeas.jsonl) and the
+// algorithm's sliced Go source (code_gochickpeas.jsonl), in the schemas
+// the ldbc side's import_gochickpeas.sh folds (tasks/266).
+//
 //	go run ./cmd/gabench -data ~/rustychickpeas-ldbc/data/graphalytics -datasets wiki-Talk
 package main
 
@@ -112,6 +117,8 @@ func run() error {
 		"graphalytics dataset dir (default $GOCHICKPEAS_GA_DATA)")
 	datasets := flag.String("datasets", "wiki-Talk", "comma-separated dataset names")
 	out := flag.String("out", "bench-out/emitted_gochickpeas.jsonl", "append-only JSONL output")
+	codeOut := flag.String("code-out", "bench-out/code_gochickpeas.jsonl", "append-only kernel-source JSONL output")
+	profilesOut := flag.String("profiles-out", "bench-out/profiles_gochickpeas.jsonl", "append-only alloc-profile JSONL output")
 	runs := flag.Int("runs", 3, "timed runs per validated algorithm (median emitted)")
 	verifyOnly := flag.Bool("verify-only", false, "validate only; no timings, no emission")
 	flag.Parse()
@@ -123,22 +130,26 @@ func run() error {
 		return err
 	}
 
-	var f *os.File
-	var enc *json.Encoder
+	var f, pf, cf *os.File
+	var enc, profEnc, codeEnc *json.Encoder
 	if !*verifyOnly {
-		if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
-			return err
-		}
-		f, err = os.OpenFile(*out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
+		if f, enc, err = ldbc.AppendJSONL(*out); err != nil {
 			return err
 		}
 		defer f.Close()
-		enc = json.NewEncoder(f)
+		if pf, profEnc, err = ldbc.AppendJSONL(*profilesOut); err != nil {
+			return err
+		}
+		defer pf.Close()
+		if cf, codeEnc, err = ldbc.AppendJSONL(*codeOut); err != nil {
+			return err
+		}
+		defer cf.Close()
 	}
 
 	emitted, failed := 0, 0
-	for _, name := range strings.Split(*datasets, ",") {
+	timedAlgos := map[string]bool{}
+	for name := range strings.SplitSeq(*datasets, ",") {
 		name = strings.TrimSpace(name)
 		t0 := time.Now()
 		ds, err := ldbc.LoadGADataset(*data, name)
@@ -210,11 +221,47 @@ func run() error {
 				return err
 			}
 			emitted++
+			timedAlgos[a.name] = true
 			fmt.Printf("%-24s %10.3f ms  (min %.3f, p75 %.3f, n=%d)\n",
 				id, rec.Ms, rec.MsMin, rec.MsP75, rec.MsN)
+
+			nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { a.run(); return nil })
+			if err != nil {
+				return fmt.Errorf("%s (profiled run): %w", id, err)
+			}
+			if err := profEnc.Encode(ldbc.ProfileRecord{
+				Family: "GA", Query: a.name, Engine: "gochickpeas (go)",
+				Allocs: nAllocs, Bytes: nBytes, Rows: ds.Len(), Measure: ldbc.ProfileMeasure,
+				EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+			}); err != nil {
+				return err
+			}
 		}
 	}
-	fmt.Printf("\n%d records emitted at %s\n", emitted, stamp.Commit)
+
+	// Algorithm source for every timed algorithm, sliced from the
+	// embedded sources so the code shown is the code that ran.
+	codeEmitted := 0
+	if !*verifyOnly {
+		sources, err := ldbc.GAKernelSources()
+		if err != nil {
+			return err
+		}
+		for _, ks := range sources {
+			if !timedAlgos[ks.Query] {
+				continue
+			}
+			if err := codeEnc.Encode(ldbc.CodeRecord{
+				Family: ks.Family, Query: ks.Query, Engine: "gochickpeas (go)", Lang: "go",
+				Source: ks.Source, SrcRef: ks.SrcRef,
+				EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+			}); err != nil {
+				return err
+			}
+			codeEmitted++
+		}
+	}
+	fmt.Printf("\n%d timing+profile pairs, %d source records emitted at %s\n", emitted, codeEmitted, stamp.Commit)
 	if failed > 0 {
 		return fmt.Errorf("%d algorithms failed validation", failed)
 	}

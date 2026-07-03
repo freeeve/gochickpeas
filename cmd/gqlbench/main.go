@@ -7,6 +7,11 @@
 // run yet skip loudly (coverage is incremental by design); a DIFF fails
 // the run.
 //
+// Alongside each timing it emits the viz artifacts of task 027: the
+// engine's EXPLAIN plan for the manifest text (plans_gochickpeas.jsonl)
+// and a per-query allocation profile (profiles_gochickpeas.jsonl), both
+// in the schemas the ldbc side's import_gochickpeas.sh folds (tasks/266).
+//
 //	go run ./cmd/gqlbench -manifest .../viz/data/gql_variants.tsv
 package main
 
@@ -91,6 +96,8 @@ func run() error {
 	manifest := flag.String("manifest", os.Getenv("GOCHICKPEAS_GQL_MANIFEST"),
 		"path to gql_variants.tsv (default $GOCHICKPEAS_GQL_MANIFEST)")
 	out := flag.String("out", "bench-out/emitted_gochickpeas.jsonl", "append-only JSONL output")
+	plansOut := flag.String("plans-out", "bench-out/plans_gochickpeas.jsonl", "append-only EXPLAIN-plan JSONL output")
+	profilesOut := flag.String("profiles-out", "bench-out/profiles_gochickpeas.jsonl", "append-only alloc-profile JSONL output")
 	runs := flag.Int("runs", 5, "timed runs per matched query (median emitted)")
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
@@ -119,18 +126,21 @@ func run() error {
 		return err
 	}
 
-	var f *os.File
-	var enc *json.Encoder
+	var f, plf, prf *os.File
+	var enc, planEnc, profEnc *json.Encoder
 	if !*verifyOnly {
-		if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
-			return err
-		}
-		f, err = os.OpenFile(*out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
+		if f, enc, err = ldbc.AppendJSONL(*out); err != nil {
 			return err
 		}
 		defer f.Close()
-		enc = json.NewEncoder(f)
+		if plf, planEnc, err = ldbc.AppendJSONL(*plansOut); err != nil {
+			return err
+		}
+		defer plf.Close()
+		if prf, profEnc, err = ldbc.AppendJSONL(*profilesOut); err != nil {
+			return err
+		}
+		defer prf.Close()
 	}
 
 	// One load per distinct graph, in first-seen manifest order.
@@ -242,6 +252,29 @@ func run() error {
 		emitted++
 		fmt.Printf("%-16s MATCH %9.3f ms  (min %.3f, p75 %.3f, n=%d, %d rows)\n",
 			id, rec.Ms, rec.MsMin, rec.MsP75, rec.MsN, len(cells))
+
+		planText, err := gql.Explain(g, row.GQL)
+		if err != nil {
+			return fmt.Errorf("%s EXPLAIN: %w", id, err)
+		}
+		if err := planEnc.Encode(ldbc.PlanRecord{
+			Family: row.Family, Query: row.Query, Variant: row.Variant,
+			Engine: "gochickpeas (gql)", Cypher: row.GQL, Plan: planText,
+			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+		}); err != nil {
+			return err
+		}
+		nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { _, err := gql.Run(g, row.GQL); return err })
+		if err != nil {
+			return fmt.Errorf("%s (profiled run): %w", id, err)
+		}
+		if err := profEnc.Encode(ldbc.ProfileRecord{
+			Family: row.Family, Query: row.Query, Engine: "gochickpeas (gql)",
+			Allocs: nAllocs, Bytes: nBytes, Rows: len(cells), Measure: ldbc.ProfileMeasure,
+			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
+		}); err != nil {
+			return err
+		}
 	}
 
 	match, diff, skip := 0, 0, 0
@@ -255,7 +288,7 @@ func run() error {
 			skip++
 		}
 	}
-	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d records emitted at %s\n",
+	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d timing+plan+profile triples emitted at %s\n",
 		match, len(outcomes), diff, skip, emitted, stamp.Commit)
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
