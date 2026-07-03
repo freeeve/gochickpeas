@@ -1,64 +1,19 @@
-// CALL procedure execution: dispatch to the engine's analytics and index
-// kernels through the Native capability. Per-node procedures cross each
-// input row with one row per node id (NodeSlot = the node, ValueSlot = its
-// scalar); the index-backed search procedures yield one row per hit node
-// in ascending id order.
+// CALL procedure kernels: dispatch to the engine's analytics and index
+// kernels through the Native capability (the per-row crossing sink lives
+// in stream.go). Per-node procedures cross each input row with one row per
+// node id (NodeSlot = the node, ValueSlot = its scalar); the index-backed
+// search procedures yield one row per hit node in ascending id order.
 package exec
 
 import (
 	"math"
 
 	chickpeas "github.com/freeeve/gochickpeas"
-	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
-
-// runCallStage expands each input row by the procedure's results. A
-// backend without the native capability returns the rows unchanged (the
-// Rust portable default; unreachable with the snapshot adapter).
-func runCallStage(ctx *eval.Ctx, cs *plan.CallStage, rows [][]value.Value) [][]value.Value {
-	native, ok := ctx.G.(graph.Native)
-	if !ok {
-		return rows
-	}
-	g := native.Snapshot()
-	if values, ok := perNodeValues(&cs.Proc, g); ok {
-		out := make([][]value.Value, 0, len(rows)*len(values))
-		for _, row := range rows {
-			for i, v := range values {
-				r := make([]value.Value, len(row))
-				copy(r, row)
-				if cs.NodeSlot != plan.NoSlot {
-					r[cs.NodeSlot] = value.Node(graph.NodeID(i))
-				}
-				if cs.ValueSlot != plan.NoSlot {
-					r[cs.ValueSlot] = v
-				}
-				out = append(out, r)
-			}
-		}
-		return out
-	}
-	hits := callSearchHits(&cs.Proc, g)
-	var out [][]value.Value
-	for _, row := range rows {
-		if hits == nil {
-			continue
-		}
-		for nid := range hits.Iter() {
-			r := make([]value.Value, len(row))
-			copy(r, row)
-			if cs.NodeSlot != plan.NoSlot {
-				r[cs.NodeSlot] = value.Node(nid)
-			}
-			out = append(out, r)
-		}
-	}
-	return out
-}
 
 // perNodeValues is the per-node scalar vector for a node-analytics
 // procedure, indexed by node id; ok is false for the search procedures.

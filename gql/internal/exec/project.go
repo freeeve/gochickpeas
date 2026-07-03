@@ -1,8 +1,10 @@
-// Non-aggregated projection: evaluate the output columns, apply DISTINCT
-// (before ORDER BY/LIMIT, as the standard requires), sort, and paginate.
-// The Rust bounded top-k heap is a materialization optimization with
-// byte-identical results; the stable sort + paginate here is the reference
-// semantics (heap lands with the M18 streaming work if benchmarks want it).
+// Non-aggregated projection: the terminal sink evaluates the output
+// columns per pushed row, applies DISTINCT on arrival (before ORDER
+// BY/LIMIT, as the standard requires -- first occurrence kept), then
+// finalize sorts and paginates. Projected rows live in a chunked arena;
+// the matched row is retained (arena-copied) only when an ORDER BY key is
+// not a projected column. The Rust bounded top-k heap remains a possible
+// follow-up with byte-identical results.
 package exec
 
 import (
@@ -16,64 +18,90 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// project evaluates a non-aggregated projection over the matched rows.
-func project(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, matched [][]value.Value) [][]value.Value {
-	returns := make([]RowEval, len(proj.Returns))
+// projSink is the non-aggregated terminal sink.
+type projSink struct {
+	ctx     *eval.Ctx
+	proj    *plan.ProjPlan
+	slots   map[string]int
+	returns []RowEval
+	outs    [][]value.Value
+	oArena  rowArena
+	// needM: an ORDER BY key evaluates over the matched row, so matched
+	// rows must be retained alongside their projections.
+	needM  bool
+	ms     [][]value.Value
+	mArena rowArena
+	seen   map[string]struct{}
+	key    []byte
+}
+
+func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
+	p := &projSink{
+		ctx: ctx, proj: proj, slots: slots,
+		returns: make([]RowEval, len(proj.Returns)),
+		oArena:  rowArena{width: len(proj.Returns)},
+	}
 	for i, r := range proj.Returns {
-		returns[i] = compileEval(ctx, r.Expr, slots)
+		p.returns[i] = compileEval(ctx, r.Expr, slots)
 	}
-	projRow := func(m []value.Value) []value.Value {
-		out := make([]value.Value, len(returns))
-		for i, c := range returns {
-			out[i] = c.Eval(ctx, m, slots)
+	for i := range proj.OrderBy {
+		if plan.OrderColIndex(proj.OrderBy[i].Expr, proj.Columns, proj.Returns) < 0 {
+			p.needM = true
+			p.mArena = rowArena{width: width}
+			break
 		}
-		return out
 	}
-
-	if !proj.Distinct && len(proj.OrderBy) == 0 {
-		out := make([][]value.Value, len(matched))
-		for i, m := range matched {
-			out[i] = projRow(m)
-		}
-		return paginate(out, proj.Skip, proj.Limit)
-	}
-
-	type pair struct {
-		m, o []value.Value
-	}
-	pairs := make([]pair, len(matched))
-	for i, m := range matched {
-		pairs[i] = pair{m, projRow(m)}
-	}
-
 	if proj.Distinct {
-		seen := make(map[string]struct{}, len(pairs))
-		kept := pairs[:0]
-		var key []byte
-		for _, p := range pairs {
-			key = key[:0]
-			for _, v := range p.o {
-				key = value.AppendKey(key, v)
-			}
-			if _, dup := seen[string(key)]; !dup {
-				seen[string(key)] = struct{}{}
-				kept = append(kept, p)
-			}
+		p.seen = map[string]struct{}{}
+	}
+	return p
+}
+
+func (p *projSink) push(row []value.Value) {
+	out := p.oArena.alloc()
+	for i, c := range p.returns {
+		out[i] = c.Eval(p.ctx, row, p.slots)
+	}
+	if p.seen != nil {
+		p.key = p.key[:0]
+		for _, v := range out {
+			p.key = value.AppendKey(p.key, v)
 		}
-		pairs = kept
+		if _, dup := p.seen[string(p.key)]; dup {
+			p.oArena.rollback()
+			return
+		}
+		p.seen[string(p.key)] = struct{}{}
 	}
+	p.outs = append(p.outs, out)
+	if p.needM {
+		p.ms = append(p.ms, p.mArena.copyRow(row))
+	}
+}
 
-	if len(proj.OrderBy) > 0 {
-		sort.SliceStable(pairs, func(a, b int) bool {
-			return cmpOrder(ctx, proj, slots, pairs[a].m, pairs[a].o, pairs[b].m, pairs[b].o) < 0
+func (p *projSink) close() {}
+
+func (p *projSink) finalize() [][]value.Value {
+	outs := p.outs
+	if len(p.proj.OrderBy) > 0 {
+		mAt := func(int) []value.Value { return nil }
+		if p.needM {
+			mAt = func(i int) []value.Value { return p.ms[i] }
+		}
+		idx := make([]int, len(outs))
+		for i := range idx {
+			idx[i] = i
+		}
+		sort.SliceStable(idx, func(a, b int) bool {
+			return cmpOrder(p.ctx, p.proj, p.slots, mAt(idx[a]), outs[idx[a]], mAt(idx[b]), outs[idx[b]]) < 0
 		})
+		sorted := make([][]value.Value, len(outs))
+		for i, j := range idx {
+			sorted[i] = outs[j]
+		}
+		outs = sorted
 	}
-
-	out := make([][]value.Value, len(pairs))
-	for i, p := range pairs {
-		out[i] = p.o
-	}
-	return paginate(out, proj.Skip, proj.Limit)
+	return paginate(outs, p.proj.Skip, p.proj.Limit)
 }
 
 // cmpOrder compares two (matched, projected) row pairs per the ORDER BY

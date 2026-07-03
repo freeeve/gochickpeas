@@ -115,6 +115,12 @@ type aggregator struct {
 	aggC   []RowEval // nil entry = count(*)
 	index  map[string]int
 	groups []*aggGroup
+	// keyScratch/gkScratch/dkScratch are the per-update key buffers, reused
+	// so routing a row to an existing group (or a seen DISTINCT value)
+	// allocates nothing.
+	keyScratch []value.Value
+	gkScratch  []byte
+	dkScratch  []byte
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
@@ -149,15 +155,19 @@ func freshGroup(proj *plan.ProjPlan, keys []value.Value) *aggGroup {
 
 // update routes one matched row into its group.
 func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan, slots map[string]int) {
-	keys := make([]value.Value, len(a.groupC))
-	var gk []byte
-	for i, c := range a.groupC {
-		keys[i] = c.Eval(ctx, m, slots)
-		gk = value.AppendKey(gk, keys[i])
+	a.keyScratch = a.keyScratch[:0]
+	gk := a.gkScratch[:0]
+	for _, c := range a.groupC {
+		v := c.Eval(ctx, m, slots)
+		a.keyScratch = append(a.keyScratch, v)
+		gk = value.AppendKey(gk, v)
 	}
+	a.gkScratch = gk
 	idx, ok := a.index[string(gk)]
 	if !ok {
 		idx = len(a.groups)
+		keys := make([]value.Value, len(a.keyScratch))
+		copy(keys, a.keyScratch)
 		a.groups = append(a.groups, freshGroup(proj, keys))
 		a.index[string(gk)] = idx
 	}
@@ -169,11 +179,11 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 			arg = a.aggC[j].Eval(ctx, m, slots)
 		}
 		if proj.Aggs[j].Distinct && present && !arg.IsNull() {
-			key := value.Key(arg)
-			if _, dup := grp.seen[j][key]; dup {
+			a.dkScratch = value.AppendKey(a.dkScratch[:0], arg)
+			if _, dup := grp.seen[j][string(a.dkScratch)]; dup {
 				continue
 			}
-			grp.seen[j][key] = struct{}{}
+			grp.seen[j][string(a.dkScratch)] = struct{}{}
 		}
 		grp.states[j].update(arg, present)
 	}
@@ -223,11 +233,25 @@ func hiddenAggName(k int) string {
 	return "__agg" + strconv.Itoa(k)
 }
 
-// aggregate runs the batch aggregation over the matched set.
-func aggregate(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, matched [][]value.Value) [][]value.Value {
-	agg := newAggregator(ctx, proj, slots)
-	for _, m := range matched {
-		agg.update(ctx, m, proj, slots)
-	}
-	return agg.finalize(ctx, proj, slots)
+// aggSink is the aggregated terminal sink: it streams matched rows into
+// the group accumulator, so only per-group state is retained.
+type aggSink struct {
+	ctx   *eval.Ctx
+	agg   *aggregator
+	proj  *plan.ProjPlan
+	slots map[string]int
+}
+
+func newAggSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggSink {
+	return &aggSink{ctx: ctx, agg: newAggregator(ctx, proj, slots), proj: proj, slots: slots}
+}
+
+func (a *aggSink) push(row []value.Value) {
+	a.agg.update(a.ctx, row, a.proj, a.slots)
+}
+
+func (a *aggSink) close() {}
+
+func (a *aggSink) finalize() [][]value.Value {
+	return a.agg.finalize(a.ctx, a.proj, a.slots)
 }

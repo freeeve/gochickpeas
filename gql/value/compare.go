@@ -335,6 +335,16 @@ func slicesEqual[T ~uint32](x, y []T) bool {
 	return true
 }
 
+// SameBacking reports payload identity in O(1): ext-carrying kinds (list,
+// map, path, duration) compare their shared ext pointer, not content. A
+// true result guarantees Identical; false says nothing. Used to skip
+// recomputing derived state (e.g. an IN membership index) when a carried
+// value is literally the same value as last time.
+func SameBacking(a, b Value) bool {
+	return a.kind == b.kind && a.aux == b.aux && a.num == b.num &&
+		a.str == b.str && a.ext == b.ext
+}
+
 // Identical is bit-exact value identity, unlike Equal: Null equals Null,
 // floats compare by bit pattern, and no numeric coercion applies. Used to
 // decide whether a slot holds the same value on every row of a batch.

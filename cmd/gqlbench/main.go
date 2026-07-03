@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
@@ -92,6 +93,27 @@ type outcome struct {
 	rows   int
 }
 
+// cpuProfiling tracks the lazily-started -cpuprofile capture, begun at the
+// first timed run so graph loads and parity checks stay out of the
+// profile.
+var cpuProfiling bool
+
+// startCPUProfile begins the CPU capture once; empty path = off.
+func startCPUProfile(path string) error {
+	if path == "" || cpuProfiling {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		return err
+	}
+	cpuProfiling = true
+	return nil
+}
+
 func run() error {
 	manifest := flag.String("manifest", os.Getenv("GOCHICKPEAS_GQL_MANIFEST"),
 		"path to gql_variants.tsv (default $GOCHICKPEAS_GQL_MANIFEST)")
@@ -102,6 +124,8 @@ func run() error {
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
 	gqlVersion := flag.String("gql-version", "v0.2.0", "gql engine version stamped into meta")
+	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile covering the timed runs")
+	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
 	flag.Parse()
 	if *manifest == "" {
 		return fmt.Errorf("no manifest: pass -manifest or set GOCHICKPEAS_GQL_MANIFEST")
@@ -200,6 +224,9 @@ func run() error {
 			continue
 		}
 
+		if err := startCPUProfile(*cpuProfile); err != nil {
+			return err
+		}
 		samples := make([]float64, *runs)
 		for i := range samples {
 			t0 := time.Now()
@@ -286,6 +313,19 @@ func run() error {
 			diff++
 		case "SKIP":
 			skip++
+		}
+	}
+	if cpuProfiling {
+		pprof.StopCPUProfile()
+	}
+	if *memProfile != "" {
+		f, err := os.Create(*memProfile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
+			return err
 		}
 	}
 	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d timing+plan+profile triples emitted at %s\n",

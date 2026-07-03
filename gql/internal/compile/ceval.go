@@ -97,11 +97,16 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		}
 		return n.m.resultFor(v)
 	case *cInCarried:
-		// Rebuild the membership index once per match-call epoch, then
-		// reuse it for every candidate in that call.
+		// Re-evaluate the list once per match-call epoch; rebuild the
+		// membership index only when the list is a different value than
+		// last epoch's (a segment-stable slot skips every rebuild).
 		if !n.built || n.epoch != ctx.MatchEpoch {
-			if xs, ok := ceval(ctx, n.list, g, row, slots).AsList(); ok {
-				n.m = buildMembership(xs)
+			lv := ceval(ctx, n.list, g, row, slots)
+			if xs, ok := lv.AsList(); ok {
+				if !n.built || n.notList || !value.SameBacking(lv, n.lastList) {
+					n.m = buildMembership(xs)
+					n.lastList = lv
+				}
 				n.notList = false
 			} else {
 				n.notList = true
@@ -119,15 +124,15 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 	case *cSubquery:
 		var count int
 		if n.hasMemo {
-			var key []byte
+			n.key = n.key[:0]
 			for _, s := range n.memoSlots {
-				key = value.AppendKey(key, row[s])
+				n.key = value.AppendKey(n.key, row[s])
 			}
-			if c, ok := n.memo[string(key)]; ok {
+			if c, ok := n.memo[string(n.key)]; ok {
 				count = c
 			} else {
 				count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
-				n.memo[string(key)] = count
+				n.memo[string(n.key)] = count
 			}
 		} else {
 			count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)

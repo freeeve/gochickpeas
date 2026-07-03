@@ -22,12 +22,13 @@ type stageComp struct {
 
 // compileStage pre-resolves the stage's constant names once (labels,
 // property keys, rel types, params) so the per-candidate work is bitmap
-// contains + column reads.
-func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) *stageComp {
+// contains + column reads. constIn reports segment-wide hoisting-constant
+// slots; sample is a seeded input row carrying their values.
+func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) *stageComp {
 	sc := &stageComp{
 		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
-		levelFilters: buildLevelFilters(ctx, stage, slots, rows),
+		levelFilters: buildLevelFilters(ctx, stage, slots, constIn, sample),
 		hopFilters:   buildHopFilters(ctx, stage.Ops),
 		semijoins:    buildSemijoins(stage.Ops),
 	}
@@ -43,49 +44,12 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, r
 	return sc
 }
 
-// runStage walks each input row through the stage's bind chain. An
-// optional stage re-emits the input row (new variables left null) when
-// nothing matches -- the left-join semantics of OPTIONAL MATCH. opRows is
-// PROFILE's per-op counter slice, accumulated across every input row
-// (nil when not profiling).
-func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value, opRows []uint64) [][]value.Value {
-	sc := compileStage(ctx, stage, slots, rows)
-	var out [][]value.Value
-	var scratch genScratch
-	sink := func(r []value.Value) {
-		cp := make([]value.Value, len(r))
-		copy(cp, r)
-		out = append(out, cp)
-	}
-	for _, row := range rows {
-		if stage.Optional {
-			// gen_matches mutates the row it walks, so keep the original
-			// for the no-match re-emit.
-			orig := make([]value.Value, len(row))
-			copy(orig, row)
-			before := len(out)
-			genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch, opRows)
-			if len(out) == before {
-				out = append(out, orig)
-			}
-			continue
-		}
-		genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch, opRows)
-	}
-	// MATCH p = ...: assemble each row's named path, then run the stage
-	// WHERE as a post-path filter so nodes(p)/rels(p)/length(p) resolve.
-	if stage.PathBind != nil {
-		out = bindPaths(ctx, stage, slots, out)
-	}
-	return out
-}
-
 // buildLevelFilters splits the stage WHERE into top-level AND-conjuncts
 // and buckets each at the earliest op level where every slot it reads is
 // bound; graph-touching conjuncts keep last-level timing. A conjunct then
 // prunes a candidate the moment it can fail instead of after the whole
 // pattern binds.
-func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) [][]RowEval {
+func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) [][]RowEval {
 	n := max(len(stage.Ops), 1)
 	buckets := make([][]RowEval, n)
 	if stage.Where == nil {
@@ -109,16 +73,12 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 			}
 		}
 	}
-	// A slot is batch-constant when carried in (not bound here) and
-	// identical across every input row; a carried slot is loop-invariant
-	// per match-call even when it varies across input rows.
+	// A slot is batch-constant when the segment never binds it and the
+	// seeded inputs agree on its value (constIn); a carried slot is
+	// loop-invariant per match-call even when it varies across input rows.
 	isBound := func(s int) bool { _, ok := slotLevel[s]; return ok }
-	isConst := func(s int) bool { return !isBound(s) && slotConstant(s, rows) }
+	isConst := func(s int) bool { return !isBound(s) && constIn(s) }
 	isCarried := func(s int) bool { return !isBound(s) }
-	var sample []value.Value
-	if len(rows) > 0 {
-		sample = rows[0]
-	}
 	var conjs []ast.Expr
 	splitConjuncts(stage.Where, &conjs)
 	for _, c := range conjs {

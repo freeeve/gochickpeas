@@ -117,6 +117,57 @@ varWalk.dfs reuse per-walk buffers.
 | IC/IC6 | 3,841,509 | 3,840,657 | 155,648 | 133 | 81 |
 | IC/IC12 | 3,256,988 | 3,256,747 | 436,160 | 126 | 74 |
 
+### Round 4 (in progress, 2026-07-03) -- streaming push-pipeline segments
+
+Baseline re-emitted at 143e9ae (commit a252f48): top gql offenders Q18 28.5M, Q6 22.1M,
+IC9 10.3M, CR1 4.9M, IC3 4.7M, Q1 3.9M, IC5 3.4M allocs.
+
+Design (per Eve's windowed-arena direction; the window degenerates to per-stage row
+buffers because every stage is per-row convertible): replace runSegment's
+stage-by-stage `[][]value.Value` materialization with a push pipeline -- each stage
+becomes a sink holding one reused full-width row buffer; genMatches already generates
+into a sink by reference, so match rows flow straight through the chain with zero
+per-row allocation. The aggregator is already a streaming accumulator (update/finalize)
+and becomes the terminal sink for aggregated projections; non-aggregated projections
+retain only projected rows (plus the matched row when an ORDER BY key is not a
+projected column) in a chunked bump arena. Semantics preserved: depth-first push order
+equals materialize-then-iterate order (group encounter order, DISTINCT first-occurrence,
+stable-sort ties); OPTIONAL re-emit uses a reused orig buffer; PathBind becomes a
+per-row wrapper; batch-constant hoisting is re-derived statically (const = unbound by
+any stage in the segment and identical across the segment's seeded inputs); PROFILE
+counters accumulate per stage across pushes. Deferred: LIMIT early-abort through the
+sink chain (needs a stop signal), streaming distinct-agg value.Key.
+
+Shipped in the same round, driven by alloc-site profiles (gqlbench gained -cpuprofile /
+-memprofile flags):
+
+- aggregator.update reuses group-key and DISTINCT-key scratch buffers (map lookups on
+  string(scratch) don't allocate; only new-group/new-value inserts do).
+- eval subqueries (EXISTS/COUNT/pattern comprehensions) cache their DFS shape per
+  pattern on the Ctx -- anchor-reversal, level slots, extended scope, per-level
+  candidate scratch, BFS sets, and the memoized unanchored level-0 scan -- validated
+  against the outer scope per hit; neighbor iteration switched to the batch
+  AppendNeighborsByType seam. Was Q18's whole profile (newSubqueryFrame 19.9M +
+  dfs 12.7M + maps.Copy).
+- cSubquery's memo key buffer reuses node-local scratch.
+- cInCarried skips the per-epoch membership rebuild when the list is payload-identical
+  to last epoch's (new O(1) value.SameBacking) -- recovers const-hoist behavior for
+  segment-stable carried lists under the streaming pipeline's static const rule.
+- reconstructPathNodes resolves each hop O(1) via RelEndpoints(pos) instead of
+  scanning the node's adjacency for the position -- FinBench CR1's hub-node paths
+  went 2227ms -> 175ms.
+
+Timings wobbled mid-round because a concurrent rustychickpeas-bench run loaded the
+machine (load avg 28); interleaved A/B and post-quiet reruns confirmed the wins.
+TestPlanCacheConcurrent flaked once (Len()=0) -- reproduced on the UNMODIFIED
+baseline worktree, pre-existing, needs its own look.
+
+Results (warm medians / alloc profiles, 143e9ae baseline -> post-round):
+Q18 4266ms/28.5M -> ~3805ms/2.0M; Q6 1315ms/22.1M -> ~780ms/3.5M; IC9 6325ms/10.3M ->
+~3954ms/9.2k; CR1 2227ms/4.9M -> ~175ms; IC5 3296ms/3.4M -> ~3190ms/0.67M; Q1 629ms/3.9M
+-> ~537ms/1.2k; IC3 751ms/4.7M -> ~678ms; Q12 1817ms/3.3M -> ~1532ms/3.1M. (Emission
+tables below after the full 49-query run.)
+
 ### Next round (open)
 
 - gql Q18 / IC9 / CR1: allocations sit in eval/aggregate/projection (28.5M / 10.3M /

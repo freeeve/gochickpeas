@@ -30,6 +30,11 @@ type Ctx struct {
 	// and is reused across that call's candidates (replaces the Rust
 	// thread-local epoch).
 	MatchEpoch uint64
+	// subqShapes caches each subquery pattern's DFS shape and scratch for
+	// this execution (params are fixed per Ctx, so the memoized level-0
+	// scan stays valid; a fresh Ctx per run keeps prepared-plan reuse
+	// safe).
+	subqShapes map[*ast.Pattern]*subqueryShape
 }
 
 // ParamValue resolves an auto-lifted slot; out of range is Null.

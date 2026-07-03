@@ -52,13 +52,16 @@ type cInConst struct {
 
 // cInCarried is IN over a loop-invariant (carried, not batch-constant)
 // list: the membership index rebuilds once per match-call epoch and is
-// reused across that call's candidates.
+// reused across that call's candidates. lastList short-circuits the
+// rebuild entirely when the epoch's list is payload-identical to the
+// previous one (a segment-stable slot).
 type cInCarried struct {
-	e, list cnode
-	epoch   uint64
-	built   bool
-	notList bool
-	m       inMembership
+	e, list  cnode
+	epoch    uint64
+	built    bool
+	notList  bool
+	m        inMembership
+	lastList value.Value
 }
 
 type cIsNull struct {
@@ -76,6 +79,9 @@ type cSubquery struct {
 	memoSlots []int
 	hasMemo   bool
 	memo      map[string]int
+	// key is the reusable memo-key buffer: lookups probe string(key)
+	// without allocating; only a miss's insert converts.
+	key []byte
 }
 
 type cCase struct {
