@@ -103,7 +103,16 @@ func run() error {
 			graphs[row.Graph] = g
 		}
 
-		cells, err := kernel(g)
+		// Prepare is untimed (mirrors what the rcp-native harness
+		// builds outside its timer); the runnable is what parity
+		// checks and the timed loop measure.
+		krun, err := kernel(g)
+		if err != nil {
+			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: err.Error()})
+			fmt.Printf("%-16s SKIP  %v\n", id, err)
+			continue
+		}
+		cells, err := krun()
 		if err != nil {
 			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: err.Error()})
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
@@ -132,7 +141,7 @@ func run() error {
 		samples := make([]float64, *runs)
 		for i := range samples {
 			t0 := time.Now()
-			if _, err := kernel(g); err != nil {
+			if _, err := krun(); err != nil {
 				return fmt.Errorf("%s (timed run): %w", id, err)
 			}
 			samples[i] = float64(time.Since(t0).Microseconds()) / 1000.0

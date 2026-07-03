@@ -11,12 +11,12 @@ import (
 )
 
 func init() {
-	registerNative("BI", "Q3", biQ3)
-	registerNative("BI", "Q4", biQ4)
-	registerNative("BI", "Q10", biQ10)
-	registerNative("BI", "Q15", biQ15)
-	registerNative("BI", "Q16", biQ16)
-	registerNative("BI", "Q17", biQ17)
+	registerNative("BI", "Q3", simpleKernel(biQ3))
+	registerNative("BI", "Q4", simpleKernel(biQ4))
+	registerNative("BI", "Q10", simpleKernel(biQ10))
+	registerNative("BI", "Q15", simpleKernel(biQ15))
+	registerNative("BI", "Q16", simpleKernel(biQ16))
+	registerNative("BI", "Q17", simpleKernel(biQ17))
 }
 
 // biQ3 -- popular topics in a country (Burma, MusicalArtist). Forums

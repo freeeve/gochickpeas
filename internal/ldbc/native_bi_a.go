@@ -14,15 +14,15 @@ import (
 )
 
 func init() {
-	registerNative("BI", "Q1", biQ1)
-	registerNative("BI", "Q2", biQ2)
-	registerNative("BI", "Q5", biQ5)
-	registerNative("BI", "Q6", biQ6)
-	registerNative("BI", "Q7", biQ7)
-	registerNative("BI", "Q8", biQ8)
-	registerNative("BI", "Q9", biQ9)
-	registerNative("BI", "Q11", biQ11)
-	registerNative("BI", "Q12", biQ12)
+	registerNative("BI", "Q1", simpleKernel(biQ1))
+	registerNative("BI", "Q2", simpleKernel(biQ2))
+	registerNative("BI", "Q5", simpleKernel(biQ5))
+	registerNative("BI", "Q6", simpleKernel(biQ6))
+	registerNative("BI", "Q7", simpleKernel(biQ7))
+	registerNative("BI", "Q8", simpleKernel(biQ8))
+	registerNative("BI", "Q9", simpleKernel(biQ9))
+	registerNative("BI", "Q11", simpleKernel(biQ11))
+	registerNative("BI", "Q12", simpleKernel(biQ12))
 }
 
 // biQ1 -- posting summary. Group messages before the cutoff (with

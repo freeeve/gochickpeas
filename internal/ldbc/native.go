@@ -59,12 +59,26 @@ func LoadNativeManifest(path string) ([]NativeRow, error) {
 	return rows, nil
 }
 
-// NativeKernel computes one LDBC benchmark query's result rows on a
-// loaded snapshot, in the reference's column order, with cells in the
-// rowhash domain (nil, bool, int64, float64, string, []any). Rows must
-// be deterministic and side-effect free so the bench emitter can time
-// repeated calls of the same work the parity check verified.
-type NativeKernel func(g *chickpeas.Snapshot) ([][]any, error)
+// NativeKernel prepares one LDBC benchmark query on a loaded snapshot
+// and returns its runnable. The prepare step is UNTIMED -- it mirrors
+// exactly what the rcp-native harness builds outside its timer (seed
+// resolution, and for Q19/Q20/IC14 the derived weight maps; the IS
+// short reads' message anchors) so the emitted timings measure the
+// same work on both engines. The runnable computes the result rows in
+// the reference's column order, with cells in the rowhash domain (nil,
+// bool, int64, float64, string, []any); it must be deterministic and
+// side-effect free so the emitter can time repeated calls of the same
+// work the parity check verified.
+type NativeKernel func(g *chickpeas.Snapshot) (func() ([][]any, error), error)
+
+// simpleKernel adapts a query with no untimed prepare phase: every run
+// does the full work, matching the rcp-native timings whose closures
+// recompute everything per iteration.
+func simpleKernel(rows func(g *chickpeas.Snapshot) ([][]any, error)) NativeKernel {
+	return func(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+		return func() ([][]any, error) { return rows(g) }, nil
+	}
+}
 
 // nativeRegistry maps "Family/Query" to its kernel. Families register
 // from their own files' init functions.

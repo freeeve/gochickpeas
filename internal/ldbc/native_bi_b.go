@@ -12,9 +12,9 @@ import (
 )
 
 func init() {
-	registerNative("BI", "Q13", biQ13)
-	registerNative("BI", "Q14", biQ14)
-	registerNative("BI", "Q18", biQ18)
+	registerNative("BI", "Q13", simpleKernel(biQ13))
+	registerNative("BI", "Q14", simpleKernel(biQ14))
+	registerNative("BI", "Q18", simpleKernel(biQ18))
 	registerNative("BI", "Q19", biQ19)
 	registerNative("BI", "Q20", biQ20)
 }
@@ -282,47 +282,51 @@ func buildInteractionMap(g *chickpeas.Snapshot) map[interactionKey]uint32 {
 // biQ19 -- interaction path between cities (669 <-> 648). Weighted
 // shortest knows-path per (p1 in city1, p2 in city2) with weight
 // 1/interactions; [p1Id, p2Id, totalWeight], weight asc / p1 asc / p2
-// asc, top 20.
-func biQ19(g *chickpeas.Snapshot) ([][]any, error) {
-	city1, ok1 := nodeByID(g, "City", 669)
-	city2, ok2 := nodeByID(g, "City", 648)
-	if !ok1 || !ok2 {
-		return [][]any{}, nil
-	}
+// asc, top 20. The interaction map is built in the untimed prepare
+// phase, matching the rcp-native harness (its timer sees only the
+// per-pair searches).
+func biQ19(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
 		return nil, err
 	}
 	interaction := buildInteractionMap(g)
-	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
-		if n := interaction[pairKey(from, rel.Neighbor)]; n > 0 {
-			return 1.0 / float64(n)
+	return func() ([][]any, error) {
+		city1, ok1 := nodeByID(g, "City", 669)
+		city2, ok2 := nodeByID(g, "City", 648)
+		if !ok1 || !ok2 {
+			return [][]any{}, nil
 		}
-		return inf
-	}
-	var c2 []chickpeas.NodeID
-	for p := range g.Neighbors(city2, chickpeas.Incoming, "IS_LOCATED_IN") {
-		c2 = append(c2, p)
-	}
-	m := g.Match("KNOWS")
-	rows := chickpeas.ParNeighborFold(g, city1, chickpeas.Incoming, g.Match("IS_LOCATED_IN"),
-		func() [][]any { return nil },
-		func(acc [][]any, p1 chickpeas.NodeID) [][]any {
-			for _, p2 := range c2 {
-				if d, ok := g.WeightedShortestPath(p1, p2, chickpeas.Both, m, weight); ok && finite(d) {
-					acc = append(acc, []any{i64At(idCol, p1), i64At(idCol, p2), d})
-				}
+		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
+			if n := interaction[pairKey(from, rel.Neighbor)]; n > 0 {
+				return 1.0 / float64(n)
 			}
-			return acc
-		},
-		func(a, b [][]any) [][]any { return append(a, b...) })
-	return sortTruncate(rows, 20, func(a, b []any) bool {
-		return cmpChain(
-			cmpF64Asc(a[2].(float64), b[2].(float64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-			cmpI64Asc(a[1].(int64), b[1].(int64)),
-		)
-	}), nil
+			return inf
+		}
+		var c2 []chickpeas.NodeID
+		for p := range g.Neighbors(city2, chickpeas.Incoming, "IS_LOCATED_IN") {
+			c2 = append(c2, p)
+		}
+		m := g.Match("KNOWS")
+		rows := chickpeas.ParNeighborFold(g, city1, chickpeas.Incoming, g.Match("IS_LOCATED_IN"),
+			func() [][]any { return nil },
+			func(acc [][]any, p1 chickpeas.NodeID) [][]any {
+				for _, p2 := range c2 {
+					if d, ok := g.WeightedShortestPath(p1, p2, chickpeas.Both, m, weight); ok && finite(d) {
+						acc = append(acc, []any{i64At(idCol, p1), i64At(idCol, p2), d})
+					}
+				}
+				return acc
+			},
+			func(a, b [][]any) [][]any { return append(a, b...) })
+		return sortTruncate(rows, 20, func(a, b []any) bool {
+			return cmpChain(
+				cmpF64Asc(a[2].(float64), b[2].(float64)),
+				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpI64Asc(a[1].(int64), b[1].(int64)),
+			)
+		}), nil
+	}, nil
 }
 
 // studyRecord is one person's (university, classYear) enrolment.
@@ -334,13 +338,10 @@ type studyRecord struct {
 // biQ20 -- recruitment (Falcon_Air -> person 66). Weighted shortest
 // knows-path from each company employee to the target where edge weight
 // is min |classYear difference|+1 over shared universities; [p1Id,
-// pathWeight], weight asc / id asc, top 20.
-func biQ20(g *chickpeas.Snapshot) ([][]any, error) {
-	company, ok1 := nodeByName(g, "Company", "Falcon_Air")
-	person2, ok2 := nodeByID(g, "Person", 66)
-	if !ok1 || !ok2 {
-		return [][]any{}, nil
-	}
+// pathWeight], weight asc / id asc, top 20. The study records and the
+// cohort weight map are built in the untimed prepare phase, matching
+// the rcp-native harness.
+func biQ20(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
 		return nil, err
@@ -393,27 +394,34 @@ func biQ20(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
-		if w, ok := wm[pairKey(from, rel.Neighbor)]; ok {
-			return w
+	return func() ([][]any, error) {
+		company, ok1 := nodeByName(g, "Company", "Falcon_Air")
+		person2, ok2 := nodeByID(g, "Person", 66)
+		if !ok1 || !ok2 {
+			return [][]any{}, nil
 		}
-		return inf
-	}
-	m := g.Match("KNOWS")
-	var rows [][]any
-	for p1 := range g.Neighbors(company, chickpeas.Incoming, "WORK_AT") {
-		if p1 == person2 {
-			continue
+		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
+			if w, ok := wm[pairKey(from, rel.Neighbor)]; ok {
+				return w
+			}
+			return inf
 		}
-		sp := g.DijkstraTo(p1, person2, chickpeas.Both, m, weight)
-		if d, ok := sp.Distance(person2); ok && finite(d) {
-			rows = append(rows, []any{i64At(idCol, p1), d})
+		m := g.Match("KNOWS")
+		var rows [][]any
+		for p1 := range g.Neighbors(company, chickpeas.Incoming, "WORK_AT") {
+			if p1 == person2 {
+				continue
+			}
+			sp := g.DijkstraTo(p1, person2, chickpeas.Both, m, weight)
+			if d, ok := sp.Distance(person2); ok && finite(d) {
+				rows = append(rows, []any{i64At(idCol, p1), d})
+			}
 		}
-	}
-	return sortTruncate(rows, 20, func(a, b []any) bool {
-		return cmpChain(
-			cmpF64Asc(a[1].(float64), b[1].(float64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+		return sortTruncate(rows, 20, func(a, b []any) bool {
+			return cmpChain(
+				cmpF64Asc(a[1].(float64), b[1].(float64)),
+				cmpI64Asc(a[0].(int64), b[0].(int64)),
+			)
+		}), nil
+	}, nil
 }
