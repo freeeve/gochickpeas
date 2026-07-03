@@ -273,11 +273,16 @@ func TestGQLBoundaryForms(t *testing.T) {
 	wantStrs(t, strCol(t, g,
 		"MATCH (p:Person) RETURN p.name AS name, p.age AS age NEXT FILTER age >= 35 RETURN name", "name"),
 		"Bob", "Carol")
-	// FOR is planned (M18 executes it); here just check the boundary error
-	// is typed, not a wrong result.
-	_, err := Run(g, "FOR x IN [1, 2] RETURN x")
-	if !errors.Is(err, ErrPlan) {
-		t.Fatalf("FOR should be a typed plan error until M18, got %v", err)
+	// FOR expands a list into rows.
+	rows := runBoth(t, g, "FOR x IN [1, 2, 3] RETURN x AS x ORDER BY x DESC")
+	var xs []int64
+	for r := range rows.All() {
+		v, _ := r.Get("x")
+		i, _ := v.AsInt()
+		xs = append(xs, i)
+	}
+	if len(xs) != 3 || xs[0] != 3 || xs[2] != 1 {
+		t.Fatalf("FOR rows = %v", xs)
 	}
 }
 
@@ -359,8 +364,8 @@ func TestErrorKinds(t *testing.T) {
 		t.Fatalf("unknown function kind: %v", err)
 	}
 	// Features gated to later milestones surface as typed plan errors.
-	if _, err := Run(g, "MATCH (p:Person) RETURN count(p) AS n"); !errors.Is(err, ErrPlan) {
-		t.Fatalf("aggregation gate: %v", err)
+	if _, err := Run(g, "CALL algo.pagerank() YIELD node, score RETURN score"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("CALL proc gate: %v", err)
 	}
 	if _, err := Run(g, "PROFILE MATCH (p:Person) RETURN p.name AS n"); !errors.Is(err, ErrPlan) {
 		t.Fatalf("profile gate: %v", err)

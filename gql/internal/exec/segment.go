@@ -24,12 +24,21 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]va
 			matched = runStage(ctx, s, seg.Slots, matched)
 		case *plan.SpStage:
 			matched = runSPStage(ctx, s, matched)
+		case *plan.UnwindStage:
+			matched = runUnwindStage(ctx, s, seg.Slots, matched)
+		case *plan.CallSubqueryStage:
+			matched = runCallSubqueryStage(ctx, s, matched)
 		default:
-			// Unreachable: checkSupported rejected these plans (M18/M19).
+			// Unreachable: checkSupported rejected these plans (M19).
 			matched = nil
 		}
 	}
-	out := project(ctx, &seg.Proj, seg.Slots, matched)
+	var out [][]value.Value
+	if seg.Proj.Aggregated {
+		out = aggregate(ctx, &seg.Proj, seg.Slots, matched)
+	} else {
+		out = project(ctx, &seg.Proj, seg.Slots, matched)
+	}
 	applyPostWhere(ctx, seg, &out)
 	return out
 }

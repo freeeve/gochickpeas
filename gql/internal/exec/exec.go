@@ -66,9 +66,6 @@ func combineUnion(acc *[][]value.Value, next [][]value.Value, op ast.UnionKind) 
 func checkSupported(p *plan.Plan) error {
 	for _, branch := range p.Branches {
 		for _, seg := range branch {
-			if seg.Proj.Aggregated {
-				return unsupported("aggregation (M18)")
-			}
 			for _, st := range seg.Stages {
 				switch s := st.(type) {
 				case *plan.MatchStage:
@@ -79,10 +76,11 @@ func checkSupported(p *plan.Plan) error {
 					}
 				case *plan.CallStage:
 					return unsupported("CALL procedures (M19)")
-				case *plan.UnwindStage:
-					return unsupported("FOR (M18)")
 				case *plan.CallSubqueryStage:
-					return unsupported("CALL subqueries (M18)")
+					// The sub-plan may itself carry gated stages.
+					if err := checkSupported(s.Sub); err != nil {
+						return err
+					}
 				}
 			}
 		}
