@@ -34,17 +34,21 @@ func RunWithParams(g *chickpeas.Snapshot, query string, params map[string]value.
 	if err != nil {
 		return nil, err
 	}
-	switch q.Mode {
+	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+	return execPlan(gr, p, q.Mode, planTime, ctx)
+}
+
+// execPlan executes a built plan in its query mode: Run returns result
+// rows; EXPLAIN returns the rendered plan; PROFILE executes while
+// recording per-operator produced-row counts and returns the annotated
+// plan (cardinalities, not the result set).
+func execPlan(gr *graph.SnapshotGraph, p *plan.Plan, mode ast.QueryMode, planTime time.Duration, ctx *eval.Ctx) (*Rows, error) {
+	switch mode {
 	case ast.Explain:
 		return renderPlanRows(gr, p, nil, planTime), nil
 	case ast.Profile:
-		// Execute while recording per-operator produced-row counts, then
-		// return the annotated plan (PROFILE reports cardinalities, not
-		// the result set).
-		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
 		return renderPlanRows(gr, p, exec.ExecuteProfiled(ctx, p), planTime), nil
 	}
-	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
 	rows, err := exec.Execute(ctx, p)
 	if err != nil {
 		return nil, wrapStage(err)
@@ -66,12 +70,9 @@ func Explain(g *chickpeas.Snapshot, query string) (string, error) {
 // planning for the EXPLAIN/PROFILE header.
 func prepare(g *chickpeas.Snapshot, query string) (*ast.Query, *graph.SnapshotGraph, *plan.Plan, time.Duration, error) {
 	start := time.Now()
-	q, err := parser.Parse(query)
+	q, err := parseDesugar(query)
 	if err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("%s: %w", err.Error(), ErrParse)
-	}
-	if err := semantics.Desugar(q); err != nil {
-		return nil, nil, nil, 0, wrapStage(err)
+		return nil, nil, nil, 0, err
 	}
 	gr := graph.New(g)
 	p, err := plan.Build(q, gr)
@@ -79,6 +80,18 @@ func prepare(g *chickpeas.Snapshot, query string) (*ast.Query, *graph.SnapshotGr
 		return nil, nil, nil, 0, wrapStage(err)
 	}
 	return q, gr, p, time.Since(start), nil
+}
+
+// parseDesugar is the language front half: parse, then normalize.
+func parseDesugar(query string) (*ast.Query, error) {
+	q, err := parser.Parse(query)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", err.Error(), ErrParse)
+	}
+	if err := semantics.Desugar(q); err != nil {
+		return nil, wrapStage(err)
+	}
+	return q, nil
 }
 
 // renderPlanRows renders an EXPLAIN/PROFILE-mode query as a one-column
