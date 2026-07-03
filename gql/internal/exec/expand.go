@@ -32,23 +32,36 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 	keep := func(nid graph.NodeID) bool {
 		return (!haveBound || bound == nid) && ctx.G.NodeMatcherAccepts(m, nid)
 	}
-	// A named relationship variable walks Relationships to capture each
-	// rel's position alongside its neighbor; the common unnamed case uses
-	// the pre-resolved matcher iterator.
+	// Batch-append the hop into the pooled buffers, then filter the
+	// appended tail in place (the iter.Seq forms would heap-allocate their
+	// closures on every row -- see Graph.AppendNeighborsMatched). A named
+	// relationship variable captures each rel's position alongside its
+	// neighbor.
+	start := len(*nodes)
 	if op.RelSlot != plan.NoSlot {
-		for nb, p := range ctx.G.Relationships(fromID, op.Dir, op.Types) {
+		relStart := len(*rels)
+		*nodes, *rels = ctx.G.AppendRelationships(*nodes, *rels, fromID, op.Dir, op.Types)
+		w := start
+		for i, nb := range (*nodes)[start:] {
 			if keep(nb) {
-				*nodes = append(*nodes, nb)
-				*rels = append(*rels, p)
+				(*nodes)[w] = nb
+				(*rels)[relStart+(w-start)] = (*rels)[relStart+i]
+				w++
 			}
 		}
+		*nodes = (*nodes)[:w]
+		*rels = (*rels)[:relStart+(w-start)]
 		return
 	}
-	for nid := range ctx.G.NeighborsMatched(fromID, op.Dir, rm) {
+	*nodes = ctx.G.AppendNeighborsMatched(*nodes, fromID, op.Dir, rm)
+	w := start
+	for _, nid := range (*nodes)[start:] {
 		if keep(nid) {
-			*nodes = append(*nodes, nid)
+			(*nodes)[w] = nid
+			w++
 		}
 	}
+	*nodes = (*nodes)[:w]
 }
 
 // semiCache memoizes per-target reverse-neighbor sets for one semijoin op,

@@ -76,6 +76,19 @@ type Graph interface {
 	// csrPos); the position binds a rel variable and reads rel properties.
 	Relationships(node chickpeas.NodeID, dir chickpeas.Direction, types []string) iter.Seq2[chickpeas.NodeID, uint32]
 
+	// AppendNeighborsMatched appends node's dir neighbors passing m to dst
+	// and returns the extended slice -- the batch form of NeighborsMatched
+	// for the executor's hot loops: an interface-returned iter.Seq cannot
+	// devirtualize, so ranging it heap-allocates its closures per call,
+	// while the batch form fills a caller-pooled buffer allocation-free.
+	AppendNeighborsMatched(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) []chickpeas.NodeID
+	// AppendNeighborsByType is AppendNeighborsMatched with per-call name
+	// resolution (empty types match every type).
+	AppendNeighborsByType(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, types []string) []chickpeas.NodeID
+	// AppendRelationships appends each traversed relationship's neighbor
+	// and CSR position to the parallel nodes/poss slices and returns them.
+	AppendRelationships(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, types []string) ([]chickpeas.NodeID, []uint32)
+
 	// CompileNodeMatcher pre-resolves a node pattern's labels and inline
 	// {key: value} properties (params already resolved to values by the
 	// caller) into a reusable matcher, once per operator.

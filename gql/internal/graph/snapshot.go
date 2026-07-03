@@ -136,6 +136,34 @@ func (s *SnapshotGraph) Relationships(node chickpeas.NodeID, dir chickpeas.Direc
 	}
 }
 
+// AppendNeighborsMatched appends node's matching dir neighbors to dst.
+// The range over the core accessor devirtualizes inside this named
+// method, so the fill is allocation-free beyond dst growth.
+func (s *SnapshotGraph) AppendNeighborsMatched(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) []chickpeas.NodeID {
+	for n := range s.g.NeighborsMatch(node, dir, m.m) {
+		dst = append(dst, n)
+	}
+	return dst
+}
+
+// AppendNeighborsByType appends node's dir neighbors over types to dst.
+func (s *SnapshotGraph) AppendNeighborsByType(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, types []string) []chickpeas.NodeID {
+	for n := range s.g.Neighbors(node, dir, types...) {
+		dst = append(dst, n)
+	}
+	return dst
+}
+
+// AppendRelationships appends traversed relationships' neighbors and
+// CSR positions to the parallel nodes/poss slices.
+func (s *SnapshotGraph) AppendRelationships(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, types []string) ([]chickpeas.NodeID, []uint32) {
+	for r := range s.g.Rels(node, dir, types...) {
+		nodes = append(nodes, r.Neighbor)
+		poss = append(poss, r.Pos)
+	}
+	return nodes, poss
+}
+
 // SubstringCandidates: the native backend keeps its scan-filter (no
 // trigram index), matching the Rust native default.
 func (s *SnapshotGraph) SubstringCandidates(label, field, needle string) (*nodeset.Set, bool) {

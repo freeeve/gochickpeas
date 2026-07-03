@@ -6,6 +6,8 @@
 package exec
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -133,11 +135,13 @@ func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeM
 		*out = append(*out, start)
 	}
 	frontier := []graph.NodeID{start}
+	var nbuf []graph.NodeID // batch buffer: the iter.Seq form allocates per (u) call
 	for depth := uint64(0); len(frontier) > 0 && depth < cap; depth++ {
 		d := depth + 1
 		var next []graph.NodeID
 		for _, u := range frontier {
-			for nb := range ctx.G.NeighborsMatched(u, op.Dir, rm) {
+			nbuf = ctx.G.AppendNeighborsMatched(nbuf[:0], u, op.Dir, rm)
+			for _, nb := range nbuf {
 				if d >= op.Min && keep(nb) {
 					if _, dup := emitted[nb]; !dup {
 						emitted[nb] = struct{}{}
@@ -178,6 +182,12 @@ type varWalk struct {
 	cand      *[]graph.NodeID
 	relData   *[]uint32
 	relRanges *[][2]int
+
+	// nbufN/nbufP are the per-hop batch buffers (parallel neighbor/pos),
+	// reused across dfs levels: each level copies them into its own
+	// scratch before recursing.
+	nbufN []graph.NodeID
+	nbufP []uint32
 }
 
 type nodePos struct {
@@ -197,17 +207,20 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bo
 		w.scratch = append(w.scratch, nil)
 	}
 	buf := w.scratch[d][:0]
-	// Walk Relationships (carrying positions) when a per-hop predicate or
+	// Walk relationships (carrying positions) when a per-hop predicate or
 	// the mono constraint prunes by position or the rel list is recorded;
-	// otherwise the leaner neighbor iterator.
+	// otherwise the leaner neighbor batch. Batch appends replace the
+	// iter.Seq forms, which heap-allocate their closures per call.
 	if w.hop != nil || w.mono != nil || w.collectRels {
-		for nb, p := range w.ctx.G.Relationships(cur, w.op.Dir, w.op.Types) {
-			if w.hop == nil || w.hop.keep(w.ctx, p) {
+		w.nbufN, w.nbufP = w.ctx.G.AppendRelationships(w.nbufN[:0], w.nbufP[:0], cur, w.op.Dir, w.op.Types)
+		for i, nb := range w.nbufN {
+			if p := w.nbufP[i]; w.hop == nil || w.hop.keep(w.ctx, p) {
 				buf = append(buf, nodePos{nb, p})
 			}
 		}
 	} else {
-		for nb := range w.ctx.G.NeighborsByType(cur, w.op.Dir, w.op.Types) {
+		w.nbufN = w.ctx.G.AppendNeighborsByType(w.nbufN[:0], cur, w.op.Dir, w.op.Types)
+		for _, nb := range w.nbufN {
 			buf = append(buf, nodePos{nb, 0})
 		}
 	}
@@ -267,21 +280,11 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bo
 // containsNode is the acyclic stack's membership test -- same short
 // linear scan rationale as containsEdge.
 func containsNode(visited []graph.NodeID, n graph.NodeID) bool {
-	for _, v := range visited {
-		if v == n {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(visited, n)
 }
 
 // containsEdge is the trail stack's membership test -- a short linear scan
 // (never longer than max, e.g. 3 for {1,3}) beats a hashing set.
 func containsEdge(used [][2]graph.NodeID, e [2]graph.NodeID) bool {
-	for _, u := range used {
-		if u == e {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(used, e)
 }
