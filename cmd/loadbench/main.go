@@ -5,6 +5,13 @@
 // carries format/bytes/mb_s/rec_s. Median of -runs (first load also
 // warms the page cache, matching the rust side's warm loads).
 //
+// Every record carries a parity verdict (task 029): rcpg IS the
+// canonical snapshot so those cases stamp MATCH, while the SPB nt reload
+// is structurally diffed (ldbc.DiffGraphs) against the rcpg baseline --
+// spbexport built that baseline from the same spb-validate.nt, so a
+// correct RDF loader reports MATCH and a divergent one is drawn WRONG on
+// the ldbc Loads heatmap, never a silent throughput win.
+//
 //	go run ./cmd/loadbench -ldbc ~/rustychickpeas-ldbc
 package main
 
@@ -46,10 +53,11 @@ func run() error {
 		g, _, err := ldbc.LoadSPBFile(path)
 		return g, err
 	}
+	spbRcpg := filepath.Join(*spbDir, "spb_canonical.rcpg")
 	cases := []loadCase{
 		{"BI", "rcpg", filepath.Join(*root, "export", "sf1_canonical.rcpg"), 1, rcpg},
 		{"FINBENCH", "rcpg", filepath.Join(*root, "export", "finbench_sf10_canonical.rcpg"), 10, rcpg},
-		{"SPB", "rcpg", filepath.Join(*spbDir, "spb_canonical.rcpg"), 1, rcpg},
+		{"SPB", "rcpg", spbRcpg, 1, rcpg},
 		{"SPB", "nt", filepath.Join(*root, "data", "spb", "extract", "spb-validate.nt"), 1, nt},
 	}
 
@@ -63,6 +71,7 @@ func run() error {
 	}
 	defer f.Close()
 
+	var spbRef *chickpeas.Snapshot
 	for _, c := range cases {
 		info, err := os.Stat(c.path)
 		if err != nil {
@@ -80,6 +89,15 @@ func run() error {
 		}
 		slices.Sort(samples)
 		ms := ldbc.Percentile(samples, 0.5)
+		parity := "MATCH" // rcpg IS the canonical snapshot (the diff baseline)
+		if c.query == "SPB" && c.variant == "rcpg" {
+			spbRef = g
+		}
+		if c.variant == "nt" {
+			if parity, err = spbNTParity(spbRef, spbRcpg, g); err != nil {
+				fmt.Printf("LOAD/%-9s %-5s WARN  no diff baseline: %v\n", c.query, c.variant, err)
+			}
+		}
 		rows := int(g.NodeCount()) + int(g.RelCount())
 		rec := ldbc.Record{
 			Family:       "LOAD",
@@ -91,6 +109,7 @@ func run() error {
 			Rows:         rows,
 			SF:           c.sf,
 			Shape:        "load",
+			Parity:       parity,
 			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
 			EngineDateTime: stamp.DateTime, EngineSubject: stamp.Subject,
 			MeasuredDate: time.Now().UTC().Format("2006-01-02"),
@@ -111,10 +130,28 @@ func run() error {
 		if err := enc.Encode(rec); err != nil {
 			return err
 		}
-		fmt.Printf("LOAD/%-9s %-5s %9.1f ms  (%d nodes, %d rels, %.1f MB/s, n=%d)\n",
-			c.query, c.variant, ms, g.NodeCount(), g.RelCount(), rec.Meta.MbS, len(samples))
+		fmt.Printf("LOAD/%-9s %-5s %9.1f ms  (%d nodes, %d rels, %.1f MB/s, n=%d)  %s\n",
+			c.query, c.variant, ms, g.NodeCount(), g.RelCount(), rec.Meta.MbS, len(samples), parity)
 	}
 	return nil
+}
+
+// spbNTParity diff-gates the nt-reloaded SPB graph against the rcpg
+// baseline -- reusing the SPB rcpg case's snapshot, or loading it when
+// that case was skipped. The external id is the `uri` property every
+// IRI node carries (the cross-engine key, cf. internal/ldbc/spbload.go);
+// Full covers the whole id space since the SPB extract is small.
+func spbNTParity(ref *chickpeas.Snapshot, rcpgPath string, g *chickpeas.Snapshot) (string, error) {
+	if ref == nil {
+		var err error
+		if ref, err = chickpeas.ReadRCPGFile(rcpgPath); err != nil {
+			return "", err
+		}
+	}
+	if ok, detail := ldbc.DiffGraphs(ref, g, ldbc.DiffOpts{IDProp: "uri", Full: true}); !ok {
+		return "DIFF (" + detail + ")", nil
+	}
+	return "MATCH", nil
 }
 
 func main() {
