@@ -12,6 +12,7 @@ package ldbc
 
 import (
 	"math"
+	"slices"
 	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -327,7 +328,7 @@ func spbQ7(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		out = append(out, w)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return spbURIRows(g, out), nil
 }
 
