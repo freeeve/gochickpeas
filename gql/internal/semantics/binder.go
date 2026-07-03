@@ -8,25 +8,13 @@ import (
 	"strings"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
 )
 
 // aggNames are the aggregate functions the engine recognises. Execution
 // support is a subset (see plan/exec); collect binds but may be rejected
 // at planning.
 var aggNames = []string{"count", "sum", "avg", "min", "max", "collect"}
-
-// scalarFuncs are the scalar functions the evaluator resolves (the eval
-// FuncOp table plus the graph-resolved startNode/endNode), lowercased.
-// M14's eval must keep its resolution table in sync with this set.
-var scalarFuncs = map[string]struct{}{
-	"date": {}, "datetime": {}, "localdatetime": {}, "duration": {},
-	"length": {}, "nodes": {}, "rels": {}, "relationships": {},
-	"size": {}, "range": {}, "left": {}, "right": {}, "substring": {},
-	"id": {}, "abs": {}, "ceil": {}, "floor": {}, "round": {},
-	"sign": {}, "sqrt": {}, "tofloat": {}, "tointeger": {},
-	"tostring": {}, "toboolean": {}, "coalesce": {},
-	"startnode": {}, "endnode": {},
-}
 
 // IsAggName reports whether name is an aggregate function
 // (case-insensitive).
@@ -42,8 +30,7 @@ func IsAggName(name string) bool {
 // IsKnownScalarFunc reports whether name is a scalar function the engine
 // can evaluate (case-insensitive).
 func IsKnownScalarFunc(name string) bool {
-	_, ok := scalarFuncs[strings.ToLower(name)]
-	return ok
+	return eval.IsKnownScalarFunc(name)
 }
 
 // IsKnownFunction reports whether name is any function the engine

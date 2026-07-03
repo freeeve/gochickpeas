@@ -6,6 +6,7 @@
 package parser
 
 import (
+	"math"
 	"strings"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -47,7 +48,14 @@ func (p *parser) parseBP(minBP int) (ast.Expr, error) {
 		if oerr != nil {
 			return nil, oerr
 		}
-		lhs = &ast.Unary{Op: ast.Neg, Expr: operand}
+		// Fold a unary minus over the MinInt64 magnitude into the literal
+		// so it doesn't re-overflow at eval; every other negation stays a
+		// normal Unary (mirrors the Rust parser).
+		if lit, ok := operand.(*ast.Lit); ok && lit.Value.Kind == ast.LitInt && lit.Value.I == math.MinInt64 {
+			lhs = lit
+		} else {
+			lhs = &ast.Unary{Op: ast.Neg, Expr: operand}
+		}
 	default:
 		lhs, err = p.parsePrimary()
 		if err != nil {

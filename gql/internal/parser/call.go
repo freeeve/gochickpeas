@@ -3,6 +3,7 @@
 package parser
 
 import (
+	"math"
 	"strconv"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -166,6 +167,13 @@ func (p *parser) parseLiteralTok() (ast.Literal, *Error) {
 		p.i++
 		n, err := strconv.ParseInt(t.Text, 10, 64)
 		if err != nil {
+			// 2^63 is MinInt64's magnitude: it overflows as a positive but
+			// is valid under a unary minus. Read it as MinInt64 so the
+			// unary-minus fold in the Pratt parser produces MinInt64
+			// instead of re-overflowing (mirrors the Rust parser exactly).
+			if t.Text == "9223372036854775808" {
+				return ast.IntLit(math.MinInt64), nil
+			}
 			return ast.Literal{}, errf(t.Pos, "bad integer %q", t.Text)
 		}
 		return ast.IntLit(n), nil
