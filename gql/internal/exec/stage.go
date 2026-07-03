@@ -16,6 +16,8 @@ type stageComp struct {
 	matchers     []*graph.NodeMatcher
 	relMatchers  []*graph.RelMatcher
 	levelFilters [][]RowEval
+	hopFilters   []*hopFilter
+	semijoins    []semiCache
 }
 
 // compileStage pre-resolves the stage's constant names once (labels,
@@ -26,6 +28,8 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, r
 		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
 		levelFilters: buildLevelFilters(ctx, stage, slots, rows),
+		hopFilters:   buildHopFilters(ctx, stage.Ops),
+		semijoins:    buildSemijoins(stage.Ops),
 	}
 	for i := range stage.Ops {
 		op := &stage.Ops[i]
@@ -39,18 +43,37 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, r
 	return sc
 }
 
-// runStage walks each input row through the stage's bind chain. A
-// required stage consumes its input rows.
+// runStage walks each input row through the stage's bind chain. An
+// optional stage re-emits the input row (new variables left null) when
+// nothing matches -- the left-join semantics of OPTIONAL MATCH.
 func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) [][]value.Value {
 	sc := compileStage(ctx, stage, slots, rows)
 	var out [][]value.Value
 	var scratch genScratch
+	sink := func(r []value.Value) {
+		cp := make([]value.Value, len(r))
+		copy(cp, r)
+		out = append(out, cp)
+	}
 	for _, row := range rows {
-		genMatches(ctx, stage.Ops, row, sc, slots, func(r []value.Value) {
-			cp := make([]value.Value, len(r))
-			copy(cp, r)
-			out = append(out, cp)
-		}, &scratch)
+		if stage.Optional {
+			// gen_matches mutates the row it walks, so keep the original
+			// for the no-match re-emit.
+			orig := make([]value.Value, len(row))
+			copy(orig, row)
+			before := len(out)
+			genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch)
+			if len(out) == before {
+				out = append(out, orig)
+			}
+			continue
+		}
+		genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch)
+	}
+	// MATCH p = ...: assemble each row's named path, then run the stage
+	// WHERE as a post-path filter so nodes(p)/rels(p)/length(p) resolve.
+	if stage.PathBind != nil {
+		out = bindPaths(ctx, stage, slots, out)
 	}
 	return out
 }
@@ -64,6 +87,12 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	n := max(len(stage.Ops), 1)
 	buckets := make([][]RowEval, n)
 	if stage.Where == nil {
+		return buckets
+	}
+	// A named-path bind assembles p only AFTER the walk, so its WHERE runs
+	// as a post-path filter instead (a level filter over the still-null
+	// path slot would silently drop every row).
+	if stage.PathBind != nil {
 		return buckets
 	}
 	slotLevel := make(map[int]int, len(stage.Ops))

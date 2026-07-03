@@ -72,19 +72,11 @@ func checkSupported(p *plan.Plan) error {
 			for _, st := range seg.Stages {
 				switch s := st.(type) {
 				case *plan.MatchStage:
-					if s.Optional {
-						return unsupported("OPTIONAL MATCH (M17)")
-					}
-					if s.PathBind != nil {
-						return unsupported("named paths (M17)")
-					}
-					for _, op := range s.Ops {
-						if op.Kind != plan.OpScan {
-							return unsupported("relationship expansion (M17)")
-						}
-					}
+					// Fully supported since M17.
 				case *plan.SpStage:
-					return unsupported("path search (M17)")
+					if s.Weight != nil {
+						return unsupported("weighted shortest paths (M19)")
+					}
 				case *plan.CallStage:
 					return unsupported("CALL procedures (M19)")
 				case *plan.UnwindStage:

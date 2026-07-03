@@ -22,8 +22,10 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]va
 		switch s := st.(type) {
 		case *plan.MatchStage:
 			matched = runStage(ctx, s, seg.Slots, matched)
+		case *plan.SpStage:
+			matched = runSPStage(ctx, s, matched)
 		default:
-			// Unreachable: checkSupported rejected these plans (M17-M19).
+			// Unreachable: checkSupported rejected these plans (M18/M19).
 			matched = nil
 		}
 	}

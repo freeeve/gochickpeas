@@ -14,8 +14,11 @@ import (
 // genScratch holds the per-row DFS buffers, reused across a stage's row
 // loop so a scan/expand does not allocate per row.
 type genScratch struct {
-	cand [][]graph.NodeID
-	pos  []int
+	cand      [][]graph.NodeID
+	candRel   [][]uint32
+	candData  [][]uint32
+	candRange [][][2]int
+	pos       []int
 }
 
 // genMatches walks the ops' bind chain over one input row, handing each
@@ -31,18 +34,35 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 	}
 	for len(scratch.cand) < n {
 		scratch.cand = append(scratch.cand, nil)
+		scratch.candRel = append(scratch.candRel, nil)
+		scratch.candData = append(scratch.candData, nil)
+		scratch.candRange = append(scratch.candRange, nil)
 	}
 	scratch.pos = append(scratch.pos[:0], make([]int, n)...)
 	row := base
 
-	levelCandidates(ctx, &ops[0], sc.matchers[0], row, &scratch.cand[0])
+	levelCandidates(ctx, &ops[0], sc, 0, row, scratch)
 	cur := 0
 	for {
 		switch {
 		case scratch.pos[cur] < len(scratch.cand[cur]):
-			node := scratch.cand[cur][scratch.pos[cur]]
+			p := scratch.pos[cur]
+			node := scratch.cand[cur][p]
 			scratch.pos[cur]++
 			row[slotOf(&ops[cur])] = value.Node(node)
+			// A named fixed-hop relationship binds its position; a named
+			// variable-length relationship binds the trail's rel list.
+			if ops[cur].Kind == plan.OpExpand && ops[cur].RelSlot != plan.NoSlot {
+				row[ops[cur].RelSlot] = value.Rel(scratch.candRel[cur][p])
+			}
+			if ops[cur].Kind == plan.OpVarExpand && ops[cur].RelSlot != plan.NoSlot {
+				rng := scratch.candRange[cur][p]
+				rels := make([]value.Value, rng[1])
+				for i := range rng[1] {
+					rels[i] = value.Rel(scratch.candData[cur][rng[0]+i])
+				}
+				row[ops[cur].RelSlot] = value.List(rels)
+			}
 			// Pushed-down predicates for this level: any failing conjunct
 			// abandons the candidate before deeper ops expand from it.
 			ok := true
@@ -59,7 +79,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 				sink(row)
 			} else {
 				cur++
-				levelCandidates(ctx, &ops[cur], sc.matchers[cur], row, &scratch.cand[cur])
+				levelCandidates(ctx, &ops[cur], sc, cur, row, scratch)
 				scratch.pos[cur] = 0
 			}
 		case cur == 0:
@@ -87,10 +107,27 @@ func relSlotOf(op *plan.BindOp) int {
 	return plan.NoSlot
 }
 
-// levelCandidates fills the pooled candidate buffer for binding an op's
-// node slot.
-func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, row []value.Value, cand *[]graph.NodeID) {
+// levelCandidates fills the pooled candidate buffers for binding an op's
+// node slot (and, for named relationships, its rel position buffers).
+func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row []value.Value, scratch *genScratch) {
+	m := sc.matchers[i]
+	cand := &scratch.cand[i]
 	*cand = (*cand)[:0]
+	scratch.candRel[i] = scratch.candRel[i][:0]
+	scratch.candData[i] = scratch.candData[i][:0]
+	scratch.candRange[i] = scratch.candRange[i][:0]
+	switch op.Kind {
+	case plan.OpExpand:
+		if sc.semijoins[i] != nil {
+			semijoinCandidates(ctx, op, m, sc.semijoins[i], row, cand)
+			return
+		}
+		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])
+		return
+	case plan.OpVarExpand:
+		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i])
+		return
+	}
 	switch op.Source.Kind {
 	case plan.ScanArg:
 		// The node is already bound in a row slot (carried in / reused

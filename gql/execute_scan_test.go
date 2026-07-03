@@ -359,8 +359,8 @@ func TestErrorKinds(t *testing.T) {
 		t.Fatalf("unknown function kind: %v", err)
 	}
 	// Features gated to later milestones surface as typed plan errors.
-	if _, err := Run(g, "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name AS n"); !errors.Is(err, ErrPlan) {
-		t.Fatalf("expand gate: %v", err)
+	if _, err := Run(g, "MATCH (p:Person) RETURN count(p) AS n"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("aggregation gate: %v", err)
 	}
 	if _, err := Run(g, "PROFILE MATCH (p:Person) RETURN p.name AS n"); !errors.Is(err, ErrPlan) {
 		t.Fatalf("profile gate: %v", err)
