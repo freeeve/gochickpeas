@@ -64,3 +64,24 @@ per-query reference hashes, same rowhash/v1 — but the rows come from **hand-wr
   against the identical reference — a nice internal check (both must hash-equal the ref).
 - Blocked in the manifest (IC14 weighted-SP is fine natively; only truly-native-infeasible rows would
   be marked) — coordinate the blocked set with tasks/263.
+
+## 2026-07-03 — DONE (four of five families; SPB split to tasks/026)
+
+- **Infrastructure**: `cmd/ldbcnativebench` (manifest-driven, 6-col `native_variants.tsv`, skip-loudly /
+  DIFF-fails semantics mirroring gqlbench) + per-(family,query) kernel registry in `internal/ldbc`
+  (`NativeKernel` = untimed prepare returning the timed runnable, so emitted timings measure the same
+  work the rcp-native harness times — Q19/Q20/IC14 weight maps and the IS read anchors sit in prepare).
+  Interim manifest generator `cmd/nativemanifest` hashes the ldbc-side committed refs (rowhash/v1); the
+  49 GQL-twin refhashes reproduce `gql_variants.tsv` exactly. Swaps for the authoritative ldbc-side
+  manifest (their tasks/263) unchanged when it lands.
+- **Kernels at parity**: BI Q1–Q20 (20/20), IC1–14 + IS1–7 (21/21), FinBench CR1–12 + SR1–6 (18/18) —
+  **59/59 MATCH**, including IC14 and CR8 which the GQL manifest marks blocked. CR8 preserves the Rust
+  reference's case-sensitive truncation-order quirk (harness passes "desc", kernel compares "DESC", so
+  the frontier sorts ascending) — noted in the tasks/263 ping.
+- **GA track**: `cmd/gabench` + `internal/ldbc/ga*.go` — dataset loader, the six spec-faithful
+  algorithms, and exact/epsilon/relabel per-vertex validation. wiki-Talk 5/5 references PASS (SSSP has
+  no reference; emits unvalidated like the rcp bin); example-directed/undirected 6/6 each.
+- **Emitted** at clean HEAD 91f8678: 59 per-query native rows + 6 GA rows appended to
+  `bench-out/emitted_gochickpeas.jsonl` as `gochickpeas (go)`.
+- **SPB**: split to `tasks/026` — blocked on the ldbc-side SPB canonical .rcpg export and per-query
+  manifest rows (their tasks/263 deliverable 1); ping appended to their task file.
