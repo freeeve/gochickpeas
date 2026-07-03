@@ -61,3 +61,27 @@ on our side:
 
 Kernel port unchanged from the original plan: 30 modules from `src/spb/{q*,a*}.rs`, prep/run
 split (full-text field + geo index built in untimed prepare), registering `SPB/Q1`..`SPB/A25`.
+
+## 2026-07-03 -- DONE (30/30 MATCH; full suite 89/89)
+
+Shipped on this repo's side only; no ldbc-side deliverable was needed in the end:
+
+1. **Loader** (`internal/ldbc/spbload.go` + `cmd/spbexport`, new dep `github.com/freeeve/libcodex`
+   v0.13.0): N-Triples -> property graph mirroring their `src/spb/loader.rs` exactly (subClassOf/
+   subPropertyOf forward-chaining, owl:Thing dropped, percent-decoded `uri` key, first-wins typed
+   literals). Load-level parity: **947640 resources / 3851898 triples**, equal to the Rust banner.
+   Export: `export/spb_canonical.rcpg` (114MB, gitignored; regenerate with
+   `go run ./cmd/spbexport -ldbc ~/rustychickpeas-ldbc`).
+2. **Manifest arm** (`internal/ldbc/spbref.go`, `cmd/nativemanifest`): 30 `SPB` rows hashed from
+   their committed `python/refs/spb/spb.parity.rust.json` per-query blocks (kind `uris` wraps to
+   one-cell rows), norm `-` -- rowhash/v1's sorted multiset absorbs the order-free full result
+   sets, no sort norm needed. Query ids lowercase (`q1`..`a25`) to join their viz's SPB rows.
+3. **Kernels** (`internal/ldbc/native_spb_{a,b,c,d}.go`): all 30, `-verify-only` 30/30 MATCH
+   (89/89 with the pre-existing families). Ports preserve the Rust per-rel multiset counting (no
+   dedup of parallel about/mentions/tag rels) and the q2/q9/a2 derived-parameter prepare.
+   Full-text (a15/a16/a20-a23) and geo (a17) validate FullTextField/GeoIndex against their core.
+4. **Bonus (per Eve)**: `cmd/loadbench` emits family=LOAD records (BI/FINBENCH/SPB rcpg + SPB
+   nt) in the rcp-native load-emissions shape; new optional Meta fields format/bytes/mb_s/rec_s.
+
+Their tasks/263's authoritative manifest, if it ships, can supersede the interim rows; the
+refhashes will not move (same refs, same rowhash/v1).
