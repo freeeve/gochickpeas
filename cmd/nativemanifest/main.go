@@ -26,20 +26,42 @@ import (
 // query, and which graph key it runs on. Norms for GQL-twin rows match
 // gql_variants.tsv so both manifests stay in lockstep; native-only rows
 // (BI Q4/Q8/Q9/Q10/Q15/Q17/Q19/Q20, IC14, FinBench CR8, SPB) carry the
-// norm the kernel's output shape needs against the stored ref.
+// norm the kernel's output shape needs against the stored ref. SPB rows
+// set key: their 30 oracles share one combined parity JSON, and the
+// refhash comes from that query's block (order-free full result sets --
+// rowhash's sorted multiset needs no norm).
 type entry struct {
 	family string
 	query  string
 	ref    string
+	key    string
 	norm   string
 	graph  string
 }
 
-// graph keys resolved against -ldbc/export.
+// graph keys resolved against -ldbc/export; the SPB graph is this
+// repo's own spbexport output (their tasks/263 export hasn't shipped),
+// resolved against -spb-graph instead.
 const (
 	sf1      = "sf1_canonical.rcpg"
 	finbench = "finbench_sf10_canonical.rcpg"
+	spbGraph = "spb_canonical.rcpg"
 )
+
+// spbQueries lists the SPB family in their parity JSON's canonical
+// order: basics q1-q5/q7/q9, advanced a1-a10/a13-a25 (q6/q8 exist only
+// in the sample-vocabulary demo; a17/a20 are their real-data versions).
+// Ids stay lowercase to join the ldbc viz's SPB rows.
+func spbQueries() []string {
+	qs := []string{"q1", "q2", "q3", "q4", "q5", "q7", "q9"}
+	for i := 1; i <= 25; i++ {
+		if i == 11 || i == 12 {
+			continue
+		}
+		qs = append(qs, fmt.Sprintf("a%d", i))
+	}
+	return qs
+}
 
 // entries lists the native manifest coverage in family/query order. BI
 // Q16 gates on the official (empty at SF1) A-and-B intersection ref,
@@ -47,7 +69,7 @@ const (
 func entries() []entry {
 	var out []entry
 	add := func(family, query, ref, norm, graph string) {
-		out = append(out, entry{family, query, ref, norm, graph})
+		out = append(out, entry{family: family, query: query, ref: ref, norm: norm, graph: graph})
 	}
 	// BI Q1-Q20; Q3 col2 is forum.creationDate emitted in epoch-ms
 	// against a ref stored in epoch-days (same as the GQL twin).
@@ -81,6 +103,13 @@ func entries() []entry {
 	for i := 1; i <= 6; i++ {
 		add("FinBench", fmt.Sprintf("SR%d", i), fmt.Sprintf("finbench/sr%d.rust.json", i), "round3", finbench)
 	}
+	// SPB q1-a25 (30): one combined ref, per-query key, no norm.
+	for _, q := range spbQueries() {
+		out = append(out, entry{
+			family: "SPB", query: q, ref: "spb/spb.parity.rust.json",
+			key: q, norm: "-", graph: spbGraph,
+		})
+	}
 	return out
 }
 
@@ -93,6 +122,7 @@ func run() error {
 	root := flag.String("ldbc", os.Getenv("GOCHICKPEAS_LDBC_ROOT"),
 		"rustychickpeas-ldbc checkout root (default $GOCHICKPEAS_LDBC_ROOT)")
 	out := flag.String("out", "bench-out/native_variants.tsv", "manifest output path")
+	spbDir := flag.String("spb-graph-dir", "export", "directory holding this repo's spbexport output")
 	flag.Parse()
 	if *root == "" {
 		return fmt.Errorf("no ldbc root: pass -ldbc or set GOCHICKPEAS_LDBC_ROOT")
@@ -112,11 +142,20 @@ func run() error {
 	n := 0
 	byFamily := map[string]int{}
 	for _, e := range entries() {
-		hash, err := ldbc.RefHash(filepath.Join(refs, e.ref))
+		var hash string
+		if e.key != "" {
+			hash, err = ldbc.SPBRefHash(filepath.Join(refs, e.ref), e.key)
+		} else {
+			hash, err = ldbc.RefHash(filepath.Join(refs, e.ref))
+		}
 		if err != nil {
 			return fmt.Errorf("%s/%s: %w", e.family, e.query, err)
 		}
-		graph, err := filepath.Abs(filepath.Join(export, e.graph))
+		graphDir := export
+		if e.family == "SPB" {
+			graphDir = *spbDir
+		}
+		graph, err := filepath.Abs(filepath.Join(graphDir, e.graph))
 		if err != nil {
 			return err
 		}
