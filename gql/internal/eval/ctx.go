@@ -21,6 +21,15 @@ type Ctx struct {
 	Params []value.Value
 	// Named are the explicit $name parameter values.
 	Named map[string]value.Value
+	// ForceInterp pins every expression to the interpreted path even on a
+	// native-capable graph -- the differential test hook behind the
+	// dual-path harness.
+	ForceInterp bool
+	// MatchEpoch is bumped once per match-call by the executor, so a
+	// loop-invariant carried IN list's membership cache rebuilds per call
+	// and is reused across that call's candidates (replaces the Rust
+	// thread-local epoch).
+	MatchEpoch uint64
 }
 
 // ParamValue resolves an auto-lifted slot; out of range is Null.

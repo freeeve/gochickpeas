@@ -42,7 +42,15 @@ func applyPostWhere(ctx *eval.Ctx, seg *plan.Segment, out *[][]value.Value) {
 	for i, c := range seg.Proj.Columns {
 		scope[c] = i
 	}
-	w := compileEval(seg.PostWhere)
+	// An output column constant across every projected row (e.g. an
+	// ungrouped collect broadcast) lets an IN over it probe a prebuilt set.
+	rows := *out
+	isConst := func(s int) bool { return slotConstant(s, rows) }
+	var sample []value.Value
+	if len(rows) > 0 {
+		sample = rows[0]
+	}
+	w := hoistEval(ctx, compileEval(ctx, seg.PostWhere, scope), isConst, func(int) bool { return false }, sample, scope)
 	kept := (*out)[:0]
 	for _, r := range *out {
 		if w.Eval(ctx, r, scope).IsTruthy() {

@@ -21,6 +21,9 @@ type genScratch struct {
 // genMatches walks the ops' bind chain over one input row, handing each
 // completed match row to the sink by reference (the sink copies).
 func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, sink func([]value.Value), scratch *genScratch) {
+	// New match-call epoch: a loop-invariant carried IN list hashes once
+	// for this call and reuses it across the call's candidates.
+	ctx.MatchEpoch++
 	n := len(ops)
 	if n == 0 {
 		sink(base)

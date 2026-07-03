@@ -21,11 +21,11 @@ type stageComp struct {
 // compileStage pre-resolves the stage's constant names once (labels,
 // property keys, rel types, params) so the per-candidate work is bitmap
 // contains + column reads.
-func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int) *stageComp {
+func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) *stageComp {
 	sc := &stageComp{
 		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
-		levelFilters: buildLevelFilters(stage, slots),
+		levelFilters: buildLevelFilters(ctx, stage, slots, rows),
 	}
 	for i := range stage.Ops {
 		op := &stage.Ops[i]
@@ -42,7 +42,7 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int) *
 // runStage walks each input row through the stage's bind chain. A
 // required stage consumes its input rows.
 func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) [][]value.Value {
-	sc := compileStage(ctx, stage, slots)
+	sc := compileStage(ctx, stage, slots, rows)
 	var out [][]value.Value
 	var scratch genScratch
 	for _, row := range rows {
@@ -60,7 +60,7 @@ func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows 
 // bound; graph-touching conjuncts keep last-level timing. A conjunct then
 // prunes a candidate the moment it can fail instead of after the whole
 // pattern binds.
-func buildLevelFilters(stage *plan.MatchStage, slots map[string]int) [][]RowEval {
+func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) [][]RowEval {
 	n := max(len(stage.Ops), 1)
 	buckets := make([][]RowEval, n)
 	if stage.Where == nil {
@@ -78,12 +78,23 @@ func buildLevelFilters(stage *plan.MatchStage, slots map[string]int) [][]RowEval
 			}
 		}
 	}
+	// A slot is batch-constant when carried in (not bound here) and
+	// identical across every input row; a carried slot is loop-invariant
+	// per match-call even when it varies across input rows.
+	isBound := func(s int) bool { _, ok := slotLevel[s]; return ok }
+	isConst := func(s int) bool { return !isBound(s) && slotConstant(s, rows) }
+	isCarried := func(s int) bool { return !isBound(s) }
+	var sample []value.Value
+	if len(rows) > 0 {
+		sample = rows[0]
+	}
 	var conjs []ast.Expr
 	splitConjuncts(stage.Where, &conjs)
 	for _, c := range conjs {
+		cc := hoistEval(ctx, compileEval(ctx, c, slots), isConst, isCarried, sample, slots)
 		var refs []int
 		hasSlow := false
-		evalPushdown(c, slots, &refs, &hasSlow)
+		evalPushdown(cc, c, slots, &refs, &hasSlow)
 		level := n - 1
 		if !hasSlow {
 			level = 0
@@ -93,9 +104,23 @@ func buildLevelFilters(stage *plan.MatchStage, slots map[string]int) [][]RowEval
 				}
 			}
 		}
-		buckets[min(level, n-1)] = append(buckets[min(level, n-1)], compileEval(c))
+		buckets[min(level, n-1)] = append(buckets[min(level, n-1)], cc)
 	}
 	return buckets
+}
+
+// slotConstant reports whether slot holds an identical value on every row
+// of the batch (vacuously true for an empty batch).
+func slotConstant(slot int, rows [][]value.Value) bool {
+	for i := 1; i < len(rows); i++ {
+		if slot >= len(rows[0]) || slot >= len(rows[i]) {
+			return false
+		}
+		if !value.Identical(rows[0][slot], rows[i][slot]) {
+			return false
+		}
+	}
+	return true
 }
 
 // splitConjuncts flattens a WHERE expression's top-level AND chain.

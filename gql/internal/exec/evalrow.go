@@ -1,12 +1,14 @@
 // Package exec runs a compiled Plan against the graph seam. This file is
 // the RowEval seam: every filter/projection evaluates through it, so the
 // executor never cares whether the interpreted or the columnar compiled
-// (M16) form is behind a given expression.
+// form is behind a given expression.
 package exec
 
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/compile"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -23,18 +25,47 @@ func (i interpExpr) Eval(ctx *eval.Ctx, row []value.Value, slots map[string]int)
 	return eval.Eval(ctx, i.e, row, slots)
 }
 
-// compileEval binds an expression for per-row evaluation. M15 always
-// interprets; M16 selects the columnar compiled form when the graph
-// asserts the native capability.
-func compileEval(e ast.Expr) RowEval { return interpExpr{e} }
+// compileEval binds an expression for per-row evaluation: the columnar
+// compiled form when the graph asserts the native capability (and the
+// differential test hook doesn't pin the interpreter), else interpreted.
+func compileEval(ctx *eval.Ctx, e ast.Expr, slots map[string]int) RowEval {
+	if !ctx.ForceInterp {
+		if n, ok := ctx.G.(graph.Native); ok {
+			return compile.New(ctx, e, slots, n.Snapshot())
+		}
+	}
+	return interpExpr{e}
+}
+
+// hoistEval applies the backend's IN-list hoisting to a bound expression:
+// batch-constant lists bake a membership index, carried loop-invariant
+// lists cache per match-call. The interpreted form re-evaluates lists per
+// row (correct, just not pre-hashed), mirroring the Rust portable default.
+func hoistEval(ctx *eval.Ctx, re RowEval, isConst, isCarried func(int) bool, sample []value.Value, slots map[string]int) RowEval {
+	c, ok := re.(*compile.Compiled)
+	if !ok {
+		return re
+	}
+	return compile.HoistCarriedIn(compile.HoistConstIn(ctx, c, isConst, sample, slots), isCarried)
+}
 
 // evalPushdown reports the row slots a bound expression reads (through
-// slots) and whether it contains a node that pins it to the last op level
-// (graph-touching or scope-extending -- subqueries, function calls, list
-// machinery). The executor buckets each WHERE conjunct to the deepest op
-// binding a slot it reads; slow conjuncts keep last-level timing. Mirrors
-// the Rust cexpr_slots analysis over the AST.
-func evalPushdown(e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) {
+// slots) and whether it contains a node that pins it to the last op level.
+// The compiled form introspects its resolved nodes (a memoized subquery
+// pushes to where its correlated bindings bind); the interpreted form
+// walks the AST conservatively.
+func evalPushdown(re RowEval, e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) {
+	if c, ok := re.(*compile.Compiled); ok {
+		r, slow := compile.Slots(c)
+		*refs = append(*refs, r...)
+		*hasSlow = *hasSlow || slow
+		return
+	}
+	astPushdown(e, slots, refs, hasSlow)
+}
+
+// astPushdown is the interpreted path's conservative slot analysis.
+func astPushdown(e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) {
 	switch n := e.(type) {
 	case *ast.Lit:
 	case *ast.Var:
@@ -50,29 +81,29 @@ func evalPushdown(e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) 
 			*refs = append(*refs, s)
 		}
 	case *ast.Unary:
-		evalPushdown(n.Expr, slots, refs, hasSlow)
+		astPushdown(n.Expr, slots, refs, hasSlow)
 	case *ast.Binary:
-		evalPushdown(n.LHS, slots, refs, hasSlow)
-		evalPushdown(n.RHS, slots, refs, hasSlow)
+		astPushdown(n.LHS, slots, refs, hasSlow)
+		astPushdown(n.RHS, slots, refs, hasSlow)
 	case *ast.ListExpr:
 		for _, el := range n.Elems {
-			evalPushdown(el, slots, refs, hasSlow)
+			astPushdown(el, slots, refs, hasSlow)
 		}
 	case *ast.In:
-		evalPushdown(n.Expr, slots, refs, hasSlow)
-		evalPushdown(n.List, slots, refs, hasSlow)
+		astPushdown(n.Expr, slots, refs, hasSlow)
+		astPushdown(n.List, slots, refs, hasSlow)
 	case *ast.IsNull:
-		evalPushdown(n.Expr, slots, refs, hasSlow)
+		astPushdown(n.Expr, slots, refs, hasSlow)
 	case *ast.Case:
 		if n.Operand != nil {
-			evalPushdown(n.Operand, slots, refs, hasSlow)
+			astPushdown(n.Operand, slots, refs, hasSlow)
 		}
 		for _, w := range n.Whens {
-			evalPushdown(w.Cond, slots, refs, hasSlow)
-			evalPushdown(w.Result, slots, refs, hasSlow)
+			astPushdown(w.Cond, slots, refs, hasSlow)
+			astPushdown(w.Result, slots, refs, hasSlow)
 		}
 		if n.Else != nil {
-			evalPushdown(n.Else, slots, refs, hasSlow)
+			astPushdown(n.Else, slots, refs, hasSlow)
 		}
 	default:
 		// Subqueries, function calls, comprehensions, cost, map forms:

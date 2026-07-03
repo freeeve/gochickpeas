@@ -40,7 +40,7 @@ func RunWithParams(g *chickpeas.Snapshot, query string, params map[string]value.
 		// TODO(M20): execute and zip per-operator row counts into the plan.
 		return nil, fmt.Errorf("PROFILE is not yet supported (M20): %w", ErrPlan)
 	}
-	ctx := &eval.Ctx{G: gr, Named: params}
+	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
 	rows, err := exec.Execute(ctx, p)
 	if err != nil {
 		return nil, wrapStage(err)
@@ -84,6 +84,10 @@ func explainRows(gr graph.Graph, p *plan.Plan) *Rows {
 	}
 	return newRows([]string{"plan"}, rows)
 }
+
+// forceInterp pins execution to the interpreted eval path -- the
+// dual-path differential test hook (package tests set it; never exported).
+var forceInterp bool
 
 // wrapStage maps a pipeline stage's typed error onto the package
 // sentinels, keeping the message.

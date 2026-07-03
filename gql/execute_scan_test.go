@@ -16,7 +16,7 @@ import (
 
 // socialGraph is the Rust execute.rs fixture: four Persons (name, age,
 // joined YYYYMMDD, optional city), two Companies, KNOWS diamond + WORKS_AT.
-func socialGraph(t *testing.T) *chickpeas.Snapshot {
+func socialGraph(t testing.TB) *chickpeas.Snapshot {
 	t.Helper()
 	b := chickpeas.NewBuilder(8, 16)
 	people := []struct {
@@ -56,13 +56,45 @@ func socialGraph(t *testing.T) *chickpeas.Snapshot {
 	return b.Finalize("name", "age")
 }
 
-// strCol collects a string column, sorted.
-func strCol(t *testing.T, g *chickpeas.Snapshot, q, col string) []string {
+// runBoth executes q under the compiled and interpreted eval paths,
+// asserts identical rows, and returns the compiled result -- the dual-path
+// differential harness every end-to-end test runs through.
+func runBoth(t *testing.T, g *chickpeas.Snapshot, q string) *Rows {
 	t.Helper()
-	rows, err := Run(g, q)
+	compiled, err := Run(g, q)
 	if err != nil {
 		t.Fatalf("query failed: %s\n%v", q, err)
 	}
+	forceInterp = true
+	interp, ierr := Run(g, q)
+	forceInterp = false
+	if ierr != nil {
+		t.Fatalf("interpreted path failed where compiled succeeded: %s\n%v", q, ierr)
+	}
+	ci := *compiled
+	for {
+		cr, cok := ci.Next()
+		ir, iok := interp.Next()
+		if cok != iok {
+			t.Fatalf("dual-path row-count divergence: %s", q)
+		}
+		if !cok {
+			break
+		}
+		for i, cv := range cr.Values() {
+			iv, _ := ir.GetAt(i)
+			if value.Key(cv) != value.Key(iv) {
+				t.Fatalf("dual-path divergence at %s col %d: compiled %v vs interpreted %v", q, i, cv, iv)
+			}
+		}
+	}
+	return compiled
+}
+
+// strCol collects a string column, sorted.
+func strCol(t *testing.T, g *chickpeas.Snapshot, q, col string) []string {
+	t.Helper()
+	rows := runBoth(t, g, q)
 	var out []string
 	for r := range rows.All() {
 		v, ok := r.Get(col)
@@ -82,10 +114,7 @@ func strCol(t *testing.T, g *chickpeas.Snapshot, q, col string) []string {
 // strColOrdered collects a string column preserving result order.
 func strColOrdered(t *testing.T, g *chickpeas.Snapshot, q, col string) []string {
 	t.Helper()
-	rows, err := Run(g, q)
-	if err != nil {
-		t.Fatalf("query failed: %s\n%v", q, err)
-	}
+	rows := runBoth(t, g, q)
 	var out []string
 	for r := range rows.All() {
 		v, _ := r.Get(col)

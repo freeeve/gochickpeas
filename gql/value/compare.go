@@ -334,3 +334,49 @@ func slicesEqual[T ~uint32](x, y []T) bool {
 	}
 	return true
 }
+
+// Identical is bit-exact value identity, unlike Equal: Null equals Null,
+// floats compare by bit pattern, and no numeric coercion applies. Used to
+// decide whether a slot holds the same value on every row of a batch.
+func Identical(a, b Value) bool {
+	if a.kind != b.kind {
+		return false
+	}
+	switch a.kind {
+	case KindNull:
+		return true
+	case KindBool, KindInt, KindFloat, KindNode, KindRel:
+		return a.num == b.num
+	case KindTemporal:
+		return a.num == b.num && a.aux == b.aux
+	case KindStr:
+		return a.str == b.str
+	case KindList:
+		x, y := a.ext.list, b.ext.list
+		if len(x) != len(y) {
+			return false
+		}
+		for i := range x {
+			if !Identical(x[i], y[i]) {
+				return false
+			}
+		}
+		return true
+	case KindPath:
+		return slicesEqual(a.ext.nodes, b.ext.nodes) && slicesEqual(a.ext.rels, b.ext.rels)
+	case KindDuration:
+		return a.num == b.num && a.ext.months == b.ext.months && a.ext.days == b.ext.days
+	case KindMap:
+		x, y := a.ext.entries, b.ext.entries
+		if len(x) != len(y) {
+			return false
+		}
+		for i := range x {
+			if x[i].Key != y[i].Key || !Identical(x[i].Val, y[i].Val) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}

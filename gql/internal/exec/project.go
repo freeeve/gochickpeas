@@ -20,7 +20,7 @@ import (
 func project(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, matched [][]value.Value) [][]value.Value {
 	returns := make([]RowEval, len(proj.Returns))
 	for i, r := range proj.Returns {
-		returns[i] = compileEval(r.Expr)
+		returns[i] = compileEval(ctx, r.Expr, slots)
 	}
 	projRow := func(m []value.Value) []value.Value {
 		out := make([]value.Value, len(returns))
