@@ -6,12 +6,14 @@ package exec
 
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/explain"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// runSegment runs one segment over its input rows.
-func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]value.Value {
+// runSegment runs one segment over its input rows, recording per-operator
+// produced-row counts into prof when profiling (nil = off).
+func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *explain.SegProf) [][]value.Value {
 	matched := make([][]value.Value, len(inputs))
 	for i, inrow := range inputs {
 		base := make([]value.Value, seg.RowWidth)
@@ -21,15 +23,26 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]va
 	for _, st := range seg.Stages {
 		switch s := st.(type) {
 		case *plan.MatchStage:
-			matched = runStage(ctx, s, seg.Slots, matched)
+			var opRows []uint64
+			if prof != nil {
+				opRows = make([]uint64, len(s.Ops)+1)
+			}
+			matched = runStage(ctx, s, seg.Slots, matched, opRows)
+			if prof != nil {
+				prof.Stages = append(prof.Stages, explain.StageProf{Match: opRows})
+			}
 		case *plan.SpStage:
 			matched = runSPStage(ctx, s, matched)
+			recordSingle(prof, matched)
 		case *plan.CallStage:
 			matched = runCallStage(ctx, s, matched)
+			recordSingle(prof, matched)
 		case *plan.UnwindStage:
 			matched = runUnwindStage(ctx, s, seg.Slots, matched)
+			recordSingle(prof, matched)
 		case *plan.CallSubqueryStage:
 			matched = runCallSubqueryStage(ctx, s, matched)
+			recordSingle(prof, matched)
 		}
 	}
 	var out [][]value.Value
@@ -38,8 +51,24 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]va
 	} else {
 		out = project(ctx, &seg.Proj, seg.Slots, matched)
 	}
+	if prof != nil {
+		prof.ProjRows = uint64(len(out))
+	}
 	applyPostWhere(ctx, seg, &out)
+	if prof != nil && seg.PostWhere != nil {
+		n := uint64(len(out))
+		prof.PostWhereRows = &n
+	}
 	return out
+}
+
+// recordSingle records a one-output stage's produced-row count.
+func recordSingle(prof *explain.SegProf, matched [][]value.Value) {
+	if prof == nil {
+		return
+	}
+	n := uint64(len(matched))
+	prof.Stages = append(prof.Stages, explain.StageProf{Single: &n})
 }
 
 // applyPostWhere applies a segment's projection-boundary WHERE (FILTER /

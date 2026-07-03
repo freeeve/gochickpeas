@@ -363,12 +363,18 @@ func TestErrorKinds(t *testing.T) {
 	if _, err := Run(g, "MATCH (p:Person) RETURN nosuchfn(p) AS n"); !errors.Is(err, ErrBind) {
 		t.Fatalf("unknown function kind: %v", err)
 	}
-	// Features gated to later milestones surface as typed plan errors.
+	// An unknown YIELD column is a typed plan error (algo.* yields
+	// node/value, not score).
 	if _, err := Run(g, "CALL algo.pagerank() YIELD node, score RETURN score"); !errors.Is(err, ErrPlan) {
-		t.Fatalf("CALL proc gate: %v", err)
+		t.Fatalf("unknown YIELD column: %v", err)
 	}
-	if _, err := Run(g, "PROFILE MATCH (p:Person) RETURN p.name AS n"); !errors.Is(err, ErrPlan) {
-		t.Fatalf("profile gate: %v", err)
+	// PROFILE executes and returns the annotated plan (M20).
+	rows, err := Run(g, "PROFILE MATCH (p:Person) RETURN p.name AS n")
+	if err != nil {
+		t.Fatalf("profile mode: %v", err)
+	}
+	if cols := rows.Columns(); len(cols) != 1 || cols[0] != "plan" {
+		t.Fatalf("profile columns = %v", cols)
 	}
 }
 

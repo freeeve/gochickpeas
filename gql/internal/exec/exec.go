@@ -5,6 +5,7 @@ package exec
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/explain"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -20,12 +21,30 @@ func Execute(ctx *eval.Ctx, p *plan.Plan) ([][]value.Value, error) {
 	return acc, nil
 }
 
+// ExecuteProfiled runs the plan while recording how many rows each
+// operator produces. Segment profiles are pushed branch-major,
+// segment-minor -- the order the explain renderer walks. PROFILE reports
+// operator cardinalities, not the result set; each branch's final rows
+// are discarded (the union combine is not a profiled operator).
+func ExecuteProfiled(ctx *eval.Ctx, p *plan.Plan) *explain.Profile {
+	prof := &explain.Profile{}
+	for _, segments := range p.Branches {
+		rows := [][]value.Value{nil}
+		for _, seg := range segments {
+			sp := explain.SegProf{}
+			rows = runSegment(ctx, seg, rows, &sp)
+			prof.Segs = append(prof.Segs, sp)
+		}
+	}
+	return prof
+}
+
 // runBranch runs one branch's segment pipeline from a single empty seed
 // row.
 func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 	rows := [][]value.Value{nil}
 	for _, seg := range segments {
-		rows = runSegment(ctx, seg, rows)
+		rows = runSegment(ctx, seg, rows, nil)
 	}
 	return rows
 }

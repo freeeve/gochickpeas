@@ -45,8 +45,10 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, r
 
 // runStage walks each input row through the stage's bind chain. An
 // optional stage re-emits the input row (new variables left null) when
-// nothing matches -- the left-join semantics of OPTIONAL MATCH.
-func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value) [][]value.Value {
+// nothing matches -- the left-join semantics of OPTIONAL MATCH. opRows is
+// PROFILE's per-op counter slice, accumulated across every input row
+// (nil when not profiling).
+func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows [][]value.Value, opRows []uint64) [][]value.Value {
 	sc := compileStage(ctx, stage, slots, rows)
 	var out [][]value.Value
 	var scratch genScratch
@@ -62,13 +64,13 @@ func runStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, rows 
 			orig := make([]value.Value, len(row))
 			copy(orig, row)
 			before := len(out)
-			genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch)
+			genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch, opRows)
 			if len(out) == before {
 				out = append(out, orig)
 			}
 			continue
 		}
-		genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch)
+		genMatches(ctx, stage.Ops, row, sc, slots, sink, &scratch, opRows)
 	}
 	// MATCH p = ...: assemble each row's named path, then run the stage
 	// WHERE as a post-path filter so nodes(p)/rels(p)/length(p) resolve.

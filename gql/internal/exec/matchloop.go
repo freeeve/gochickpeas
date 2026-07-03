@@ -22,14 +22,19 @@ type genScratch struct {
 }
 
 // genMatches walks the ops' bind chain over one input row, handing each
-// completed match row to the sink by reference (the sink copies).
-func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, sink func([]value.Value), scratch *genScratch) {
+// completed match row to the sink by reference (the sink copies). opRows
+// is PROFILE's counter slice (one slot per op for bindings produced, plus
+// a final slot for rows passing the stage WHERE); nil when not profiling.
+func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, sink func([]value.Value), scratch *genScratch, opRows []uint64) {
 	// New match-call epoch: a loop-invariant carried IN list hashes once
 	// for this call and reuses it across the call's candidates.
 	ctx.MatchEpoch++
 	n := len(ops)
 	if n == 0 {
 		sink(base)
+		if opRows != nil {
+			opRows[0]++
+		}
 		return
 	}
 	for len(scratch.cand) < n {
@@ -63,6 +68,11 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 				}
 				row[ops[cur].RelSlot] = value.List(rels)
 			}
+			// PROFILE: the binding counts before the level filters prune,
+			// so pushdown effectiveness is visible per op.
+			if opRows != nil {
+				opRows[cur]++
+			}
 			// Pushed-down predicates for this level: any failing conjunct
 			// abandons the candidate before deeper ops expand from it.
 			ok := true
@@ -77,6 +87,9 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			}
 			if cur+1 == n {
 				sink(row)
+				if opRows != nil {
+					opRows[n]++
+				}
 			} else {
 				cur++
 				levelCandidates(ctx, &ops[cur], sc, cur, row, scratch)

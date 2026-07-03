@@ -80,10 +80,12 @@ func runSubplan(ctx *eval.Ctx, sub *plan.Plan, seed []value.Value) [][]value.Val
 }
 
 // runBranchSeeded runs a branch's segment pipeline from one seed row.
+// Sub-plans are never profiled (a CALL {} stage records a single output
+// count, matching the Rust engine).
 func runBranchSeeded(ctx *eval.Ctx, segments []*plan.Segment, seed []value.Value) [][]value.Value {
 	rows := [][]value.Value{seed}
 	for _, seg := range segments {
-		rows = runSegment(ctx, seg, rows)
+		rows = runSegment(ctx, seg, rows, nil)
 	}
 	return rows
 }
