@@ -1,12 +1,14 @@
-// gabench runs the six LDBC Graphalytics algorithms (BFS, PR, WCC,
-// CDLP, LCC, SSSP) over .v/.e datasets and emits warm timings in the
+// gabench runs the LDBC Graphalytics algorithms (BFS, PR, WCC, CDLP,
+// LCC, SSSP) over .v/.e datasets and emits warm timings in the
 // rustychickpeas-ldbc suite's JSONL schema as engine "gochickpeas (go)",
 // Family "GA" -- next to rcp-native (rust). Validation gates emission:
 // any algorithm with a <name>-<ALGO> reference file present must PASS
 // (exact for BFS/CDLP, relabel-invariant for WCC, 1e-6 tolerance for
 // PR/LCC/SSSP) before its timing is written; algorithms without a
 // reference emit unvalidated with an empty parity field, matching the
-// rcp-native harness.
+// rcp-native harness. Each dataset runs only its official algorithm
+// set (graph.<name>.algorithms); datasets without the property run all
+// six.
 //
 // Alongside each timing it emits the viz artifacts of task 027: a
 // per-algorithm allocation profile (profiles_gochickpeas.jsonl) and the
@@ -162,6 +164,10 @@ func run() error {
 
 		for _, a := range algos(ds) {
 			id := name + "/" + a.name
+			if !ds.Params.HasAlgorithm(a.name) {
+				fmt.Printf("%-24s skipped (not in graph.%s.algorithms)\n", id, name)
+				continue
+			}
 			// Validation run (doubles as warmup).
 			t0 := time.Now()
 			result := a.run()

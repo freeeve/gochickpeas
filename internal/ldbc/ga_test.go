@@ -35,6 +35,7 @@ func TestGALoaderMapsVerticesAndParams(t *testing.T) {
 	const e = "10 20 2.5\n20 30 4.0\n10 30\n"
 	const props = `
 graph.x.directed = false
+graph.x.algorithms = bfs, cdlp, lcc, pr, wcc
 graph.x.bfs.source-vertex = 20
 graph.x.pr.damping-factor = 0.85
 graph.x.pr.num-iterations = 7
@@ -59,12 +60,19 @@ graph.x.sssp.source-vertex = 10
 		*p.SSSPSource != 10 || p.PRIterations != 7 || p.CDLPIterations != 9 {
 		t.Fatalf("params = %+v", p)
 	}
+	if len(p.Algorithms) != 5 || !p.HasAlgorithm("BFS") || !p.HasAlgorithm("wcc") ||
+		p.HasAlgorithm("SSSP") {
+		t.Fatalf("algorithms = %v", p.Algorithms)
+	}
 	dflt, err := loadGAStr(v, e, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !dflt.Params.Directed || dflt.Params.PRIterations != 10 || dflt.Params.BFSSource != nil {
 		t.Fatalf("default params = %+v", dflt.Params)
+	}
+	if !dflt.Params.HasAlgorithm("SSSP") {
+		t.Fatal("absent algorithm set should permit every algorithm")
 	}
 }
 

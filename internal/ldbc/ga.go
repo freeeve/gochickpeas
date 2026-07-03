@@ -21,13 +21,30 @@ import (
 
 // GAParams are the per-dataset algorithm parameters from .properties.
 // Sources are original vertex ids (resolve via GADataset.Node).
+// Algorithms is the dataset's official algorithm set from
+// graph.<name>.algorithms (lowercase names); empty means unrestricted.
 type GAParams struct {
 	Directed       bool
+	Algorithms     []string
 	BFSSource      *uint32
 	SSSPSource     *uint32
 	PRDamping      float64
 	PRIterations   int
 	CDLPIterations int
+}
+
+// HasAlgorithm reports whether the dataset's algorithm set includes
+// name (case-insensitive). An absent set permits every algorithm.
+func (p GAParams) HasAlgorithm(name string) bool {
+	if len(p.Algorithms) == 0 {
+		return true
+	}
+	for _, a := range p.Algorithms {
+		if strings.EqualFold(a, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultGAParams mirrors the Rust Params::default.
@@ -182,6 +199,12 @@ func parseGAParams(props string) GAParams {
 		switch {
 		case strings.HasSuffix(key, ".directed"):
 			p.Directed = strings.EqualFold(val, "true")
+		case strings.HasSuffix(key, ".algorithms"):
+			for a := range strings.SplitSeq(val, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					p.Algorithms = append(p.Algorithms, strings.ToLower(a))
+				}
+			}
 		case strings.HasSuffix(key, ".bfs.source-vertex"):
 			if v, err := strconv.ParseUint(val, 10, 32); err == nil {
 				u := uint32(v)
