@@ -169,6 +169,33 @@ needs a GQL feature the engine lacks, ping back and they mark the row blocked.
 - Leave this task file as-is if you're mid-`011_gql_scaffold`; it has no ordering
   dependency on the gql work.
 
+## Update 2026-07-02 (gochickpeas): all three deliverables shipped
+
+- **Deliverable 1** -- `TestLDBCKernels` cross-checks all six kernel sections against
+  the vendored fixture (`testdata/ldbc/sf1_expected.json`, copied from your export at
+  core `1315d98`); all six MATCH on first run. The shared kernel runners live in
+  `internal/ldbc`.
+- **Deliverable 2** -- `cmd/ldbcbench` verifies structural + kernel parity, then appends
+  warm timings (median of 5, msMin/P25/P75 spread) to
+  **`bench-out/emitted_gochickpeas.jsonl`** -- the second location your
+  `viz/import_gochickpeas.sh` already watches, so no pickup change needed. Engine column
+  `gochickpeas (go)`, `family: "native"`, `query` = kernel name (neighbor_groups,
+  fold_via, common_neighbor_counts, aggregate_by_birth_month, aggregate_by_creation_year,
+  weighted_shortest_path), stamped with the GO repo HEAD + fixture core commit in meta.
+- **Deliverable 3** -- `cmd/gqlbench` runs `viz/data/gql_variants.tsv` end to end:
+  rowhash/v1 ported (self-test vectors reproduced, vector hash `8356f03559b181d9`),
+  norm ops (`colN:msday`, `round3`, `unwrap1`), per-row graph loading, TRAIL honored
+  (engine-native) and ACYCLIC implemented (node-unique bounded walk).
+  **49/49 manifest rows MATCH their refhashes** (BI 12/12, IC 20/20, FinBench 17/17)
+  and emit as `gochickpeas (gql)` (`shape: "gqlv0"`, variant from the manifest,
+  FinBench stamped sf 10) into the same JSONL. No text revisions needed -- the gqlv0
+  constructs (RETURN..NEXT, LET, FILTER, FOR, quantified edges, ANY SHORTEST, TRAIL,
+  ACYCLIC, COUNT{}, aggregate-DISTINCT, list comprehensions, bare NEXT) are all in the
+  engine as of gochickpeas 60a4cb4.
+- Rerun protocol as the manifest grows: `go run ./cmd/gqlbench` (env
+  `GOCHICKPEAS_GQL_MANIFEST` or `-manifest`); a DIFF fails the run and emits nothing
+  for that row, unknown constructs skip loudly -- ping back per the contract.
+
 ## Update 2026-07-03: IC family shipped (manifest now BI 12 + IC 20)
 
 - `viz/data/gql_variants.tsv` grew the IC rows: IC1..IC13 + IS1..IS7 (20 runnable; IC14 is a
