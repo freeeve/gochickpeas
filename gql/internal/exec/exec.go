@@ -3,20 +3,16 @@
 package exec
 
 import (
-	"fmt"
-
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
-	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// Execute runs a plan and returns its rows in output-column order.
+// Execute runs a plan and returns its rows in output-column order. Every
+// plan construct the planner produces is executable as of M19, so
+// execution is infallible once a plan builds.
 func Execute(ctx *eval.Ctx, p *plan.Plan) ([][]value.Value, error) {
-	if err := checkSupported(p); err != nil {
-		return nil, err
-	}
 	acc := runBranch(ctx, p.Branches[0])
 	for i, op := range p.Union {
 		combineUnion(&acc, runBranch(ctx, p.Branches[i+1]), op)
@@ -58,37 +54,4 @@ func combineUnion(acc *[][]value.Value, next [][]value.Value, op ast.UnionKind) 
 		}
 	}
 	*acc = kept
-}
-
-// checkSupported rejects plan constructs whose executors land in later
-// milestones, so the error is a typed plan error instead of a wrong
-// result. TODO(M17/M18/M19): remove arms as the executors land.
-func checkSupported(p *plan.Plan) error {
-	for _, branch := range p.Branches {
-		for _, seg := range branch {
-			for _, st := range seg.Stages {
-				switch s := st.(type) {
-				case *plan.MatchStage:
-					// Fully supported since M17.
-				case *plan.SpStage:
-					if s.Weight != nil {
-						return unsupported("weighted shortest paths (M19)")
-					}
-				case *plan.CallStage:
-					return unsupported("CALL procedures (M19)")
-				case *plan.CallSubqueryStage:
-					// The sub-plan may itself carry gated stages.
-					if err := checkSupported(s.Sub); err != nil {
-						return err
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// unsupported is a KindPlan error for a not-yet-ported executor feature.
-func unsupported(what string) error {
-	return &semantics.Error{Kind: semantics.KindPlan, Msg: fmt.Sprintf("not yet supported: %s", what)}
 }

@@ -65,19 +65,29 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 			}
 		}
 	}
+	// The weighted form compiles its per-edge weight once for the stage
+	// and runs the Dijkstra per row (no tree memo: the weighted search
+	// early-exits per target).
+	var pw *pathWeight
+	if sp.Weight != nil {
+		pw = buildPathWeight(ctx, sp)
+	}
 	memo := map[graph.NodeID]*spTree{}
 	for _, row := range rows {
 		var path *nodesRels
 		if a, ok1 := row[sp.From].AsNode(); ok1 {
 			if b, ok2 := row[sp.To].AsNode(); ok2 {
-				if srcFreq[a] >= 2 {
+				switch {
+				case pw != nil:
+					path = weightedShortestPath(ctx, a, b, sp, hop, pw)
+				case srcFreq[a] >= 2:
 					tree, ok := memo[a]
 					if !ok {
 						tree = buildSPTree(ctx, a, sp, hop)
 						memo[a] = tree
 					}
 					path = tree.pathTo(ctx, b, sp, hop)
-				} else {
+				default:
 					path = shortestPath(ctx, a, b, sp, hop)
 				}
 			}

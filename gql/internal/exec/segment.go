@@ -24,13 +24,12 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value) [][]va
 			matched = runStage(ctx, s, seg.Slots, matched)
 		case *plan.SpStage:
 			matched = runSPStage(ctx, s, matched)
+		case *plan.CallStage:
+			matched = runCallStage(ctx, s, matched)
 		case *plan.UnwindStage:
 			matched = runUnwindStage(ctx, s, seg.Slots, matched)
 		case *plan.CallSubqueryStage:
 			matched = runCallSubqueryStage(ctx, s, matched)
-		default:
-			// Unreachable: checkSupported rejected these plans (M19).
-			matched = nil
 		}
 	}
 	var out [][]value.Value
