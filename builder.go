@@ -69,6 +69,16 @@ type Builder struct {
 	// SetRelProp, built on first use and maintained by AddRel so setting
 	// one property per rel is O(m + p), not O(m^2).
 	relIndex map[[3]uint32]int
+
+	// removedRels tombstones rel indexes removed by RemoveRel; rels is never
+	// compacted before Finalize so handed-out indexes stay stable. Nil until
+	// the first removal.
+	removedRels *roaring.Bitmap
+	// removedNodes maps a detach-deleted node to the staged rel count at
+	// removal time (its watermark): staged rels below it die in the Finalize
+	// cascade, rels added afterwards -- which resurrect the node -- survive.
+	// Nil until the first removal.
+	removedNodes map[NodeID]int
 }
 
 // NewBuilder returns a builder with capacity hints (0 = the 2^20 default);
@@ -217,6 +227,12 @@ func (b *Builder) InternPropertyKey(name string) PropertyKey {
 // int32, int64, float64, bool, or Value), auto-typed into the matching
 // column. The key interns before the value, matching the Rust typed
 // setters' atom order.
+//
+// A key should keep one value type graph-wide: the snapshot stores one
+// column (one dtype) per key, so a key staged under several types across
+// different nodes keeps only one type's column at Finalize. Restaging one
+// node's key under a new type is fine via UpdateProp, which sweeps the
+// node's old stagings of every type first.
 func (b *Builder) SetProp(node NodeID, key string, value any) error {
 	k := b.interner.GetOrIntern(key)
 	return b.SetPropByKey(node, k, value)
@@ -249,42 +265,30 @@ func (b *Builder) SetPropByKey(node NodeID, key PropertyKey, value any) error {
 	return nil
 }
 
-// UpdateProp replaces node's staged value for key (in the column matching
-// the new value's type) rather than staging a duplicate write.
+// UpdateProp replaces node's staged value for key rather than staging a
+// duplicate write, sweeping every prior staged occurrence across all four
+// typed columns so the newest write wins even when it changes the value's
+// type (Finalize's per-type column loops would otherwise resolve a
+// cross-type duplicate by loop order, not write order).
 func (b *Builder) UpdateProp(node NodeID, key string, value any) error {
 	k := b.interner.GetOrIntern(key)
 	v, err := b.stageValue(value)
 	if err != nil {
 		return err
 	}
-	switch v.Kind() {
-	case KindStr:
-		b.nodeColStr[k] = removePair(b.nodeColStr[k], node)
-	case KindI64:
-		b.nodeColI64[k] = removePair(b.nodeColI64[k], node)
-	case KindF64:
-		b.nodeColF64[k] = removePair(b.nodeColF64[k], node)
-	case KindBool:
-		b.nodeColBool[k] = removePair(b.nodeColBool[k], node)
-	}
+	b.removeNodePropPairsByKey(node, k)
 	return b.SetPropByKey(node, k, v)
-}
-
-// removePair swap-removes the first pair staged for id.
-func removePair[P interface{ pairID() uint32 }](pairs []P, id uint32) []P {
-	for i, p := range pairs {
-		if p.pairID() == id {
-			pairs[i] = pairs[len(pairs)-1]
-			return pairs[:len(pairs)-1]
-		}
-	}
-	return pairs
 }
 
 func (p i64Pair) pairID() uint32  { return p.id }
 func (p f64Pair) pairID() uint32  { return p.id }
 func (p boolPair) pairID() uint32 { return p.id }
 func (p strPair) pairID() uint32  { return p.id }
+
+func (p i64Pair) withPairID(id uint32) i64Pair   { p.id = id; return p }
+func (p f64Pair) withPairID(id uint32) f64Pair   { p.id = id; return p }
+func (p boolPair) withPairID(id uint32) boolPair { p.id = id; return p }
+func (p strPair) withPairID(id uint32) strPair   { p.id = id; return p }
 
 // findRelIndex resolves (u, v, relType) to the FIRST matching rel index,
 // building the lazy lookup map on first use.
@@ -296,6 +300,9 @@ func (b *Builder) findRelIndex(u, v NodeID, relType string) (int, bool) {
 	if b.relIndex == nil {
 		b.relIndex = make(map[[3]uint32]int, len(b.rels))
 		for idx, r := range b.rels {
+			if b.relRemoved(idx) {
+				continue
+			}
 			key := [3]uint32{r[0], r[1], b.relTypes[idx].ID()}
 			if _, seen := b.relIndex[key]; !seen {
 				b.relIndex[key] = idx
@@ -322,6 +329,9 @@ func (b *Builder) SetRelProp(u, v NodeID, relType, key string, value any) error 
 func (b *Builder) SetRelPropAt(relIdx int, key string, value any) error {
 	if relIdx < 0 || relIdx >= len(b.rels) {
 		return fmt.Errorf("%w: rel index %d out of range (%d rels)", ErrRelNotFound, relIdx, len(b.rels))
+	}
+	if b.relRemoved(relIdx) {
+		return fmt.Errorf("%w: rel index %d removed", ErrRelNotFound, relIdx)
 	}
 	k := b.interner.GetOrIntern(key)
 	v, err := b.stageValue(value)
@@ -351,9 +361,19 @@ func (b *Builder) NodeCount() int {
 	return int(b.knownNodes.GetCardinality())
 }
 
-// RelCount is the number of relationships staged so far.
+// RelCount is the number of live relationships staged so far (tombstoned
+// rels and pending detach-delete cascades excluded).
 func (b *Builder) RelCount() int {
-	return len(b.rels)
+	if !b.hasRemovals() {
+		return len(b.rels)
+	}
+	count := 0
+	for idx := range b.rels {
+		if !b.relRemoved(idx) {
+			count++
+		}
+	}
+	return count
 }
 
 // Prop reads node's staged value for key -- an O(pairs) pre-finalization
@@ -484,19 +504,20 @@ func (b *Builder) NodeLabels(node NodeID) []string {
 }
 
 // NeighborIDs lists node's staged neighbors in direction (outgoing then
-// incoming for Both) -- an O(rels) pre-finalization scan.
+// incoming for Both), skipping removed rels -- an O(rels) pre-finalization
+// scan.
 func (b *Builder) NeighborIDs(node NodeID, dir Direction) []NodeID {
 	var out []NodeID
 	if dir == Outgoing || dir == Both {
-		for _, r := range b.rels {
-			if r[0] == node {
+		for idx, r := range b.rels {
+			if r[0] == node && !b.relRemoved(idx) {
 				out = append(out, r[1])
 			}
 		}
 	}
 	if dir == Incoming || dir == Both {
-		for _, r := range b.rels {
-			if r[1] == node {
+		for idx, r := range b.rels {
+			if r[1] == node && !b.relRemoved(idx) {
 				out = append(out, r[0])
 			}
 		}

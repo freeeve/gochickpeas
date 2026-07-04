@@ -169,6 +169,9 @@ func buildCSRDirection(n int, rels [][2]NodeID, relTypes []RelType, deg []uint32
 // keys whose (label, key) equality indexes are built upfront (faster first
 // queries, more memory); all others build lazily on first access.
 func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
+	// Fold pending removals (rel tombstones + detach-delete cascades) into
+	// the staging state first; a no-op when nothing was removed.
+	b.compactRemovals()
 	// The CSR id space covers 0..=maxUsedNodeID (at least one slot).
 	n := 1
 	if !b.knownNodes.IsEmpty() {

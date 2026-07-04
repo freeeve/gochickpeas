@@ -120,3 +120,31 @@ Semantics decisions (document on the methods):
 - PARITY.md notes the deliberate divergence (Go ships ahead of Rust; Rust
   counterpart tracked in their tasks/223).
 - gofmt -s / vet / race clean, >80% coverage on the new code.
+
+## Outcome (shipped)
+
+thaw.go (NewBuilderFromSnapshot + Kahn linear-extension rel restaging),
+removal.go (removal surface + Finalize compaction), UpdateProp cross-type
+sweep fix, tests (thaw round trips, removal tables, fuzz oracle with
+mid-run thaw, Manager write-loop example), PARITY.md go-ahead section.
+Findings appended to rustychickpeas tasks/223. Deviations from the spec
+above, discovered against the conformance corpus and fuzz oracle:
+
+- Dense STR columns are NOT exempt: thaw stages every position including
+  atom 0 (all_columns' 7-of-13 dense str would otherwise refinalize
+  sparse; the golden is itself built with explicit atom-0 writes, and the
+  read layer reports those positions present-"").
+- removedNodes is a node -> watermark (staged rel count at removal) map,
+  not a plain bitmap: clearing a bit on resurrection would also resurrect
+  pre-removal incident rels. The watermark keeps old rels dead while rels
+  added after resurrection survive; node props purge eagerly at RemoveNode
+  so a resurrected node is truly propertyless (and Finalize then needs no
+  node-column filter).
+- Byte-identity vs raw golden holds for sparse_ids / all_columns /
+  multi_label_types / topology_only; small (hand-built 1-of-2 sparse rel
+  column), empty (offsets [0] vs finalize's [0,0]) and big (optimize()d
+  run container no finalize emits) compare against finalize-normalized
+  bytes instead, plus idempotence.
+- Cross-node mixed-type keys remain loop-order-resolved (one column per
+  key in the format); per-node last-write-wins is what UpdateProp/removals
+  enforce. Documented on SetProp.

@@ -221,3 +221,17 @@ Statuses: todo / done / wontport (with a reason in notes).
 | types.rs | keep_last | | wontport | NodeDeduplication is loader machinery; out of scope |
 | types.rs | new | | done | plain conversions Label(atom) / RelType(atom) |
 | types.rs | property | | wontport | NodeReference is loader machinery; out of scope |
+
+## Go-ahead surface (deliberate divergence)
+
+Features shipped here first; the Rust counterparts are tracked in
+rustychickpeas `tasks/223_core_builder_thaw_and_removals.md`.
+
+| go symbol | notes |
+|-----------|-------|
+| NewBuilderFromSnapshot | thaw a Snapshot back into a Builder (read-modify-refinalize-swap writes); atom ids preserved; rel restage order is a linear extension of both CSR directions so a no-edit round trip is byte-identical |
+| Builder.RemoveProp | sweeps all staged occurrences across all four typed columns |
+| Builder.RemoveRelProp / RemoveRelPropAt | rel-prop removal by (u, v, type) or rel index |
+| Builder.RemoveRel | tombstone, never compact; handed-out rel indexes stay stable; Finalize compacts |
+| Builder.RemoveNode | detach-delete; labels/props eager, incident-rel cascade lazy (watermark) with resurrection via any later staging touch |
+| Builder.UpdateProp | now sweeps all four typed columns first, enforcing per-node last-write-wins across value types (behavior change vs the Rust typed update_prop_*) |

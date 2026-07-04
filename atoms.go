@@ -65,6 +65,25 @@ func NewInterner() *Interner {
 	}
 }
 
+// newInternerFromAtoms seeds a build-side interner with a snapshot's
+// id-ordered atom table, preserving every atom id exactly -- the keystone of
+// thawing a snapshot back into a builder. Duplicate strings keep the
+// smallest id for lookups, matching NewAtoms.
+func newInternerFromAtoms(a *Atoms) *Interner {
+	strings := make([]string, len(a.strings))
+	copy(strings, a.strings)
+	if len(strings) == 0 {
+		strings = []string{""}
+	}
+	index := make(map[string]uint32, len(strings))
+	for id, s := range strings {
+		if _, seen := index[s]; !seen {
+			index[s] = uint32(id)
+		}
+	}
+	return &Interner{strings: strings, index: index}
+}
+
 // GetOrIntern returns s's atom id, interning it if new.
 func (in *Interner) GetOrIntern(s string) uint32 {
 	in.mu.RLock()
