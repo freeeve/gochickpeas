@@ -19,7 +19,10 @@ Rust-generated golden files. v0.2.0 adds the GQL query engine. See
 ## Packages
 
 - `chickpeas` (root) -- the engine: `NewBuilder(...)` -> `Finalize()` ->
-  `*Snapshot` queries; `ReadRCPGFile`/`WriteRCPGFile` for interchange.
+  `*Snapshot` queries; `ReadRCPGFile`/`WriteRCPGFile` for interchange, and
+  `ReadNQuads`/`WriteNQuads` for RDF N-Quads/N-Triples import/export
+  (deterministic output, rel props via named-graph-per-edge, transparent
+  gzip on read, `.gz` path suffix on write).
 - `rcpg` -- the RCPG graph-file codec: `Parse`/`Write`, topology-only
   options, and lazy section-planned loading (`ParseLazy`/`SectionFetch`)
   for range-fetched transports.
