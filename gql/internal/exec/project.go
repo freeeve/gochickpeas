@@ -11,8 +11,6 @@ import (
 	"maps"
 	"sort"
 
-	"github.com/freeeve/gochickpeas/gql/internal/ast"
-
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -84,62 +82,76 @@ func (p *projSink) close() {}
 func (p *projSink) finalize() [][]value.Value {
 	outs := p.outs
 	if len(p.proj.OrderBy) > 0 {
-		mAt := func(int) []value.Value { return nil }
+		matchedAt := func(int) []value.Value { return nil }
+		base := 0
 		if p.needM {
-			mAt = func(i int) []value.Value { return p.ms[i] }
+			matchedAt = func(i int) []value.Value { return p.ms[i] }
+			if len(p.ms) > 0 {
+				base = len(p.ms[0])
+			}
 		}
-		idx := make([]int, len(outs))
-		for i := range idx {
-			idx[i] = i
-		}
-		sort.SliceStable(idx, func(a, b int) bool {
-			return cmpOrder(p.ctx, p.proj, p.slots, mAt(idx[a]), outs[idx[a]], mAt(idx[b]), outs[idx[b]]) < 0
-		})
-		sorted := make([][]value.Value, len(outs))
-		for i, j := range idx {
-			sorted[i] = outs[j]
-		}
-		outs = sorted
+		outs = sortRowsByOrder(p.ctx, p.proj, p.slots, matchedAt, base, outs)
 	}
 	return paginate(outs, p.proj.Skip, p.proj.Limit)
 }
 
-// cmpOrder compares two (matched, projected) row pairs per the ORDER BY
-// items.
-func cmpOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, am, ao, bm, bo []value.Value) int {
-	for i := range proj.OrderBy {
-		s := &proj.OrderBy[i]
-		ka := orderKey(ctx, s, am, ao, proj, slots)
-		kb := orderKey(ctx, s, bm, bo, proj, slots)
-		ord := value.OrderCmp(ka, kb)
-		if s.Desc {
-			ord = -ord
-		}
-		if ord != 0 {
-			return ord
-		}
+// sortRowsByOrder orders outs by proj.OrderBy, decorate-sort-undecorate: each
+// row's key vector is evaluated once up front, so the comparator does no
+// per-comparison evaluation or allocation (an ORDER BY key would otherwise be
+// re-evaluated O(rows log rows) times). matchedAt supplies each row's matched
+// prefix (nil when no key needs it) and base is that prefix's width, so a
+// non-projected key expression reads a reused combined-row buffer under an
+// invariant column scope.
+func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, matchedAt func(int) []value.Value, base int, outs [][]value.Value) [][]value.Value {
+	nk := len(proj.OrderBy)
+	colIdx := make([]int, nk)
+	for k := range proj.OrderBy {
+		colIdx[k] = plan.OrderColIndex(proj.OrderBy[k].Expr, proj.Columns, proj.Returns)
 	}
-	return 0
-}
-
-// orderKey resolves one ORDER BY key: a key that is a whole projected
-// column (its alias or exact expression) reads the projected value
-// directly; otherwise it evaluates over the incoming row extended with the
-// projected columns, so it can combine projection aliases (which shadow
-// same-named incoming variables) with incoming variables.
-func orderKey(ctx *eval.Ctx, s *ast.SortItem, matched, out []value.Value, proj *plan.ProjPlan, slots map[string]int) value.Value {
-	if idx := plan.OrderColIndex(s.Expr, proj.Columns, proj.Returns); idx >= 0 {
-		return out[idx]
-	}
-	row := make([]value.Value, 0, len(matched)+len(out))
-	row = append(row, matched...)
-	row = append(row, out...)
 	scope := make(map[string]int, len(slots)+len(proj.Columns))
 	maps.Copy(scope, slots)
 	for i, c := range proj.Columns {
-		scope[c] = len(matched) + i
+		scope[c] = base + i
 	}
-	return eval.Eval(ctx, s.Expr, row, scope)
+	keys := make([]value.Value, len(outs)*nk)
+	var rowbuf []value.Value
+	for i := range outs {
+		built := false
+		for k := range proj.OrderBy {
+			if colIdx[k] >= 0 {
+				keys[i*nk+k] = outs[i][colIdx[k]]
+				continue
+			}
+			if !built {
+				rowbuf = append(rowbuf[:0], matchedAt(i)...)
+				rowbuf = append(rowbuf, outs[i]...)
+				built = true
+			}
+			keys[i*nk+k] = eval.Eval(ctx, proj.OrderBy[k].Expr, rowbuf, scope)
+		}
+	}
+	idx := make([]int, len(outs))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		ka, kb := idx[a]*nk, idx[b]*nk
+		for k := range proj.OrderBy {
+			ord := value.OrderCmp(keys[ka+k], keys[kb+k])
+			if proj.OrderBy[k].Desc {
+				ord = -ord
+			}
+			if ord != 0 {
+				return ord < 0
+			}
+		}
+		return false
+	})
+	sorted := make([][]value.Value, len(outs))
+	for i, j := range idx {
+		sorted[i] = outs[j]
+	}
+	return sorted
 }
 
 // paginate applies OFFSET/SKIP then LIMIT.

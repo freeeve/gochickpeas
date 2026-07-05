@@ -7,7 +7,6 @@
 package exec
 
 import (
-	"sort"
 	"strconv"
 
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
@@ -267,9 +266,7 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 		out = append(out, row[:nCols])
 	}
 	if len(proj.OrderBy) > 0 {
-		sort.SliceStable(out, func(i, j int) bool {
-			return cmpOrder(ctx, proj, slots, nil, out[i], nil, out[j]) < 0
-		})
+		out = sortRowsByOrder(ctx, proj, slots, func(int) []value.Value { return nil }, 0, out)
 	}
 	return paginate(out, proj.Skip, proj.Limit)
 }
