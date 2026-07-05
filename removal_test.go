@@ -125,7 +125,7 @@ func TestRemoveRelTombstones(t *testing.T) {
 	if err := b.SetRelPropAt(idx[1], "n", int64(9)); !errors.Is(err, chickpeas.ErrRelNotFound) {
 		t.Fatalf("prop set on removed rel: %v", err)
 	}
-	if err := b.RemoveRelPropAt(idx[1], "n"); !errors.Is(err, chickpeas.ErrRelNotFound) {
+	if _, err := b.RemoveRelPropAt(idx[1], "n"); !errors.Is(err, chickpeas.ErrRelNotFound) {
 		t.Fatalf("prop remove on removed rel: %v", err)
 	}
 	// Indexes handed out before the removal still address their rels.
@@ -163,14 +163,19 @@ func TestRemoveRelProp(t *testing.T) {
 	}
 	b.SetRelProp(0, 1, "R", "w", 1.5)
 	b.SetRelProp(0, 1, "R", "keep", int64(2))
-	if err := b.RemoveRelProp(0, 1, "R", "w"); err != nil {
-		t.Fatal(err)
+	if removed, err := b.RemoveRelProp(0, 1, "R", "w"); err != nil || !removed {
+		t.Fatalf("staged prop removal: removed=%v err=%v", removed, err)
 	}
-	if err := b.RemoveRelProp(0, 9, "R", "w"); !errors.Is(err, chickpeas.ErrRelNotFound) {
+	if _, err := b.RemoveRelProp(0, 9, "R", "w"); !errors.Is(err, chickpeas.ErrRelNotFound) {
 		t.Fatalf("missing rel: %v", err)
 	}
-	if err := b.RemoveRelPropAt(0, "never-staged"); err != nil {
-		t.Fatalf("unknown key must be a no-op: %v", err)
+	// A key with no staged pair on the rel is a reported no-op -- (false,
+	// nil), distinguishable from both a real removal and a bad handle.
+	if removed, err := b.RemoveRelPropAt(0, "never-staged"); err != nil || removed {
+		t.Fatalf("unknown key must be a reported no-op: removed=%v err=%v", removed, err)
+	}
+	if removed, err := b.RemoveRelPropAt(0, "w"); err != nil || removed {
+		t.Fatalf("already-removed key must be a reported no-op: removed=%v err=%v", removed, err)
 	}
 	g := b.Finalize()
 	if present(g.RelProp(0, "w")) {
@@ -329,8 +334,8 @@ func TestRemovalThawInteraction(t *testing.T) {
 	// Kill one of the parallel (1)-[:DUP]->(2) rels via detach-deleting
 	// nothing -- address it directly. Staged order is a linear extension of
 	// the CSRs; find a DUP rel by (u, v, type) addressing.
-	if err := b.RemoveRelProp(1, 2, "OTHER", "OTHER"); err != nil {
-		t.Fatal(err)
+	if removed, err := b.RemoveRelProp(1, 2, "OTHER", "OTHER"); err != nil || !removed {
+		t.Fatalf("thaw-staged prop removal: removed=%v err=%v", removed, err)
 	}
 	if !b.RemoveProp(0, "never-there") == false {
 		t.Fatal("unexpected removal")

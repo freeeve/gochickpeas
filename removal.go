@@ -3,6 +3,14 @@
 // tombstoned rather than compacted so handed-out rel indexes stay stable,
 // and detach-delete defers the incident-rel cascade to Finalize (no per-node
 // rel index exists, so an eager cascade would be O(m) per call).
+//
+// Miss-reporting convention, uniform across the family: every method
+// reports whether it changed staged state as a bool, and an error is
+// reserved for a dangling rel handle -- a rel index (returned by AddRel)
+// or (u, v, type) address that is out of range, tombstoned, or dead via a
+// detach-deleted endpoint is ErrRelNotFound. Node ids are open-world
+// (AddNodeWithID stages arbitrary ids), so an unknown node is a plain
+// miss, never an error.
 
 package chickpeas
 
@@ -57,7 +65,9 @@ func (b *Builder) removeNodePropPairsByKey(node NodeID, key PropertyKey) bool {
 // RemoveProp deletes node's staged property key, sweeping every staged
 // occurrence across all four typed columns (duplicate staged writes and
 // cross-type stagings all go -- a partial sweep would resurrect a stale
-// value at Finalize). Reports whether anything was removed.
+// value at Finalize). Reports whether anything was removed; false covers
+// every kind of miss uniformly (a key never staged anywhere, or staged but
+// not on this node -- either way no staged pair existed for (node, key)).
 func (b *Builder) RemoveProp(node NodeID, key string) bool {
 	k, ok := b.interner.Get(key)
 	if !ok {
@@ -85,33 +95,35 @@ func (b *Builder) removeNodePropPairs(node NodeID) {
 
 // RemoveRelProp deletes the staged property key on the first rel matching
 // (u, v, relType) -- the addressing dual of SetRelProp. For parallel rels,
-// address the specific rel via RemoveRelPropAt.
-func (b *Builder) RemoveRelProp(u, v NodeID, relType, key string) error {
+// address the specific rel via RemoveRelPropAt. Reports whether anything
+// was removed; an unmatched (u, v, relType) address is ErrRelNotFound.
+func (b *Builder) RemoveRelProp(u, v NodeID, relType, key string) (bool, error) {
 	idx, ok := b.findRelIndex(u, v, relType)
 	if !ok {
-		return fmt.Errorf("%w: (%d)-[:%s]->(%d)", ErrRelNotFound, u, relType, v)
+		return false, fmt.Errorf("%w: (%d)-[:%s]->(%d)", ErrRelNotFound, u, relType, v)
 	}
 	return b.RemoveRelPropAt(idx, key)
 }
 
 // RemoveRelPropAt deletes the staged property key on the rel at relIdx (as
 // returned by AddRel), sweeping every staged occurrence across all four
-// typed columns. Removing a key that was never staged is a no-op; a removed
-// or out-of-range rel is an error.
-func (b *Builder) RemoveRelPropAt(relIdx int, key string) error {
+// typed columns. Reports whether anything was removed -- a key with no
+// staged pair on this rel is (false, nil), distinguishable from a real
+// removal; a removed or out-of-range rel is ErrRelNotFound.
+func (b *Builder) RemoveRelPropAt(relIdx int, key string) (bool, error) {
 	if relIdx < 0 || relIdx >= len(b.rels) || b.relRemoved(relIdx) {
-		return fmt.Errorf("%w: rel index %d", ErrRelNotFound, relIdx)
+		return false, fmt.Errorf("%w: rel index %d", ErrRelNotFound, relIdx)
 	}
 	k, ok := b.interner.Get(key)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	id := uint32(relIdx)
-	sweepPairs(b.relColI64, k, id)
-	sweepPairs(b.relColF64, k, id)
-	sweepPairs(b.relColBool, k, id)
-	sweepPairs(b.relColStr, k, id)
-	return nil
+	removed := sweepPairs(b.relColI64, k, id)
+	removed = sweepPairs(b.relColF64, k, id) || removed
+	removed = sweepPairs(b.relColBool, k, id) || removed
+	removed = sweepPairs(b.relColStr, k, id) || removed
+	return removed, nil
 }
 
 // RemoveRel tombstones the rel at relIdx (as returned by AddRel). The
@@ -119,7 +131,8 @@ func (b *Builder) RemoveRelPropAt(relIdx int, key string) error {
 // handed-out rel index and the staged rel-prop ids -- so the rel is marked
 // removed, degrees adjust immediately, and Finalize compacts in one pass.
 // Removing a rel that is out of range, already removed, or dead via a
-// detach-deleted endpoint is an error.
+// detach-deleted endpoint is ErrRelNotFound (no removed bool: a live
+// handle always removes, so removal happened exactly when err is nil).
 func (b *Builder) RemoveRel(relIdx int) error {
 	if relIdx < 0 || relIdx >= len(b.rels) || b.relRemoved(relIdx) {
 		return fmt.Errorf("%w: rel index %d", ErrRelNotFound, relIdx)

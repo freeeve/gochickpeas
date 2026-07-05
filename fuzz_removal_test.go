@@ -205,10 +205,13 @@ func applyOp(t *testing.T, b *chickpeas.Builder, m *oracleModel, r *opReader) bo
 		}
 		u, v, typ := chickpeas.NodeID(a1%oracleMaxNode), chickpeas.NodeID(a2%oracleMaxNode), oracleType(a3)
 		key := oracleKey(a4)
-		err := b.RemoveRelProp(u, v, typ, key)
+		removed, err := b.RemoveRelProp(u, v, typ, key)
 		if rel := m.firstLiveRel(u, v, typ); rel != nil {
 			if err != nil {
 				t.Fatalf("RemoveRelProp on live rel: %v", err)
+			}
+			if _, had := rel.props[key]; removed != had {
+				t.Fatalf("RemoveRelProp removed=%v, model had key %q: %v", removed, key, had)
 			}
 			delete(rel.props, key)
 		} else if err == nil {
