@@ -81,7 +81,7 @@ func pushMonoPreds(segments []*Segment) {
 // rebuilding the rest.
 func consumeMonoConjuncts(where ast.Expr, push func(monoShape) bool) ast.Expr {
 	var conjs []ast.Expr
-	splitAndRef(where, &conjs)
+	SplitAnd(where, &conjs)
 	var kept []ast.Expr
 	for _, c := range conjs {
 		if sh, ok := monoConjunctShape(c); ok && push(sh) {

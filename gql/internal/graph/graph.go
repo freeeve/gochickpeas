@@ -75,6 +75,9 @@ type Graph interface {
 	// Relationships iterates each traversed relationship as (neighbor,
 	// csrPos); the position binds a rel variable and reads rel properties.
 	Relationships(node chickpeas.NodeID, dir chickpeas.Direction, types []string) iter.Seq2[chickpeas.NodeID, uint32]
+	// RelationshipsMatched is Relationships through a pre-resolved matcher,
+	// skipping the per-call name resolution on hot paths.
+	RelationshipsMatched(node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) iter.Seq2[chickpeas.NodeID, uint32]
 
 	// AppendNeighborsMatched appends node's dir neighbors passing m to dst
 	// and returns the extended slice -- the batch form of NeighborsMatched

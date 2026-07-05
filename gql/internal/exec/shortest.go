@@ -1,8 +1,9 @@
 // Path-search stages (ANY SHORTEST / ALL SHORTEST): minimum-hop BFS with
 // parent links, a single-source tree memo for sources shared by many rows,
-// and the all-shortest backward enumeration over the distance map. The
-// weighted form has no GQL surface yet and is gated until the CALL-proc
-// milestone.
+// and the all-shortest backward enumeration over the distance map. Every
+// form runs on the one spWalk frontier core, so the hop-filter and
+// depth-bound semantics live in a single place. The weighted form has no
+// GQL surface yet and is gated until the CALL-proc milestone.
 package exec
 
 import (
@@ -20,13 +21,15 @@ const maxAllShortestPaths = 1024
 // runSPStage binds the path slot to the minimum-hop path(s) between the
 // bound endpoint slots. The single form binds one path per input row; the
 // ALL form is row-expanding. A required stage drops rows with no path; an
-// optional one keeps a single row with the path null.
+// optional one keeps a single row with the path null. The stage's rel
+// matcher compiles once so the walks skip per-call type-name resolution.
 func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value.Value {
 	var hop *hopFilter
 	if sp.RelPred != nil {
 		scope := map[string]int{sp.RelPred.Var: 0}
 		hop = &hopFilter{eval: compileEval(ctx, sp.RelPred.Pred, scope), scope: scope}
 	}
+	rm := ctx.G.CompileRelMatcher(sp.Types)
 	var out [][]value.Value
 
 	if sp.All {
@@ -34,7 +37,7 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 			var paths []nodesRels
 			if a, ok1 := row[sp.From].AsNode(); ok1 {
 				if b, ok2 := row[sp.To].AsNode(); ok2 {
-					paths = allShortestPaths(ctx, a, b, sp, hop)
+					paths = allShortestPaths(ctx, a, b, sp, rm, hop)
 				}
 			}
 			if len(paths) == 0 {
@@ -79,16 +82,16 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 			if b, ok2 := row[sp.To].AsNode(); ok2 {
 				switch {
 				case pw != nil:
-					path = weightedShortestPath(ctx, a, b, sp, hop, pw)
+					path = weightedShortestPath(ctx, a, b, sp, rm, hop, pw)
 				case srcFreq[a] >= 2:
 					tree, ok := memo[a]
 					if !ok {
-						tree = buildSPTree(ctx, a, sp, hop)
+						tree = buildSPTree(ctx, a, sp, rm, hop)
 						memo[a] = tree
 					}
-					path = tree.pathTo(ctx, b, sp, hop)
+					path = tree.pathTo(ctx, b, sp, rm, hop)
 				default:
-					path = shortestPath(ctx, a, b, sp, hop)
+					path = shortestPath(ctx, a, b, sp, rm, hop)
 				}
 			}
 		}
@@ -112,14 +115,14 @@ type nodesRels struct {
 
 // filteredNeighbors is the hop's neighbor set, honoring the per-hop
 // predicate by reading relationship positions when one is present.
-func filteredNeighbors(ctx *eval.Ctx, node graph.NodeID, dir graph.Direction, types []string, hop *hopFilter, visit func(graph.NodeID)) {
+func filteredNeighbors(ctx *eval.Ctx, node graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter, visit func(graph.NodeID)) {
 	if hop == nil {
-		for nb := range ctx.G.NeighborsByType(node, dir, types) {
+		for nb := range ctx.G.NeighborsMatched(node, dir, rm) {
 			visit(nb)
 		}
 		return
 	}
-	for nb, p := range ctx.G.Relationships(node, dir, types) {
+	for nb, p := range ctx.G.RelationshipsMatched(node, dir, rm) {
 		if hop.keep(ctx, p) {
 			visit(nb)
 		}
@@ -134,47 +137,79 @@ func spCap(sp *plan.SpStage) uint64 {
 	return 1<<63 - 1
 }
 
-// shortestPath is the early-exit minimum-hop search a..b: the first time b
-// is reached is at its minimum hop distance.
-func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, hop *hopFilter) *nodesRels {
-	if a == b {
-		return &nodesRels{nodes: []graph.NodeID{a}}
-	}
-	parent := map[graph.NodeID]graph.NodeID{}
+// spWalk is the one bounded minimum-hop frontier walk behind every
+// path-search form: level-synchronous expansion from a through
+// filteredNeighbors under the hop cap, calling reach exactly once per
+// first-reached node with its predecessor and depth. reach returns true to
+// halt the whole walk immediately (the early-exit single-path search);
+// levelDone (nil allowed) is consulted after each completed level -- the
+// all-shortest walk must finish a level so every minimum-hop predecessor
+// gets a distance before stopping.
+func spWalk(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, reach func(v, u graph.NodeID, d uint64) bool, levelDone func() bool) {
 	visited := map[graph.NodeID]struct{}{a: {}}
 	frontier := []graph.NodeID{a}
+	halted := false
 	for depth := uint64(0); len(frontier) > 0 && depth < spCap(sp); depth++ {
 		var next []graph.NodeID
-		var found bool
 		for _, u := range frontier {
-			filteredNeighbors(ctx, u, sp.Dir, sp.Types, hop, func(v graph.NodeID) {
-				if _, seen := visited[v]; seen || found {
+			filteredNeighbors(ctx, u, sp.Dir, rm, hop, func(v graph.NodeID) {
+				if halted {
+					return
+				}
+				if _, seen := visited[v]; seen {
 					return
 				}
 				visited[v] = struct{}{}
-				parent[v] = u
-				if v == b {
-					found = true
+				if reach(v, u, depth+1) {
+					halted = true
 					return
 				}
 				next = append(next, v)
 			})
-			if found {
-				break
+			if halted {
+				return
 			}
 		}
-		if found {
-			nodes := []graph.NodeID{b}
-			for cur := b; cur != a; {
-				cur = parent[cur]
-				nodes = append(nodes, cur)
-			}
-			reverseNodes(nodes)
-			return &nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, sp.Types, hop)}
+		if levelDone != nil && levelDone() {
+			return
 		}
 		frontier = next
 	}
-	return nil
+}
+
+// pathFromParents reads the minimum-hop node chain a..b off parent links:
+// a one-node chain when a == b, nil when b was never reached.
+func pathFromParents(parent map[graph.NodeID]graph.NodeID, a, b graph.NodeID) []graph.NodeID {
+	if a == b {
+		return []graph.NodeID{a}
+	}
+	if _, ok := parent[b]; !ok {
+		return nil
+	}
+	nodes := []graph.NodeID{b}
+	for cur := b; cur != a; {
+		cur = parent[cur]
+		nodes = append(nodes, cur)
+	}
+	reverseNodes(nodes)
+	return nodes
+}
+
+// shortestPath is the early-exit minimum-hop search a..b: the first time b
+// is reached is at its minimum hop distance.
+func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter) *nodesRels {
+	parent := map[graph.NodeID]graph.NodeID{}
+	if a != b {
+		spWalk(ctx, a, sp, rm, hop, func(v, u graph.NodeID, _ uint64) bool {
+			parent[v] = u
+			return v == b
+		}, nil)
+	}
+	nodes := pathFromParents(parent, a, b)
+	if nodes == nil {
+		return nil
+	}
+	return &nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}
 }
 
 // spTree is a single-source minimum-hop parent tree, reused across every
@@ -186,85 +221,57 @@ type spTree struct {
 
 // buildSPTree runs one bounded BFS from a, honoring the same filters the
 // per-row search uses so reachability and distances are identical.
-func buildSPTree(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, hop *hopFilter) *spTree {
+func buildSPTree(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter) *spTree {
 	parent := map[graph.NodeID]graph.NodeID{}
-	visited := map[graph.NodeID]struct{}{a: {}}
-	frontier := []graph.NodeID{a}
-	for depth := uint64(0); len(frontier) > 0 && depth < spCap(sp); depth++ {
-		var next []graph.NodeID
-		for _, u := range frontier {
-			filteredNeighbors(ctx, u, sp.Dir, sp.Types, hop, func(v graph.NodeID) {
-				if _, seen := visited[v]; !seen {
-					visited[v] = struct{}{}
-					parent[v] = u
-					next = append(next, v)
-				}
-			})
-		}
-		frontier = next
-	}
+	spWalk(ctx, a, sp, rm, hop, func(v, u graph.NodeID, _ uint64) bool {
+		parent[v] = u
+		return false
+	}, nil)
 	return &spTree{source: a, parent: parent}
 }
 
 // pathTo reads the minimum-hop path source..b off the parent links.
-func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, hop *hopFilter) *nodesRels {
-	if b == t.source {
-		return &nodesRels{nodes: []graph.NodeID{b}}
-	}
-	if _, ok := t.parent[b]; !ok {
+func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter) *nodesRels {
+	nodes := pathFromParents(t.parent, t.source, b)
+	if nodes == nil {
 		return nil
 	}
-	nodes := []graph.NodeID{b}
-	for cur := b; cur != t.source; {
-		cur = t.parent[cur]
-		nodes = append(nodes, cur)
-	}
-	reverseNodes(nodes)
-	return &nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, sp.Types, hop)}
+	return &nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}
 }
 
 // allShortestPaths enumerates every minimum-hop path a..b: a forward BFS
 // records each reached node's minimum distance, then a backward DFS from b
 // walks predecessor chains strictly descending the distance -- each
 // completed chain is a distinct minimum-hop path.
-func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, hop *hopFilter) []nodesRels {
+func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter) []nodesRels {
 	if a == b {
 		return []nodesRels{{nodes: []graph.NodeID{a}}}
 	}
 	dist := map[graph.NodeID]uint64{a: 0}
-	frontier := []graph.NodeID{a}
-	for depth := uint64(0); len(frontier) > 0 && depth < spCap(sp); depth++ {
-		var next []graph.NodeID
-		for _, u := range frontier {
-			filteredNeighbors(ctx, u, sp.Dir, sp.Types, hop, func(v graph.NodeID) {
-				if _, seen := dist[v]; !seen {
-					dist[v] = depth + 1
-					next = append(next, v)
-				}
-			})
-		}
-		if _, reached := dist[b]; reached {
-			break
-		}
-		frontier = next
-	}
+	spWalk(ctx, a, sp, rm, hop, func(v, _ graph.NodeID, d uint64) bool {
+		dist[v] = d
+		return false
+	}, func() bool {
+		_, reached := dist[b]
+		return reached
+	})
 	if _, reached := dist[b]; !reached {
 		return nil
 	}
 	rdir := flipDir(sp.Dir)
 	var chains [][]graph.NodeID
 	suffix := []graph.NodeID{b}
-	enumeratePaths(ctx, a, dist, rdir, sp.Types, hop, &suffix, &chains)
+	enumeratePaths(ctx, a, dist, rdir, rm, hop, &suffix, &chains)
 	out := make([]nodesRels, len(chains))
 	for i, nodes := range chains {
-		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, sp.Types, hop)}
+		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}
 	}
 	return out
 }
 
 // enumeratePaths extends the reversed suffix [b..v] by each predecessor u
 // with dist[u] == dist[v]-1; reaching a completes one path.
-func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64, rdir graph.Direction, types []string, hop *hopFilter, suffix *[]graph.NodeID, out *[][]graph.NodeID) {
+func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64, rdir graph.Direction, rm *graph.RelMatcher, hop *hopFilter, suffix *[]graph.NodeID, out *[][]graph.NodeID) {
 	if len(*out) >= maxAllShortestPaths {
 		return
 	}
@@ -277,13 +284,13 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64,
 		return
 	}
 	want := dist[v] - 1
-	filteredNeighbors(ctx, v, rdir, types, hop, func(u graph.NodeID) {
+	filteredNeighbors(ctx, v, rdir, rm, hop, func(u graph.NodeID) {
 		if len(*out) >= maxAllShortestPaths {
 			return
 		}
 		if d, ok := dist[u]; ok && d == want {
 			*suffix = append(*suffix, u)
-			enumeratePaths(ctx, a, dist, rdir, types, hop, suffix, out)
+			enumeratePaths(ctx, a, dist, rdir, rm, hop, suffix, out)
 			*suffix = (*suffix)[:len(*suffix)-1]
 		}
 	})
@@ -291,10 +298,10 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64,
 
 // pathRelPositions resolves each consecutive node pair's relationship
 // position (the first accepted relationship between them).
-func pathRelPositions(ctx *eval.Ctx, nodes []graph.NodeID, dir graph.Direction, types []string, hop *hopFilter) []uint32 {
+func pathRelPositions(ctx *eval.Ctx, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
 	rels := make([]uint32, 0, max(len(nodes)-1, 0))
 	for i := 0; i+1 < len(nodes); i++ {
-		for nb, p := range ctx.G.Relationships(nodes[i], dir, types) {
+		for nb, p := range ctx.G.RelationshipsMatched(nodes[i], dir, rm) {
 			if nb == nodes[i+1] && (hop == nil || hop.keep(ctx, p)) {
 				rels = append(rels, p)
 				break

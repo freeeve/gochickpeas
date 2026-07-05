@@ -136,6 +136,19 @@ func (s *SnapshotGraph) Relationships(node chickpeas.NodeID, dir chickpeas.Direc
 	}
 }
 
+// RelationshipsMatched iterates traversed relationships as (neighbor,
+// csrPos) through a pre-resolved matcher, skipping the per-call type-name
+// resolution Relationships pays.
+func (s *SnapshotGraph) RelationshipsMatched(node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) iter.Seq2[chickpeas.NodeID, uint32] {
+	return func(yield func(chickpeas.NodeID, uint32) bool) {
+		for r := range s.g.RelsMatch(node, dir, m.m) {
+			if !yield(r.Neighbor, r.Pos) {
+				return
+			}
+		}
+	}
+}
+
 // AppendNeighborsMatched appends node's matching dir neighbors to dst,
 // delegating to the core append accessor so the fill stays allocation-free
 // across the package boundary (the iter.Seq form would escape a per-call

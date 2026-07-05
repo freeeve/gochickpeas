@@ -29,8 +29,13 @@ type projSink struct {
 	needM  bool
 	ms     [][]value.Value
 	mArena rowArena
-	seen   map[string]struct{}
-	key    []byte
+	// DISTINCT state: a single output column dedups through distinctSet
+	// (the u32 entity-id fast path for node/rel values, AppendKey bytes
+	// otherwise); a multi-column row keys on the concatenated AppendKey
+	// encoding -- both dedups thus share one canonical value encoding.
+	seenOne *distinctSet
+	seen    map[string]struct{}
+	key     []byte
 }
 
 func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
@@ -50,7 +55,11 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 		}
 	}
 	if proj.Distinct {
-		p.seen = map[string]struct{}{}
+		if len(proj.Returns) == 1 {
+			p.seenOne = &distinctSet{}
+		} else {
+			p.seen = map[string]struct{}{}
+		}
 	}
 	return p
 }
@@ -60,7 +69,12 @@ func (p *projSink) push(row []value.Value) {
 	for i, c := range p.returns {
 		out[i] = c.Eval(p.ctx, row, p.slots)
 	}
-	if p.seen != nil {
+	if p.seenOne != nil {
+		if !p.seenOne.add(out[0], &p.key) {
+			p.oArena.rollback()
+			return
+		}
+	} else if p.seen != nil {
 		p.key = p.key[:0]
 		for _, v := range out {
 			p.key = value.AppendKey(p.key, v)

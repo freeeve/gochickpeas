@@ -87,7 +87,7 @@ func extractSpHopPred(where ast.Expr, relVar string) (*RelHopPred, error) {
 		return nil, nil
 	}
 	var conjs []ast.Expr
-	splitAndRef(where, &conjs)
+	SplitAnd(where, &conjs)
 	var found *RelHopPred
 	for _, c := range conjs {
 		lp, ok := c.(*ast.ListPred)

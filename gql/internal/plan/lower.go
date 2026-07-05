@@ -35,7 +35,7 @@ func idSeekLiteral(where ast.Expr, varName string) *ast.Literal {
 		return nil
 	}
 	var conjs []ast.Expr
-	splitAndRef(where, &conjs)
+	SplitAnd(where, &conjs)
 	for _, c := range conjs {
 		if l := idEqConjunct(c, varName); l != nil {
 			return l
@@ -59,7 +59,7 @@ func textMatchSeek(where ast.Expr, varName string) *textSeek {
 		return nil
 	}
 	var conjs []ast.Expr
-	splitAndRef(where, &conjs)
+	SplitAnd(where, &conjs)
 	for _, c := range conjs {
 		b, ok := c.(*ast.Binary)
 		if !ok || (b.Op != ast.OpStartsWith && b.Op != ast.OpEndsWith && b.Op != ast.OpContains) {
@@ -116,7 +116,7 @@ func idSeekVar(where ast.Expr, varName string, slots map[string]int, bound map[i
 		return NoSlot
 	}
 	var conjs []ast.Expr
-	splitAndRef(where, &conjs)
+	SplitAnd(where, &conjs)
 	for _, c := range conjs {
 		if s := idEqVarConjunct(c, varName, slots, bound); s != NoSlot {
 			return s
@@ -230,7 +230,7 @@ func extractVarlenHopPreds(where *ast.Expr, ops []BindOp) error {
 		return nil
 	}
 	var conjs []ast.Expr
-	splitAndRef(*where, &conjs)
+	SplitAnd(*where, &conjs)
 	var kept []ast.Expr
 	for _, c := range conjs {
 		pushed, err := tryPushHopPred(c, ops)
@@ -301,11 +301,12 @@ func predRefsOnly(e ast.Expr, v string) error {
 	return nil
 }
 
-// splitAndRef walks a WHERE's top-level AND chain, appending each conjunct.
-func splitAndRef(e ast.Expr, out *[]ast.Expr) {
+// SplitAnd walks a WHERE's top-level AND chain, appending each conjunct
+// (exported: the executor's conjunct bucketing splits the same chains).
+func SplitAnd(e ast.Expr, out *[]ast.Expr) {
 	if b, ok := e.(*ast.Binary); ok && b.Op == ast.OpAnd {
-		splitAndRef(b.LHS, out)
-		splitAndRef(b.RHS, out)
+		SplitAnd(b.LHS, out)
+		SplitAnd(b.RHS, out)
 		return
 	}
 	*out = append(*out, e)

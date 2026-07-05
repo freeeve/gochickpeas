@@ -80,7 +80,7 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	isConst := func(s int) bool { return !isBound(s) && constIn(s) }
 	isCarried := func(s int) bool { return !isBound(s) }
 	var conjs []ast.Expr
-	splitConjuncts(stage.Where, &conjs)
+	plan.SplitAnd(stage.Where, &conjs)
 	for _, c := range conjs {
 		cc := hoistEval(ctx, compileEval(ctx, c, slots), isConst, isCarried, sample, slots)
 		var refs []int
@@ -100,26 +100,33 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	return buckets
 }
 
-// slotConstant reports whether slot holds an identical value on every row
-// of the batch (vacuously true for an empty batch).
-func slotConstant(slot int, rows [][]value.Value) bool {
-	for i := 1; i < len(rows); i++ {
-		if slot >= len(rows[0]) || slot >= len(rows[i]) {
+// slotAgrees reports whether slot holds an identical value on every row of
+// the batch (vacuously true for an empty or single-row batch) -- the one
+// "is this slot batch-constant" test, with an explicit out-of-range
+// policy. padNull treats a position beyond a row's width as Null (the
+// seeded-input convention, where narrow inputs pad with nulls); without it
+// any out-of-range read across differing rows disqualifies, guarding
+// callers that will index rows at the slot directly.
+func slotAgrees(slot int, rows [][]value.Value, padNull bool) bool {
+	if len(rows) == 0 {
+		return true
+	}
+	var v0 value.Value
+	if slot < len(rows[0]) {
+		v0 = rows[0][slot]
+	} else if !padNull && len(rows) > 1 {
+		return false
+	}
+	for _, r := range rows[1:] {
+		var v value.Value
+		if slot < len(r) {
+			v = r[slot]
+		} else if !padNull {
 			return false
 		}
-		if !value.Identical(rows[0][slot], rows[i][slot]) {
+		if !value.Identical(v0, v) {
 			return false
 		}
 	}
 	return true
-}
-
-// splitConjuncts flattens a WHERE expression's top-level AND chain.
-func splitConjuncts(e ast.Expr, out *[]ast.Expr) {
-	if b, ok := e.(*ast.Binary); ok && b.Op == ast.OpAnd {
-		splitConjuncts(b.LHS, out)
-		splitConjuncts(b.RHS, out)
-		return
-	}
-	*out = append(*out, e)
 }

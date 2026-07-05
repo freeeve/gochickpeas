@@ -39,12 +39,13 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 		copy(sample, inputs[0])
 	}
 	// A slot is batch-constant for hoisting when no stage of the segment
-	// binds it and the seeded inputs agree on its value.
+	// binds it and the seeded inputs agree on its value (a slot beyond an
+	// input's width seeds as Null).
 	constIn := func(s int) bool {
 		if s < 0 || s >= len(bound) || bound[s] {
 			return false
 		}
-		return slotConstantSeeded(s, inputs)
+		return slotAgrees(s, inputs, true)
 	}
 
 	var term terminal
@@ -112,7 +113,7 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 		}
 		if s.PathBind != nil && s.Where != nil {
 			var conjs []ast.Expr
-			splitConjuncts(s.Where, &conjs)
+			plan.SplitAnd(s.Where, &conjs)
 			for _, c := range conjs {
 				ms.pathFilters = append(ms.pathFilters, compileEval(ctx, c, seg.Slots))
 			}
@@ -188,28 +189,6 @@ func segmentBoundSlots(seg *plan.Segment) []bool {
 	return b
 }
 
-// slotConstantSeeded reports whether the seeded inputs agree on a slot's
-// value (a slot beyond an input's width seeds as Null).
-func slotConstantSeeded(slot int, inputs [][]value.Value) bool {
-	if len(inputs) == 0 {
-		return true
-	}
-	var v0 value.Value
-	if slot < len(inputs[0]) {
-		v0 = inputs[0][slot]
-	}
-	for _, in := range inputs[1:] {
-		var v value.Value
-		if slot < len(in) {
-			v = in[slot]
-		}
-		if !value.Identical(v0, v) {
-			return false
-		}
-	}
-	return true
-}
-
 // applyPostWhere applies a segment's projection-boundary WHERE (FILTER /
 // RETURN...NEXT guard) to its output rows in place, by output column.
 func applyPostWhere(ctx *eval.Ctx, seg *plan.Segment, out *[][]value.Value) {
@@ -223,7 +202,7 @@ func applyPostWhere(ctx *eval.Ctx, seg *plan.Segment, out *[][]value.Value) {
 	// An output column constant across every projected row (e.g. an
 	// ungrouped collect broadcast) lets an IN over it probe a prebuilt set.
 	rows := *out
-	isConst := func(s int) bool { return slotConstant(s, rows) }
+	isConst := func(s int) bool { return slotAgrees(s, rows, false) }
 	var sample []value.Value
 	if len(rows) > 0 {
 		sample = rows[0]

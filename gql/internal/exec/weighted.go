@@ -140,7 +140,7 @@ type wpParent struct {
 
 // weightedShortestPath is the min-cost path a..b honoring the hop cap
 // (default: the node count) and the per-hop predicate.
-func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, hop *hopFilter, w *pathWeight) *nodesRels {
+func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight) *nodesRels {
 	if a == b {
 		return &nodesRels{nodes: []graph.NodeID{a}}
 	}
@@ -177,7 +177,7 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, ho
 		if st.hops >= cap {
 			continue
 		}
-		for nb, pos := range ctx.G.Relationships(st.node, sp.Dir, sp.Types) {
+		for nb, pos := range ctx.G.RelationshipsMatched(st.node, sp.Dir, rm) {
 			if hop != nil && !hop.keep(ctx, pos) {
 				continue
 			}
