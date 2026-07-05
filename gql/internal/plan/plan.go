@@ -91,10 +91,11 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 		return nil, nil, err
 	}
 	segments = append(segments, seg)
-	// Cross-segment monotonic pushdown: a LET-projected rels list and the
-	// FILTER constraining it split into adjacent segments, out of reach of
-	// the same-segment pushdown in buildSegment.
-	pushCrossSegmentMono(segments)
+	// The monotonic pushdown runs once over the fully built segment graph:
+	// it sees every stage WHERE (inline form), the same segment's boundary
+	// WHERE (derived form), and a LET/FILTER split across segments
+	// (cross-segment form) uniformly.
+	pushMonoPreds(segments)
 	return segments, seg.Proj.Columns, nil
 }
 

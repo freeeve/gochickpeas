@@ -36,6 +36,9 @@ type reachScratch struct {
 	frontier []graph.NodeID
 	next     []graph.NodeID
 	nbuf     []graph.NodeID
+	// pbuf carries rel positions parallel to nbuf when the hop gate's
+	// predicate needs them.
+	pbuf []uint32
 }
 
 // genMatches walks the ops' bind chain over one input row, handing each
@@ -155,7 +158,7 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])
 		return
 	case plan.OpVarExpand:
-		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], sc.monoFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i], scratch)
+		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopGates[i], row, cand, &scratch.candData[i], &scratch.candRange[i], scratch)
 		return
 	}
 	switch op.Source.Kind {

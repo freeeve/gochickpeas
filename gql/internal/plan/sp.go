@@ -69,118 +69,15 @@ func buildSpStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nex
 	}, nil
 }
 
-// validateWeightExpr checks that a per-edge weight references only the
-// allowed variables (the rel variable, plus subquery-pattern-bound ones in
-// scope). A correlated EXISTS/COUNT subquery is permitted: its pattern
-// variables extend the allowed set for its WHERE.
+// validateWeightExpr checks that a per-edge weight's free variables are
+// only the allowed ones (the rel variable). A correlated EXISTS/COUNT
+// subquery is permitted: the shared free-variable walker scopes its
+// pattern variables as locals for its WHERE.
 func validateWeightExpr(e ast.Expr, allowed []string) error {
-	bad := weightExprCheck(e, allowed)
-	if bad != "" {
-		return planErrf("a weighted path-search weight expression may reference only the relationship variable `%s` (per-edge), optionally via correlated EXISTS/COUNT subqueries: %s", allowed[0], bad)
+	if bad := freeVarsOutside(e, allowed); len(bad) > 0 {
+		return planErrf("a weighted path-search weight expression may reference only the relationship variable `%s` (per-edge), optionally via correlated EXISTS/COUNT subqueries: references `%s`", allowed[0], bad[0])
 	}
 	return nil
-}
-
-// weightExprCheck returns a description of the first disallowed reference
-// or construct ("" when clean).
-func weightExprCheck(e ast.Expr, allowed []string) string {
-	checkVar := func(v string) string {
-		for _, a := range allowed {
-			if a == v {
-				return ""
-			}
-		}
-		return "references `" + v + "`"
-	}
-	switch n := e.(type) {
-	case *ast.Lit:
-		return ""
-	case *ast.Var:
-		return checkVar(n.Name)
-	case *ast.Prop:
-		return checkVar(n.Var)
-	case *ast.Unary:
-		return weightExprCheck(n.Expr, allowed)
-	case *ast.IsNull:
-		return weightExprCheck(n.Expr, allowed)
-	case *ast.Binary:
-		if bad := weightExprCheck(n.LHS, allowed); bad != "" {
-			return bad
-		}
-		return weightExprCheck(n.RHS, allowed)
-	case *ast.Func:
-		for _, a := range n.Args {
-			if bad := weightExprCheck(a, allowed); bad != "" {
-				return bad
-			}
-		}
-		return ""
-	case *ast.ListExpr:
-		for _, a := range n.Elems {
-			if bad := weightExprCheck(a, allowed); bad != "" {
-				return bad
-			}
-		}
-		return ""
-	case *ast.In:
-		if bad := weightExprCheck(n.Expr, allowed); bad != "" {
-			return bad
-		}
-		return weightExprCheck(n.List, allowed)
-	case *ast.Case:
-		if n.Operand != nil {
-			if bad := weightExprCheck(n.Operand, allowed); bad != "" {
-				return bad
-			}
-		}
-		for _, w := range n.Whens {
-			if bad := weightExprCheck(w.Cond, allowed); bad != "" {
-				return bad
-			}
-			if bad := weightExprCheck(w.Result, allowed); bad != "" {
-				return bad
-			}
-		}
-		if n.Else != nil {
-			return weightExprCheck(n.Else, allowed)
-		}
-		return ""
-	case *ast.Index:
-		if bad := weightExprCheck(n.Base, allowed); bad != "" {
-			return bad
-		}
-		return weightExprCheck(n.Idx, allowed)
-	case *ast.Slice:
-		if bad := weightExprCheck(n.Base, allowed); bad != "" {
-			return bad
-		}
-		if n.From != nil {
-			if bad := weightExprCheck(n.From, allowed); bad != "" {
-				return bad
-			}
-		}
-		if n.To != nil {
-			return weightExprCheck(n.To, allowed)
-		}
-		return ""
-	case *ast.PropOf:
-		return weightExprCheck(n.Base, allowed)
-	case *ast.Exists:
-		return weightSubqueryCheck(n.Pattern, n.Where, allowed)
-	case *ast.CountSub:
-		return weightSubqueryCheck(n.Pattern, n.Where, allowed)
-	}
-	return "unsupported weight form"
-}
-
-// weightSubqueryCheck validates a correlated subquery weight: its pattern
-// variables are local, so its WHERE checks against the extended set.
-func weightSubqueryCheck(p *ast.Pattern, where ast.Expr, allowed []string) string {
-	if where == nil {
-		return ""
-	}
-	ext := append(append([]string{}, allowed...), patternVarNames(p)...)
-	return weightExprCheck(where, ext)
 }
 
 // extractSpHopPred lifts the all(r IN rels(e) WHERE ...) per-hop predicate

@@ -306,6 +306,38 @@ func TestMinZeroNamedPathRejected(t *testing.T) {
 	}
 }
 
+// TestMonoOptionalWalkNotPruned pins the OPTIONAL interaction end to end:
+// the boundary FILTER sits outside the optional match, so pruning the
+// optional walk would fail the match and null-extend a row the filter
+// (consumed by the push) could no longer drop. The planner must keep the
+// conjunct as a post filter instead.
+func TestMonoOptionalWalkNotPruned(t *testing.T) {
+	g := monoTrailGraph(t)
+	// From s2 with {2,3} the only trail is ts=[5,9], which violates the
+	// descending order: the OPTIONAL matches, so no null extension, and
+	// the filter drops the row -- zero rows. (A pruned walk would have
+	// emitted one row with a null endpoint.)
+	q := "MATCH (s:Account {name: 's2'}) " +
+		"OPTIONAL MATCH p = TRAIL (s)<-[:transfer]-{2,3}(o:Account) " +
+		"LET ts = [r IN rels(p) | r.createTime] " +
+		"FILTER all(i IN range(0, size(ts) - 2) WHERE ts[i] > ts[i + 1]) " +
+		"RETURN o.name AS oname"
+	rows, err := Run(g, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for {
+		if _, ok := rows.Next(); !ok {
+			break
+		}
+		n++
+	}
+	if n != 0 {
+		t.Fatalf("optional walk pruned: got %d rows, want 0 (the filter drops the matched trail)", n)
+	}
+}
+
 // TestMonoPushdownFires asserts the monotonic pushdown reaches the bounded
 // var-expand for the parsed CR1-shaped query, so the correctness test above
 // genuinely exercises the walk pruning rather than a plain filter.

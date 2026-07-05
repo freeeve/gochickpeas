@@ -1,8 +1,9 @@
 // Quantified (variable-length) expansion: bounded enumeration walks
 // relationship-unique trails (one row per path, GQL TRAIL semantics);
 // zero-length or unbounded quantifiers resolve the distinct reachable set
-// via a dedup'd BFS so a cyclic walk terminates. Per-hop predicates and
-// the monotonic-key constraint prune during the walk.
+// via a dedup'd BFS so a cyclic walk terminates. Each walk mode threads
+// the same hopGate seam: a stateless per-hop predicate and a stateful
+// carry+accept constraint prune during the walk.
 package exec
 
 import (
@@ -14,6 +15,16 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// hopGate bundles a var-expand op's compiled per-hop constraints: an
+// optional stateless relationship predicate and an optional stateful
+// carry. It is the one seam every walk mode shares, so a future
+// carried-state constraint (sum-bounded, non-decreasing weight) extends
+// hopCarry instead of threading another field and parameter set.
+type hopGate struct {
+	pred  *hopFilter
+	carry *hopCarry
+}
 
 // hopFilter is a compiled per-hop relationship predicate lifted from
 // all(r IN rels(e) WHERE pred): the iteration variable reads from slot 0
@@ -27,30 +38,70 @@ func (h *hopFilter) keep(ctx *eval.Ctx, pos uint32) bool {
 	return h.eval.Eval(ctx, []value.Value{value.Rel(pos)}, h.scope).IsTruthy()
 }
 
-// buildHopFilters compiles each var-length op's per-hop predicate once for
-// the stage, indexed by op.
-func buildHopFilters(ctx *eval.Ctx, ops []plan.BindOp) []*hopFilter {
-	out := make([]*hopFilter, len(ops))
-	for i := range ops {
-		if ops[i].Kind == plan.OpVarExpand && ops[i].RelPred != nil {
-			rp := ops[i].RelPred
-			scope := map[string]int{rp.Var: 0}
-			out[i] = &hopFilter{eval: compileEval(ctx, rp.Pred, scope), scope: scope}
-		}
-	}
-	return out
+// carryState is the opaque per-path state a walk threads hop to hop for
+// its gate's carry; the zero value means "no state yet" (a path's first
+// hop has nothing to compare against).
+type carryState struct {
+	val  value.Value
+	have bool
 }
 
-// buildMonoFilters compiles each var-length op's monotonic key reader once
-// for the stage, indexed by op (the per-row form allocated a scope map and
-// a compiled tree on every row entering the walk).
-func buildMonoFilters(ctx *eval.Ctx, ops []plan.BindOp) []*monoFilter {
-	out := make([]*monoFilter, len(ops))
+// hopCarry is the stateful per-hop constraint: step reads the candidate
+// hop's carried value and either extends the path's state or rejects the
+// hop. The monotonic-key constraint is the only instance today -- state
+// is the previous hop's key, compared with the filter's own three-valued
+// value.Compare so the pruned set exactly matches the source filter: an
+// incomparable pair (missing key, NaN, mixed kinds) fails an all()-shape
+// comparison and prunes, but is not a violation in the violation-count
+// shape and passes (nullsPass). Carry is meaningless for the reachability
+// BFS (dedup collapses paths, so there is no per-path state); the planner
+// never attaches a spec to a min-0/unbounded op.
+type hopCarry struct {
+	eval      RowEval
+	scope     map[string]int
+	ascending bool
+	nullsPass bool
+}
+
+// step consumes one hop: the returned state carries the hop's value, and
+// ok reports whether the hop may follow the previous state.
+func (h *hopCarry) step(ctx *eval.Ctx, pos uint32, st carryState) (carryState, bool) {
+	v := h.eval.Eval(ctx, []value.Value{value.Rel(pos)}, h.scope)
+	if st.have && !h.allows(st.val, v) {
+		return st, false
+	}
+	return carryState{val: v, have: true}, true
+}
+
+// allows reports whether a hop whose key is cur may follow a hop whose key
+// is prev under the spec's order and null semantics.
+func (h *hopCarry) allows(prev, cur value.Value) bool {
+	c, ok := value.Compare(prev, cur)
+	if !ok {
+		return h.nullsPass
+	}
+	if h.ascending {
+		return c < 0
+	}
+	return c > 0
+}
+
+// buildHopGates compiles each var-length op's per-hop constraints once for
+// the stage, indexed by op (the per-row form allocated a scope map and a
+// compiled tree on every row entering the walk).
+func buildHopGates(ctx *eval.Ctx, ops []plan.BindOp) []hopGate {
+	out := make([]hopGate, len(ops))
 	for i := range ops {
-		if ops[i].Kind == plan.OpVarExpand && ops[i].MonoHop != nil {
-			mh := ops[i].MonoHop
+		if ops[i].Kind != plan.OpVarExpand {
+			continue
+		}
+		if rp := ops[i].RelPred; rp != nil {
+			scope := map[string]int{rp.Var: 0}
+			out[i].pred = &hopFilter{eval: compileEval(ctx, rp.Pred, scope), scope: scope}
+		}
+		if mh := ops[i].MonoHop; mh != nil {
 			scope := map[string]int{"__r": 0}
-			out[i] = &monoFilter{
+			out[i].carry = &hopCarry{
 				eval:      compileEval(ctx, &ast.Prop{Var: "__r", Key: mh.RelKey}, scope),
 				scope:     scope,
 				ascending: mh.Ascending,
@@ -61,43 +112,12 @@ func buildMonoFilters(ctx *eval.Ctx, ops []plan.BindOp) []*monoFilter {
 	return out
 }
 
-// monoFilter reads each candidate hop's key so the DFS can prune a hop
-// that doesn't strictly continue the order vs the previous hop. Comparison
-// is the filter's own three-valued value.Compare, so any comparable kind
-// works and the pruned set exactly matches the source filter: an
-// incomparable pair (missing key, NaN, mixed kinds) fails an all()-shape
-// comparison and prunes, but is not a violation in the violation-count
-// shape and passes (nullsPass).
-type monoFilter struct {
-	eval      RowEval
-	scope     map[string]int
-	ascending bool
-	nullsPass bool
-}
-
-func (m *monoFilter) value(ctx *eval.Ctx, pos uint32) value.Value {
-	return m.eval.Eval(ctx, []value.Value{value.Rel(pos)}, m.scope)
-}
-
-// allows reports whether a hop whose key is cur may follow a hop whose key
-// is prev under the spec's order and null semantics.
-func (m *monoFilter) allows(prev, cur value.Value) bool {
-	c, ok := value.Compare(prev, cur)
-	if !ok {
-		return m.nullsPass
-	}
-	if m.ascending {
-		return c < 0
-	}
-	return c > 0
-}
-
 // varExpandCandidates fills the candidate buffers for a quantified hop:
 // endpoint nodes, and for a named rel variable the flat rel arena plus
 // per-candidate (start, len) ranges. The walk state and dedup set live on
 // the stage's genScratch, reused across the row loop (the walk runs to
 // completion per call and is never nested, same as reachScratch).
-func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, hop *hopFilter, mono *monoFilter, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, scratch *genScratch) {
+func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, scratch *genScratch) {
 	start, ok := row[op.From].AsNode()
 	if !ok {
 		return
@@ -114,14 +134,14 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	// set via dedup'd BFS, so an unbounded or cyclic walk can't explode
 	// into per-path enumeration.
 	if op.Min == 0 || op.Max == nil {
-		varReach(ctx, start, op, m, rm, bound, haveBound, cand, &scratch.reach)
+		varReach(ctx, start, op, m, rm, gate, bound, haveBound, cand, &scratch.reach)
 		return
 	}
 	// Reset the persistent walk in place: the buffer fields keep their
 	// backing arrays across rows.
 	w := &scratch.walk
 	*w = varWalk{
-		ctx: ctx, op: op, m: m, rm: rm, hop: hop, mono: mono,
+		ctx: ctx, op: op, m: m, rm: rm, gate: gate,
 		bound: bound, haveBound: haveBound,
 		collectRels: op.RelSlot != plan.NoSlot,
 		max:         *op.Max,
@@ -132,7 +152,7 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	if op.Acyclic {
 		w.visited = append(w.visited, start)
 	}
-	w.dfs(start, 0, value.Null(), false)
+	w.dfs(start, 0, carryState{})
 	// Without a named rel variable the trail's positions are not bound;
 	// only then does endpoint dedup apply (first-seen order preserved).
 	if !w.collectRels {
@@ -161,8 +181,9 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 // includes the start itself. expanded bounds the walk (each node's
 // neighbors explored once, so cycles terminate); emitted dedups the result
 // separately so a node re-reached via a cycle at depth >= min -- e.g. the
-// start when min >= 1 -- still emits once.
-func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, bound graph.NodeID, haveBound bool, out *[]graph.NodeID, rs *reachScratch) {
+// start when min >= 1 -- still emits once. The gate's stateless predicate
+// prunes edges here too; its carry never applies (see hopCarry).
+func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, bound graph.NodeID, haveBound bool, out *[]graph.NodeID, rs *reachScratch) {
 	cap := uint64(1<<63 - 1)
 	if op.Max != nil {
 		cap = *op.Max
@@ -190,7 +211,20 @@ func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeM
 		d := depth + 1
 		next = next[:0]
 		for _, u := range frontier {
-			rs.nbuf = ctx.G.AppendNeighborsMatched(rs.nbuf[:0], u, op.Dir, rm)
+			if gate.pred != nil {
+				// The predicate needs rel positions: walk relationships and
+				// keep the passing edges' endpoints.
+				rs.nbuf, rs.pbuf = ctx.G.AppendRelationshipsMatched(rs.nbuf[:0], rs.pbuf[:0], u, op.Dir, rm)
+				kept := rs.nbuf[:0]
+				for i, nb := range rs.nbuf {
+					if gate.pred.keep(ctx, rs.pbuf[i]) {
+						kept = append(kept, nb)
+					}
+				}
+				rs.nbuf = kept
+			} else {
+				rs.nbuf = ctx.G.AppendNeighborsMatched(rs.nbuf[:0], u, op.Dir, rm)
+			}
 			for _, nb := range rs.nbuf {
 				if d >= op.Min && keep(nb) {
 					if _, dup := rs.emitted[nb]; !dup {
@@ -219,8 +253,7 @@ type varWalk struct {
 	op          *plan.BindOp
 	m           *graph.NodeMatcher
 	rm          *graph.RelMatcher
-	hop         *hopFilter
-	mono        *monoFilter
+	gate        hopGate
 	bound       graph.NodeID
 	haveBound   bool
 	collectRels bool
@@ -251,8 +284,9 @@ type nodePos struct {
 
 // dfs enumerates trails of length min..=max with no repeated relationship,
 // emitting each qualifying endpoint (one entry per trail, matching the
-// per-path semantics).
-func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, havePrev bool) {
+// per-path semantics). st is the gate carry's per-path state, threaded
+// down the recursion.
+func (w *varWalk) dfs(cur graph.NodeID, depth uint64, st carryState) {
 	if depth >= w.max {
 		return
 	}
@@ -261,14 +295,14 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, haveP
 		w.scratch = append(w.scratch, nil)
 	}
 	buf := w.scratch[d][:0]
-	// Walk relationships (carrying positions) when a per-hop predicate or
-	// the mono constraint prunes by position or the rel list is recorded;
-	// otherwise the leaner neighbor batch. Batch appends replace the
-	// iter.Seq forms, which heap-allocate their closures per call.
-	if w.hop != nil || w.mono != nil || w.collectRels {
+	// Walk relationships (carrying positions) when the gate prunes by
+	// position or the rel list is recorded; otherwise the leaner neighbor
+	// batch. Batch appends replace the iter.Seq forms, which heap-allocate
+	// their closures per call.
+	if w.gate.pred != nil || w.gate.carry != nil || w.collectRels {
 		w.nbufN, w.nbufP = w.ctx.G.AppendRelationshipsMatched(w.nbufN[:0], w.nbufP[:0], cur, w.op.Dir, w.rm)
 		for i, nb := range w.nbufN {
-			if p := w.nbufP[i]; w.hop == nil || w.hop.keep(w.ctx, p) {
+			if p := w.nbufP[i]; w.gate.pred == nil || w.gate.pred.keep(w.ctx, p) {
 				buf = append(buf, nodePos{nb, p})
 			}
 		}
@@ -294,17 +328,15 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, haveP
 		if w.op.Acyclic && containsNode(w.visited, nb) {
 			continue
 		}
-		// Monotonic pruning: the hop's key must continue the order vs the
-		// previous hop under the spec's exact filter semantics, else no
-		// trail through this hop can satisfy it. The first hop carries no
-		// comparison (a length-1 trail has none to fail).
-		curVal, haveCur := prevVal, havePrev
-		if w.mono != nil {
-			v := w.mono.value(w.ctx, pos)
-			if havePrev && !w.mono.allows(prevVal, v) {
+		// Carried-state pruning: a hop the carry rejects (e.g. its key does
+		// not continue the monotonic order) admits no qualifying trail
+		// through it. A path's first hop starts the state, never fails it.
+		next := st
+		if w.gate.carry != nil {
+			var ok bool
+			if next, ok = w.gate.carry.step(w.ctx, pos, st); !ok {
 				continue
 			}
-			curVal, haveCur = v, true
 		}
 		w.used = append(w.used, edge)
 		if w.op.Acyclic {
@@ -321,7 +353,7 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, haveP
 				*w.relData = append(*w.relData, w.pathRels...)
 			}
 		}
-		w.dfs(nb, nd, curVal, haveCur)
+		w.dfs(nb, nd, next)
 		if w.collectRels {
 			w.pathRels = w.pathRels[:len(w.pathRels)-1]
 		}

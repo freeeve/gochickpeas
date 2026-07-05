@@ -1,147 +1,137 @@
 // Monotonic var-length predicate pushdown (port of the Rust plan/mono.rs):
-// recognizes all(i IN range(0, size(rels(e))-2) WHERE rels(e)[i].k {<,>}
-// rels(e)[i+1].k) -- and the projection-derived and violation-count forms
-// -- and lifts them onto the bounded var-expand as a MonoHopSpec so
-// non-monotonic hops are pruned during the walk. Mis-recognition is
-// impossible, only missed optimization: an unconsumed conjunct stays a
-// correct post-hoc filter.
+// one normalizer answers "is this conjunct equivalent to sorted(L) /
+// reverse-sorted(L)?" over a canonicalized consecutive-pair core, and one
+// pass over the fully built segments lifts each recognized conjunct onto
+// its bounded var-expand as a MonoHopSpec so non-monotonic hops are pruned
+// during the walk. Mis-recognition is impossible, only missed
+// optimization: an unconsumed conjunct stays a correct post-hoc filter.
 package plan
 
 import "github.com/freeeve/gochickpeas/gql/internal/ast"
 
-// tryPushMonoPred lifts one inline conjunct as a MonoHopSpec onto the
-// bounded var-expand for its rel variable; false leaves it in the WHERE.
-func tryPushMonoPred(c ast.Expr, ops []BindOp) bool {
-	lp, ok := c.(*ast.ListPred)
-	if !ok || lp.Quant != ast.QuantAll {
-		return false
-	}
-	sizeArg0 := monoRangeSizeArg(lp.List)
-	if sizeArg0 == nil {
-		return false
-	}
-	e := relsArg(sizeArg0)
-	if e == "" {
-		return false
-	}
-	b, ok := lp.Pred.(*ast.Binary)
-	if !ok {
-		return false
-	}
-	var ascending bool
-	switch b.Op {
-	case ast.OpLt:
-		ascending = true
-	case ast.OpGt:
-		ascending = false
-	default:
-		return false
-	}
-	e1, k1, idx1, ok1 := monoIndexedProp(b.LHS)
-	e2, k2, idx2, ok2 := monoIndexedProp(b.RHS)
-	if !ok1 || !ok2 || e1 != e || e2 != e || k1 != k2 || !isVar(idx1, lp.Var) || !isVarPlusOne(idx2, lp.Var) {
-		return false
-	}
-	for i := range ops {
-		op := &ops[i]
-		if op.Kind == OpVarExpand && op.RelVar == e {
-			if op.MonoHop != nil || op.Max == nil || op.Min == 0 {
-				// One spec; bounded var-length only; a min-0 quantifier
-				// resolves via the reachability BFS, which has no walk
-				// order to prune -- the conjunct stays a post filter.
-				return false
-			}
-			op.MonoHop = &MonoHopSpec{RelKey: k1, Ascending: ascending}
-			return true
-		}
-	}
-	return false
+// monoListRef identifies the list a sortedness conjunct constrains: a
+// projected list alias (derived form), or rels(relVar) with the compared
+// property key (inline form).
+type monoListRef struct {
+	alias  string
+	relVar string
+	key    string
 }
 
-// pushDerivedMonoPred is the projection-derived counterpart: the filter
-// lives in the segment PostWhere and names a projected alias defined as
-// [r IN rels(p) | r.k] (or over a bare rel-list variable); resolve the
-// alias to its source var-expand, push the spec, and consume the conjunct
-// (the walk prunes with the exact filter semantics -- see the equivalence
-// note on pushCrossSegmentMono). Returns the remaining PostWhere.
-func pushDerivedMonoPred(proj *ProjPlan, postWhere ast.Expr, stages []Stage, slots map[string]int) ast.Expr {
-	if postWhere == nil {
-		return nil
+// monoShape is the normalizer's result: which list must be sorted, in
+// which direction, and the source shape's null semantics (NullsPass on
+// MonoHopSpec: an incomparable pair prunes the all() family and passes
+// the violation-count family).
+type monoShape struct {
+	ref       monoListRef
+	ascending bool
+	nullsPass bool
+}
+
+// pushMonoPreds is the single monotonic-pushdown pass, run once per UNION
+// branch (and per CALL subquery body) over its fully built segments. An
+// inline conjunct in a MATCH stage's WHERE pushes onto that same stage's
+// var-expand; an alias conjunct in a segment's boundary WHERE resolves its
+// alias through the defining projection -- the segment's own or, via an
+// unbroken passthrough, an earlier segment's -- and pushes onto the
+// originating bounded var-expand.
+//
+// Every push CONSUMES the conjunct, which is safe because the walk prunes
+// with the exact filter semantics: hop pairs compare via the same
+// three-valued value.Compare the filter's </> uses, an incomparable pair
+// (missing key, NaN, mixed kinds) prunes for the all() shape and passes
+// for the violation-count shape (NullsPass), and a path's first hop
+// carries no comparison -- so the emitted set equals the filtered set and
+// re-checking removes nothing. Min-0 quantifiers never get a spec (the
+// reachability BFS has no walk order), keeping their conjunct as the post
+// filter. TestCrossSegmentMonoDropCorrectness pins the equivalence against
+// the plain filter semantics, including sparse and float keys.
+func pushMonoPreds(segments []*Segment) {
+	for fi, seg := range segments {
+		for _, st := range seg.Stages {
+			ms, ok := st.(*MatchStage)
+			if !ok || ms.Where == nil {
+				continue
+			}
+			ms.Where = consumeMonoConjuncts(ms.Where, func(sh monoShape) bool {
+				// Inline form, same stage only: a stage WHERE is scoped
+				// inside its own (possibly OPTIONAL) match, so pruning this
+				// stage's walk is exactly the WHERE's effect -- but pushing
+				// into another stage's op would filter rows an OPTIONAL
+				// would have null-extended.
+				if sh.ref.relVar == "" {
+					return false
+				}
+				return applyMonoTarget([]Stage{ms}, sh.ref.relVar, NoSlot, sh.ref.key, sh.ascending, sh.nullsPass)
+			})
+		}
+		if seg.PostWhere != nil {
+			seg.PostWhere = consumeMonoConjuncts(seg.PostWhere, func(sh monoShape) bool {
+				if sh.ref.alias == "" {
+					return false
+				}
+				return pushMonoAlias(segments, fi, sh)
+			})
+		}
 	}
+}
+
+// consumeMonoConjuncts hands each recognized sortedness conjunct of a
+// WHERE's top-level AND chain to push, dropping the consumed ones and
+// rebuilding the rest.
+func consumeMonoConjuncts(where ast.Expr, push func(monoShape) bool) ast.Expr {
 	var conjs []ast.Expr
-	splitAndRef(postWhere, &conjs)
+	splitAndRef(where, &conjs)
 	var kept []ast.Expr
 	for _, c := range conjs {
-		alias, ascending, nullsPass, ok := monoConjunctShape(c)
-		if ok {
-			if src, key, ok := derivedListSource(proj, alias); ok {
-				if relVar, relSlot, ok := resolveMonoTarget(stages, slots, src); ok {
-					if applyMonoTarget(stages, relVar, relSlot, key, ascending, nullsPass) {
-						continue
-					}
-				}
-			}
+		if sh, ok := monoConjunctShape(c); ok && push(sh) {
+			continue
 		}
 		kept = append(kept, c)
 	}
 	return rebuildAnd(kept)
 }
 
-// monoConjunctShape recognizes either monotonic filter surface over a list
-// alias, returning the alias, direction, and the shape's null semantics
-// (NullsPass on MonoHopSpec).
-func monoConjunctShape(c ast.Expr) (string, bool, bool, bool) {
-	if alias, ascending, ok := derivedMonoShape(c); ok {
-		return alias, ascending, false, true
+// pushMonoAlias resolves an alias-form conjunct seen at segment fi's
+// boundary WHERE: walk from fi's own projection back through earlier
+// segments to the one defining the alias as a rels-comprehension, then
+// push onto its bounded var-expand. The alias must pass through unchanged
+// from its definition to the filter -- fi's own projection included -- so
+// a projection that rebinds it to any other expression stops the search
+// (the filter constrains the rebound value, not the original walk).
+func pushMonoAlias(segments []*Segment, fi int, sh monoShape) bool {
+	for di := fi; di >= 0; di-- {
+		expr, found := aliasReturnExpr(&segments[di].Proj, sh.ref.alias)
+		if !found {
+			return false
+		}
+		if src, key, ok := derivedListSourceExpr(expr); ok {
+			relVar, relSlot, ok := resolveMonoTarget(segments[di].Stages, segments[di].Slots, src)
+			if !ok {
+				return false
+			}
+			return applyMonoTarget(segments[di].Stages, relVar, relSlot, key, sh.ascending, sh.nullsPass)
+		}
+		if !isVar(expr, sh.ref.alias) {
+			return false
+		}
 	}
-	if alias, ascending, ok := violationCountMonoShape(c); ok {
-		return alias, ascending, true, true
-	}
-	return "", false, false, false
+	return false
 }
 
-// derivedMonoShape matches all(i IN range(0,size(L)-2) WHERE L[i] {<,>}
-// L[i+1]) over a bare list variable L, returning (L, ascending).
-func derivedMonoShape(c ast.Expr) (string, bool, bool) {
-	lp, ok := c.(*ast.ListPred)
-	if !ok || lp.Quant != ast.QuantAll {
-		return "", false, false
+// monoConjunctShape is the normalizer: both surface families -- the all()
+// quantifier over consecutive pairs and the violation-count form
+// size([.. WHERE a pair violates the order]) = 0 -- reduce to one
+// consecutive-pair core, so an unseen equivalent phrasing (shifted index
+// offsets, either operand order, a widened violation range, the inline
+// rels(e)[i].k elements or a bare list alias) lands on the same spec.
+func monoConjunctShape(c ast.Expr) (monoShape, bool) {
+	if lp, ok := c.(*ast.ListPred); ok && lp.Quant == ast.QuantAll {
+		return monoPairCore(lp.Var, lp.List, lp.Pred, false)
 	}
-	sz := monoRangeSizeArg(lp.List)
-	alias := asVarName(sz)
-	if alias == "" {
-		return "", false, false
-	}
-	b, ok := lp.Pred.(*ast.Binary)
-	if !ok {
-		return "", false, false
-	}
-	var ascending bool
-	switch b.Op {
-	case ast.OpLt:
-		ascending = true
-	case ast.OpGt:
-		ascending = false
-	default:
-		return "", false, false
-	}
-	a1, idx1, ok1 := listIndex(b.LHS)
-	a2, idx2, ok2 := listIndex(b.RHS)
-	if !ok1 || !ok2 || a1 != alias || a2 != alias || !isVar(idx1, lp.Var) || !isVarPlusOne(idx2, lp.Var) {
-		return "", false, false
-	}
-	return alias, ascending, true
-}
-
-// violationCountMonoShape matches size([i IN range(1, size(ts)) WHERE
-// ts[i-1] <op> ts[i]]) = 0 -- "no consecutive pair violates the order".
-// The inner predicate is the VIOLATION: <= means strictly descending, >=
-// strictly ascending; a strict inner op would mean a non-strict order the
-// spec can't express, so it is left as a post-hoc filter.
-func violationCountMonoShape(c ast.Expr) (string, bool, bool) {
 	b, ok := c.(*ast.Binary)
 	if !ok || b.Op != ast.OpEq {
-		return "", false, false
+		return monoShape{}, false
 	}
 	var comp ast.Expr
 	switch {
@@ -150,49 +140,192 @@ func violationCountMonoShape(c ast.Expr) (string, bool, bool) {
 	case isZero(b.LHS) && !isZero(b.RHS):
 		comp = b.RHS
 	default:
-		return "", false, false
+		return monoShape{}, false
 	}
-	inner := sizeArg(comp)
-	lc, ok := inner.(*ast.ListComp)
+	lc, ok := sizeArg(comp).(*ast.ListComp)
 	if !ok || lc.Filter == nil || lc.Map != nil {
-		return "", false, false
+		return monoShape{}, false
 	}
-	alias := asVarName(violationRangeSizeArg(lc.List))
-	if alias == "" {
-		return "", false, false
-	}
-	f, ok := lc.Filter.(*ast.Binary)
-	if !ok {
-		return "", false, false
-	}
-	var ascending bool
-	switch f.Op {
-	case ast.OpGte:
-		ascending = true // violation ts[i-1] >= ts[i] => strictly ascending
-	case ast.OpLte:
-		ascending = false // violation ts[i-1] <= ts[i] => strictly descending
-	default:
-		return "", false, false
-	}
-	a1, idx1, ok1 := listIndex(f.LHS)
-	a2, idx2, ok2 := listIndex(f.RHS)
-	if !ok1 || !ok2 || a1 != alias || a2 != alias || !isVarMinusOne(idx1, lc.Var) || !isVar(idx2, lc.Var) {
-		return "", false, false
-	}
-	return alias, ascending, true
+	return monoPairCore(lc.Var, lc.List, lc.Filter, true)
 }
 
-// listIndex matches <listVar>[<idx>].
-func listIndex(e ast.Expr) (string, ast.Expr, bool) {
+// monoPairCore recognizes the shared consecutive-pair core: ivar iterates
+// range(lo, size(REF)+m) (inclusive bounds) and pred compares REF elements
+// at affine offsets ivar+c and ivar+c+1. The covered pair set must start
+// exactly at pair 0 (a negative index would wrap to the list's end). For
+// the strict all() family (op < or >) it must also end exactly at pair
+// size-2 -- an out-of-range read is null, which fails all() -- and the
+// order is the operator's. For the violation family the inner comparison
+// is the VIOLATION (non-strict: >= violates ascending, <= descending; a
+// strict violation would mean a non-strict order the spec can't express)
+// and a longer range is fine (an out-of-range read is null, never a
+// violation), but a shorter one misses pairs.
+func monoPairCore(ivar string, list, pred ast.Expr, violation bool) (monoShape, bool) {
+	lo, sizeOf, m, ok := monoRange(list)
+	if !ok {
+		return monoShape{}, false
+	}
+	b, ok := pred.(*ast.Binary)
+	if !ok {
+		return monoShape{}, false
+	}
+	ref1, off1, ok1 := monoElem(b.LHS, ivar)
+	ref2, off2, ok2 := monoElem(b.RHS, ivar)
+	if !ok1 || !ok2 || ref1 != ref2 || !sameMonoList(sizeOf, ref1) {
+		return monoShape{}, false
+	}
+	d := off2 - off1
+	if d != 1 && d != -1 {
+		return monoShape{}, false
+	}
+	lhsEarlier := off1 < off2
+	var ascending bool
+	if violation {
+		switch b.Op {
+		case ast.OpGte:
+			ascending = lhsEarlier // violation: earlier >= later
+		case ast.OpLte:
+			ascending = !lhsEarlier
+		default:
+			return monoShape{}, false
+		}
+	} else {
+		switch b.Op {
+		case ast.OpLt:
+			ascending = lhsEarlier // order: earlier < later
+		case ast.OpGt:
+			ascending = !lhsEarlier
+		default:
+			return monoShape{}, false
+		}
+	}
+	minOff := min(off1, off2)
+	if lo+minOff != 0 {
+		return monoShape{}, false
+	}
+	if last := m + minOff; (violation && last < -2) || (!violation && last != -2) {
+		return monoShape{}, false
+	}
+	return monoShape{ref: ref1, ascending: ascending, nullsPass: violation}, true
+}
+
+// monoElem matches one comparison side as an element read at an affine
+// offset of the iteration variable: L[ivar+c] (bare list alias) or
+// rels(e)[ivar+c].k (inline form).
+func monoElem(e ast.Expr, ivar string) (monoListRef, int64, bool) {
+	key := ""
+	if po, ok := e.(*ast.PropOf); ok {
+		e, key = po.Base, po.Key
+	}
 	ix, ok := e.(*ast.Index)
 	if !ok {
-		return "", nil, false
+		return monoListRef{}, 0, false
 	}
-	name := asVarName(ix.Base)
-	if name == "" {
-		return "", nil, false
+	off, ok := affineOffset(ix.Idx, ivar)
+	if !ok {
+		return monoListRef{}, 0, false
 	}
-	return name, ix.Idx, true
+	if key != "" {
+		if rv := relsArg(ix.Base); rv != "" {
+			return monoListRef{relVar: rv, key: key}, off, true
+		}
+		return monoListRef{}, 0, false
+	}
+	if name := asVarName(ix.Base); name != "" {
+		return monoListRef{alias: name}, off, true
+	}
+	return monoListRef{}, 0, false
+}
+
+// sameMonoList reports whether the range's size argument names the same
+// list the compared elements read (the alias, or rels(relVar)).
+func sameMonoList(sizeOf ast.Expr, ref monoListRef) bool {
+	if ref.alias != "" {
+		return isVar(sizeOf, ref.alias)
+	}
+	return relsArg(sizeOf) == ref.relVar
+}
+
+// monoRange matches the two-argument range(<int lo>, size(<X>)+<m>) (a
+// step argument could skip pairs), returning lo, the size argument X, m.
+func monoRange(list ast.Expr) (int64, ast.Expr, int64, bool) {
+	f, ok := list.(*ast.Func)
+	if !ok || f.Star || len(f.Args) != 2 || !eqFold(f.Name, "range") {
+		return 0, nil, 0, false
+	}
+	lo, ok := intLitVal(f.Args[0])
+	if !ok {
+		return 0, nil, 0, false
+	}
+	sizeOf, m, ok := sizePlus(f.Args[1])
+	if !ok {
+		return 0, nil, 0, false
+	}
+	return lo, sizeOf, m, true
+}
+
+// sizePlus matches size(<X>), size(<X>)+c, c+size(<X>), or size(<X>)-c,
+// returning X and the signed offset.
+func sizePlus(e ast.Expr) (ast.Expr, int64, bool) {
+	if x := sizeArg(e); x != nil {
+		return x, 0, true
+	}
+	b, ok := e.(*ast.Binary)
+	if !ok {
+		return nil, 0, false
+	}
+	switch b.Op {
+	case ast.OpAdd:
+		if x := sizeArg(b.LHS); x != nil {
+			if c, ok := intLitVal(b.RHS); ok {
+				return x, c, true
+			}
+		}
+		if x := sizeArg(b.RHS); x != nil {
+			if c, ok := intLitVal(b.LHS); ok {
+				return x, c, true
+			}
+		}
+	case ast.OpSub:
+		if x := sizeArg(b.LHS); x != nil {
+			if c, ok := intLitVal(b.RHS); ok {
+				return x, -c, true
+			}
+		}
+	}
+	return nil, 0, false
+}
+
+// affineOffset matches <ivar>, <ivar>+c, c+<ivar>, or <ivar>-c, returning
+// the signed offset relative to the iteration variable.
+func affineOffset(e ast.Expr, ivar string) (int64, bool) {
+	if isVar(e, ivar) {
+		return 0, true
+	}
+	b, ok := e.(*ast.Binary)
+	if !ok {
+		return 0, false
+	}
+	switch b.Op {
+	case ast.OpAdd:
+		if isVar(b.LHS, ivar) {
+			if c, ok := intLitVal(b.RHS); ok {
+				return c, true
+			}
+		}
+		if isVar(b.RHS, ivar) {
+			if c, ok := intLitVal(b.LHS); ok {
+				return c, true
+			}
+		}
+	case ast.OpSub:
+		if isVar(b.LHS, ivar) {
+			if c, ok := intLitVal(b.RHS); ok {
+				return -c, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // sizeArg matches size(<x>) returning <x>.
@@ -204,68 +337,9 @@ func sizeArg(e ast.Expr) ast.Expr {
 	return f.Args[0]
 }
 
-// violationRangeSizeArg matches range(1, size(L)) returning L.
-func violationRangeSizeArg(list ast.Expr) ast.Expr {
-	f, ok := list.(*ast.Func)
-	if !ok || f.Star || len(f.Args) != 2 || !eqFold(f.Name, "range") {
-		return nil
-	}
-	if !isIntLit(f.Args[0], 1) {
-		return nil
-	}
-	return sizeArg(f.Args[1])
-}
-
-// monoRangeSizeArg matches range(0, size(<x>) - 2) returning <x> -- the
-// shared spine of the monotonic-range matcher.
-func monoRangeSizeArg(list ast.Expr) ast.Expr {
-	f, ok := list.(*ast.Func)
-	if !ok || f.Star || len(f.Args) != 2 || !eqFold(f.Name, "range") {
-		return nil
-	}
-	if !isIntLit(f.Args[0], 0) {
-		return nil
-	}
-	sub, ok := f.Args[1].(*ast.Binary)
-	if !ok || sub.Op != ast.OpSub || !isIntLit(sub.RHS, 2) {
-		return nil
-	}
-	return sizeArg(sub.LHS)
-}
-
-// monoIndexedProp matches rels(e)[<idx>].k returning (e, k, idx).
-func monoIndexedProp(e ast.Expr) (string, string, ast.Expr, bool) {
-	po, ok := e.(*ast.PropOf)
-	if !ok {
-		return "", "", nil, false
-	}
-	ix, ok := po.Base.(*ast.Index)
-	if !ok {
-		return "", "", nil, false
-	}
-	rv := relsArg(ix.Base)
-	if rv == "" {
-		return "", "", nil, false
-	}
-	return rv, po.Key, ix.Idx, true
-}
-
-// derivedListSource resolves a projected alias to the rels source and
-// property key of a simple [r IN rels(src) | r.key] comprehension (no
-// filter -- a filter changes element positions) or [r IN e | r.key] over a
-// bare rel-list variable.
-func derivedListSource(proj *ProjPlan, alias string) (string, string, bool) {
-	for i := range proj.Returns {
-		if proj.Returns[i].Name != alias {
-			continue
-		}
-		return derivedListSourceExpr(proj.Returns[i].Expr)
-	}
-	return "", "", false
-}
-
 // derivedListSourceExpr matches a [r IN rels(src) | r.key] comprehension
-// expression to its rels source and property key.
+// (no filter -- a filter changes element positions; src may also be a bare
+// rel-list variable) to its rels source and property key.
 func derivedListSourceExpr(e ast.Expr) (string, string, bool) {
 	lc, ok := e.(*ast.ListComp)
 	if !ok || lc.Filter != nil || lc.Map == nil {
@@ -291,69 +365,6 @@ func derivedListSourceExpr(e ast.Expr) (string, string, bool) {
 	return "", "", false
 }
 
-// pushCrossSegmentMono handles the projection-derived monotonic constraint
-// when GQL's LET (the ts = [r IN rels(p) | r.key] projection) and the FILTER
-// that reads it land in different segments: the same-segment
-// pushDerivedMonoPred cannot see the originating var-expand. For each later
-// segment's monotonic-shaped filter conjunct, walk back to the segment that
-// defines the alias as a rels-comprehension (requiring an unbroken
-// passthrough in between), push the MonoHopSpec onto its bounded var-expand,
-// and consume the conjunct.
-//
-// Consuming the conjunct is safe because the walk prunes with the exact
-// filter semantics: hop pairs compare via the same three-valued
-// value.Compare the filter's </> uses, an incomparable pair (missing key,
-// NaN, mixed kinds) prunes for the all() shape and passes for the
-// violation-count shape (NullsPass), and a path's first hop carries no
-// comparison -- so the emitted set equals the filtered set and re-checking
-// removes nothing. Min-0 quantifiers never get a spec (the reachability BFS
-// has no walk order), keeping their conjunct as the post filter.
-// TestCrossSegmentMonoDropCorrectness pins the equivalence against the
-// plain filter semantics, including sparse and float keys.
-func pushCrossSegmentMono(segments []*Segment) {
-	for fi := 1; fi < len(segments); fi++ {
-		fseg := segments[fi]
-		if fseg.PostWhere == nil {
-			continue
-		}
-		var conjs []ast.Expr
-		splitAndRef(fseg.PostWhere, &conjs)
-		var kept []ast.Expr
-		for _, c := range conjs {
-			alias, ascending, nullsPass, ok := monoConjunctShape(c)
-			if ok && tryPushMonoAcross(segments, fi, alias, ascending, nullsPass) {
-				continue
-			}
-			kept = append(kept, c)
-		}
-		fseg.PostWhere = rebuildAnd(kept)
-	}
-}
-
-// tryPushMonoAcross searches segments before fi for the one defining alias as
-// the rels-comprehension and pushes the mono spec onto its var-expand. The
-// alias must pass through unchanged from its definition to the filter, so a
-// segment that rebinds it to a different expression stops the search.
-func tryPushMonoAcross(segments []*Segment, fi int, alias string, ascending, nullsPass bool) bool {
-	for di := fi - 1; di >= 0; di-- {
-		expr, found := aliasReturnExpr(&segments[di].Proj, alias)
-		if !found {
-			return false
-		}
-		if src, key, ok := derivedListSourceExpr(expr); ok {
-			relVar, relSlot, ok := resolveMonoTarget(segments[di].Stages, segments[di].Slots, src)
-			if !ok {
-				return false
-			}
-			return applyMonoTarget(segments[di].Stages, relVar, relSlot, key, ascending, nullsPass)
-		}
-		if !isVar(expr, alias) {
-			return false
-		}
-	}
-	return false
-}
-
 // aliasReturnExpr returns the projection expression bound to alias.
 func aliasReturnExpr(proj *ProjPlan, alias string) (ast.Expr, bool) {
 	for i := range proj.Returns {
@@ -366,9 +377,11 @@ func aliasReturnExpr(proj *ProjPlan, alias string) (ast.Expr, bool) {
 
 // resolveMonoTarget resolves rels(src) to the exact bounded var-expand to
 // push onto: src is a rel variable, or a named path whose single
-// var-length hop is that op. Ambiguity bails (the constraint stays a
-// correct post-hoc filter). Returns (relVar, relSlot, ok) -- one of the
-// two identifies the target.
+// var-length hop is that op. Ambiguity bails, and so does an OPTIONAL
+// stage: the boundary WHERE this path serves sits OUTSIDE the optional
+// match, so pruning its walk would null-extend rows the filter drops (the
+// constraint stays a correct post-hoc filter). Returns (relVar, relSlot,
+// ok) -- one of the two identifies the target.
 func resolveMonoTarget(stages []Stage, slots map[string]int, src string) (string, int, bool) {
 	for _, s := range stages {
 		ms, ok := s.(*MatchStage)
@@ -378,6 +391,9 @@ func resolveMonoTarget(stages []Stage, slots map[string]int, src string) (string
 		for i := range ms.Ops {
 			op := &ms.Ops[i]
 			if op.Kind == OpVarExpand && op.RelVar == src && op.Max != nil {
+				if ms.Optional {
+					return "", NoSlot, false
+				}
 				return src, NoSlot, true
 			}
 		}
@@ -390,6 +406,9 @@ func resolveMonoTarget(stages []Stage, slots map[string]int, src string) (string
 		ms, ok := s.(*MatchStage)
 		if !ok || ms.PathBind == nil || ms.PathBind.PathSlot != slotP {
 			continue
+		}
+		if ms.Optional {
+			return "", NoSlot, false
 		}
 		// rels(p) spans the whole path; only a single var-length hop
 		// equals one op's rels.
@@ -448,27 +467,18 @@ func asVarName(e ast.Expr) string {
 	return ""
 }
 
-func isIntLit(e ast.Expr, v int64) bool {
+// intLitVal returns an integer literal's value.
+func intLitVal(e ast.Expr) (int64, bool) {
 	l, ok := e.(*ast.Lit)
-	return ok && l.Value.Kind == ast.LitInt && l.Value.I == v
+	if !ok || l.Value.Kind != ast.LitInt {
+		return 0, false
+	}
+	return l.Value.I, true
+}
+
+func isIntLit(e ast.Expr, v int64) bool {
+	c, ok := intLitVal(e)
+	return ok && c == v
 }
 
 func isZero(e ast.Expr) bool { return isIntLit(e, 0) }
-
-// isVarPlusOne matches <name> + 1 (either operand order).
-func isVarPlusOne(e ast.Expr, name string) bool {
-	b, ok := e.(*ast.Binary)
-	if !ok || b.Op != ast.OpAdd {
-		return false
-	}
-	return (isVar(b.LHS, name) && isIntLit(b.RHS, 1)) || (isVar(b.RHS, name) && isIntLit(b.LHS, 1))
-}
-
-// isVarMinusOne matches <name> - 1.
-func isVarMinusOne(e ast.Expr, name string) bool {
-	b, ok := e.(*ast.Binary)
-	if !ok || b.Op != ast.OpSub {
-		return false
-	}
-	return isVar(b.LHS, name) && isIntLit(b.RHS, 1)
-}

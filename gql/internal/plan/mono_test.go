@@ -11,10 +11,27 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
-// derivedMonoQuery hand-builds: MATCH p = (a:Person)-[:KNOWS]->{1,3}(b)
-// WITH b, [r IN rels(p) | r.ts] AS ts WHERE all(i IN range(0, size(ts)-2)
-// WHERE ts[i] < ts[i+1]) RETURN b -- the projection-derived mono form.
-func derivedMonoQuery(violationForm bool) *ast.Query {
+// AST-building shorthand shared by the mono fixture queries: ts[<idx>],
+// the iteration variable i at an offset, int literals, and size(ts).
+func tsIdx(i ast.Expr) ast.Expr { return &ast.Index{Base: &ast.Var{Name: "ts"}, Idx: i} }
+func intLit(v int64) ast.Expr   { return &ast.Lit{Value: ast.IntLit(v)} }
+func iPlus(c int64) ast.Expr {
+	iVar := &ast.Var{Name: "i"}
+	switch {
+	case c == 0:
+		return iVar
+	case c > 0:
+		return &ast.Binary{Op: ast.OpAdd, LHS: iVar, RHS: intLit(c)}
+	}
+	return &ast.Binary{Op: ast.OpSub, LHS: iVar, RHS: intLit(-c)}
+}
+func sizeTs() ast.Expr { return &ast.Func{Name: "size", Args: []ast.Expr{&ast.Var{Name: "ts"}}} }
+
+// monoWhereQuery hand-builds the projection-derived skeleton around an
+// arbitrary boundary WHERE over the ts alias: MATCH (a:Person)
+// -[e:KNOWS]->{1,3}(b) WITH b, [r IN e | r.ts] AS ts WHERE <where>
+// RETURN b (the comprehension form has no direct GQL surface).
+func monoWhereQuery(where ast.Expr) *ast.Query {
 	one, three := uint64(1), uint64(3)
 	pattern := ast.Pattern{
 		Start: ast.NodePat{Var: "a", Labels: []string{"Person"}},
@@ -27,35 +44,6 @@ func derivedMonoQuery(violationForm bool) *ast.Query {
 		Var:  "r",
 		List: &ast.Var{Name: "e"},
 		Map:  &ast.Prop{Var: "r", Key: "ts"},
-	}
-	idx := func(i ast.Expr) ast.Expr { return &ast.Index{Base: &ast.Var{Name: "ts"}, Idx: i} }
-	iVar := &ast.Var{Name: "i"}
-	plusOne := &ast.Binary{Op: ast.OpAdd, LHS: iVar, RHS: &ast.Lit{Value: ast.IntLit(1)}}
-	minusOne := &ast.Binary{Op: ast.OpSub, LHS: iVar, RHS: &ast.Lit{Value: ast.IntLit(1)}}
-	sizeTs := &ast.Func{Name: "size", Args: []ast.Expr{&ast.Var{Name: "ts"}}}
-	var where ast.Expr
-	if violationForm {
-		// size([i IN range(1, size(ts)) WHERE ts[i-1] >= ts[i]]) = 0
-		where = &ast.Binary{
-			Op: ast.OpEq,
-			LHS: &ast.Func{Name: "size", Args: []ast.Expr{&ast.ListComp{
-				Var:    "i",
-				List:   &ast.Func{Name: "range", Args: []ast.Expr{&ast.Lit{Value: ast.IntLit(1)}, sizeTs}},
-				Filter: &ast.Binary{Op: ast.OpGte, LHS: idx(minusOne), RHS: idx(iVar)},
-			}}},
-			RHS: &ast.Lit{Value: ast.IntLit(0)},
-		}
-	} else {
-		// all(i IN range(0, size(ts) - 2) WHERE ts[i] < ts[i+1])
-		where = &ast.ListPred{
-			Quant: ast.QuantAll,
-			Var:   "i",
-			List: &ast.Func{Name: "range", Args: []ast.Expr{
-				&ast.Lit{Value: ast.IntLit(0)},
-				&ast.Binary{Op: ast.OpSub, LHS: sizeTs, RHS: &ast.Lit{Value: ast.IntLit(2)}},
-			}},
-			Pred: &ast.Binary{Op: ast.OpLt, LHS: idx(iVar), RHS: idx(plusOne)},
-		}
 	}
 	return &ast.Query{Parts: []ast.QueryPart{{
 		Clauses: []ast.Clause{
@@ -70,6 +58,48 @@ func derivedMonoQuery(violationForm bool) *ast.Query {
 		},
 		Ret: ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Var{Name: "b"}, Alias: "b"}}},
 	}}}
+}
+
+// allMonoWhere is all(i IN range(lo, size(ts)+m) WHERE ts[i+c1] <op>
+// ts[i+c2]).
+func allMonoWhere(lo, m int64, c1 int64, op ast.BinOp, c2 int64) ast.Expr {
+	return &ast.ListPred{
+		Quant: ast.QuantAll,
+		Var:   "i",
+		List: &ast.Func{Name: "range", Args: []ast.Expr{
+			intLit(lo),
+			&ast.Binary{Op: ast.OpAdd, LHS: sizeTs(), RHS: intLit(m)},
+		}},
+		Pred: &ast.Binary{Op: op, LHS: tsIdx(iPlus(c1)), RHS: tsIdx(iPlus(c2))},
+	}
+}
+
+// violationMonoWhere is size([i IN range(lo, size(ts)+m) WHERE ts[i+c1]
+// <op> ts[i+c2]]) = 0.
+func violationMonoWhere(lo, m int64, c1 int64, op ast.BinOp, c2 int64) ast.Expr {
+	return &ast.Binary{
+		Op: ast.OpEq,
+		LHS: &ast.Func{Name: "size", Args: []ast.Expr{&ast.ListComp{
+			Var: "i",
+			List: &ast.Func{Name: "range", Args: []ast.Expr{
+				intLit(lo),
+				&ast.Binary{Op: ast.OpAdd, LHS: sizeTs(), RHS: intLit(m)},
+			}},
+			Filter: &ast.Binary{Op: op, LHS: tsIdx(iPlus(c1)), RHS: tsIdx(iPlus(c2))},
+		}}},
+		RHS: intLit(0),
+	}
+}
+
+// derivedMonoQuery is the canonical projection-derived fixture: the all()
+// form all(i IN range(0, size(ts)-2) WHERE ts[i] < ts[i+1]), or the
+// violation-count form size([i IN range(1, size(ts)) WHERE ts[i-1] >=
+// ts[i]]) = 0.
+func derivedMonoQuery(violationForm bool) *ast.Query {
+	if violationForm {
+		return monoWhereQuery(violationMonoWhere(1, 0, -1, ast.OpGte, 0))
+	}
+	return monoWhereQuery(allMonoWhere(0, -2, 0, ast.OpLt, 1))
 }
 
 func TestDerivedMonoPushdownBothForms(t *testing.T) {
@@ -95,6 +125,116 @@ func TestDerivedMonoPushdownBothForms(t *testing.T) {
 		if p.Branches[0][0].PostWhere != nil {
 			t.Fatalf("violation=%v: mono conjunct must be consumed, PostWhere = %v", violation, p.Branches[0][0].PostWhere)
 		}
+	}
+}
+
+// TestMonoNormalizerPhrasings pins the normalizer's canonicalized core:
+// equivalent phrasings of "ts is sorted" (shifted index offsets, flipped
+// operand order, a widened violation range) all land on the same spec,
+// while near-misses that cover a different pair set (or would wrap a
+// negative index to the list's end) stay post-hoc filters.
+func TestMonoNormalizerPhrasings(t *testing.T) {
+	g := buildFixture(t)
+	cases := []struct {
+		name      string
+		where     ast.Expr
+		push      bool
+		ascending bool
+		nullsPass bool
+	}{
+		{"all shifted range", allMonoWhere(1, -1, -1, ast.OpLt, 0), true, true, false},
+		{"all flipped operands", allMonoWhere(0, -2, 1, ast.OpGt, 0), true, true, false},
+		{"all descending", allMonoWhere(0, -2, 0, ast.OpGt, 1), true, false, false},
+		{"violation flipped operands", violationMonoWhere(1, 0, 0, ast.OpLte, -1), true, true, true},
+		{"violation widened upper", violationMonoWhere(0, 0, 0, ast.OpGte, 1), true, true, true},
+		{"all missing first pair", allMonoWhere(1, -2, 0, ast.OpLt, 1), false, false, false},
+		{"all out-of-range upper", allMonoWhere(0, -1, 0, ast.OpLt, 1), false, false, false},
+		{"all non-strict", allMonoWhere(0, -2, 0, ast.OpLte, 1), false, false, false},
+		{"all stride two", allMonoWhere(0, -2, 0, ast.OpLt, 2), false, false, false},
+		{"violation strict inner", violationMonoWhere(1, 0, -1, ast.OpGt, 0), false, false, false},
+		{"violation negative wrap", violationMonoWhere(0, 0, -1, ast.OpLte, 0), false, false, false},
+	}
+	for _, c := range cases {
+		p, err := Build(monoWhereQuery(c.where), g)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		ve := &firstMatch(t, p).Ops[1]
+		if !c.push {
+			if ve.MonoHop != nil {
+				t.Fatalf("%s: pushed %+v, want kept as a filter", c.name, ve.MonoHop)
+			}
+			if p.Branches[0][0].PostWhere == nil {
+				t.Fatalf("%s: unrecognized conjunct must stay in PostWhere", c.name)
+			}
+			continue
+		}
+		if ve.MonoHop == nil || ve.MonoHop.RelKey != "ts" ||
+			ve.MonoHop.Ascending != c.ascending || ve.MonoHop.NullsPass != c.nullsPass {
+			t.Fatalf("%s: mono = %+v, want asc=%v nullsPass=%v", c.name, ve.MonoHop, c.ascending, c.nullsPass)
+		}
+		if p.Branches[0][0].PostWhere != nil {
+			t.Fatalf("%s: consumed conjunct left in PostWhere", c.name)
+		}
+	}
+}
+
+// TestMonoOptionalStageNotPushed pins the OPTIONAL guard: the boundary
+// WHERE sits OUTSIDE the optional match, so pruning the optional walk
+// would null-extend rows the filter drops. The pushdown must refuse and
+// keep the conjunct.
+func TestMonoOptionalStageNotPushed(t *testing.T) {
+	g := buildFixture(t)
+	q := derivedMonoQuery(false)
+	q.Parts[0].Clauses[0].(*ast.Match).Optional = true
+	p, err := Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ve := &firstMatch(t, p).Ops[1]; ve.MonoHop != nil {
+		t.Fatalf("mono pushed into an OPTIONAL stage: %+v", ve.MonoHop)
+	}
+	if p.Branches[0][0].PostWhere == nil {
+		t.Fatal("the conjunct must stay a post filter over the OPTIONAL stage")
+	}
+}
+
+// TestMonoReboundAliasNotPushed pins the passthrough requirement through
+// the FILTER's own segment: a projection that rebinds the alias to any
+// other expression means the filter constrains the rebound value, so the
+// walk behind the original comprehension must not be pruned.
+func TestMonoReboundAliasNotPushed(t *testing.T) {
+	g := buildFixture(t)
+	q := crossSegmentMonoQuery()
+	// Rebind ts in the FILTER's segment: ts[0..2] instead of the
+	// passthrough.
+	filterWith := q.Parts[0].Clauses[2].(*ast.With)
+	filterWith.Proj.Items[1].Expr = &ast.Slice{Base: &ast.Var{Name: "ts"}, From: intLit(0), To: intLit(2)}
+	// Move the mono WHERE behind the rebinding projection.
+	where := filterWith.Where
+	filterWith.Where = nil
+	q.Parts[0].Clauses = append(q.Parts[0].Clauses, &ast.With{
+		Proj: ast.Projection{Items: []ast.ReturnItem{
+			{Expr: &ast.Var{Name: "b"}, Alias: "b"},
+			{Expr: &ast.Var{Name: "ts"}, Alias: "ts"},
+		}},
+		Where: where,
+	})
+	p, err := Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ve := &firstMatch(t, p).Ops[1]; ve.MonoHop != nil {
+		t.Fatalf("mono pushed through a rebound alias: %+v", ve.MonoHop)
+	}
+	kept := false
+	for _, s := range p.Branches[0] {
+		if s.PostWhere != nil {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatal("the conjunct must stay a post filter behind the rebinding")
 	}
 }
 
@@ -394,6 +534,9 @@ func TestWeightExprArms(t *testing.T) {
 		&ast.Func{Name: "abs", Args: []ast.Expr{&ast.Unary{Op: ast.Neg, Expr: r("w")}}},
 		// A correlated COUNT subquery whose only free var is r.
 		&ast.CountSub{Pattern: &ast.Pattern{Start: ast.NodePat{Var: "x"}}, Where: &ast.Binary{Op: ast.OpEq, LHS: &ast.Prop{Var: "x", Key: "k"}, RHS: r("k")}},
+		// A reduce whose accumulator/iteration vars are locals: the
+		// free-variable check accepts any form whose free refs are only r.
+		&ast.Reduce{Acc: "a", Init: r("w"), Var: "v", List: &ast.ListExpr{Elems: []ast.Expr{r("w")}}, Body: &ast.Var{Name: "a"}},
 	}
 	for i, e := range okExprs {
 		if err := validateWeightExpr(e, []string{"r"}); err != nil {
@@ -403,7 +546,7 @@ func TestWeightExprArms(t *testing.T) {
 	badExprs := []ast.Expr{
 		&ast.Var{Name: "other"},
 		&ast.Exists{Pattern: &ast.Pattern{Start: ast.NodePat{Var: "x"}}, Where: &ast.Prop{Var: "outer", Key: "k"}},
-		&ast.Reduce{Acc: "a", Init: r("w"), Var: "v", List: r("w"), Body: r("w")},
+		&ast.Reduce{Acc: "a", Init: &ast.Var{Name: "outer"}, Var: "v", List: r("w"), Body: &ast.Var{Name: "v"}},
 	}
 	for i, e := range badExprs {
 		if err := validateWeightExpr(e, []string{"r"}); err == nil {

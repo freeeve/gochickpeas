@@ -135,11 +135,6 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		}
 	}
 
-	// Recognize the projection-derived form of the monotonic constraint,
-	// push it onto the originating bounded var-expand, and consume the
-	// conjunct (the walk prunes with the exact filter semantics).
-	postWhere = pushDerivedMonoPred(&proj, postWhere, stages, slots)
-
 	return &Segment{
 		Stages:    stages,
 		RowWidth:  rowWidth,

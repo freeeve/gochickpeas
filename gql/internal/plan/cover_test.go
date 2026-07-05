@@ -247,8 +247,14 @@ func TestPredRefsOnlyArms(t *testing.T) {
 	if ok(&ast.Prop{Var: "other", Key: "k"}) || ok(&ast.Var{Name: "other"}) {
 		t.Fatal("foreign var rejected")
 	}
-	if ok(&ast.Exists{Pattern: &ast.Pattern{}}) {
-		t.Fatal("exotic form rejected")
+	// The free-variable check sees through binders: a comprehension over r
+	// with a local iteration variable passes, a correlated WHERE on an
+	// outer variable does not.
+	if !ok(&ast.ListComp{Var: "x", List: &ast.ListExpr{Elems: []ast.Expr{&ast.Prop{Var: "r", Key: "k"}}}, Map: &ast.Var{Name: "x"}}) {
+		t.Fatal("comprehension over r accepted")
+	}
+	if ok(&ast.Exists{Pattern: &ast.Pattern{Start: ast.NodePat{Var: "x"}}, Where: &ast.Prop{Var: "outer", Key: "k"}}) {
+		t.Fatal("correlated foreign reference rejected")
 	}
 }
 

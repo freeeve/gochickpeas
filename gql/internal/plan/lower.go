@@ -222,9 +222,9 @@ func buildHop(rel *ast.RelPat, from, to, relSlot int, rebind bool, node *ast.Nod
 }
 
 // extractVarlenHopPreds lifts all(r IN rels(e) WHERE pred) conjuncts from
-// a stage WHERE onto the matching var-expand as a per-hop filter, and
-// monotonic-order conjuncts as MonoHopSpecs; consumed conjuncts drop from
-// the WHERE.
+// a stage WHERE onto the matching var-expand as a per-hop filter; consumed
+// conjuncts drop from the WHERE. (Monotonic-order conjuncts lift later, in
+// the segment-wide pushMonoPreds pass.)
 func extractVarlenHopPreds(where *ast.Expr, ops []BindOp) error {
 	if *where == nil {
 		return nil
@@ -238,9 +238,6 @@ func extractVarlenHopPreds(where *ast.Expr, ops []BindOp) error {
 			return err
 		}
 		if pushed {
-			continue
-		}
-		if tryPushMonoPred(c, ops) {
 			continue
 		}
 		kept = append(kept, c)
@@ -294,55 +291,14 @@ func relsArg(e ast.Expr) string {
 	return v.Name
 }
 
-// predRefsOnly validates that a per-hop predicate references only the
-// iteration variable v (so it can be evaluated against one relationship).
+// predRefsOnly validates that a per-hop predicate's free variables are
+// only the iteration variable v (so it can be evaluated against one
+// relationship).
 func predRefsOnly(e ast.Expr, v string) error {
-	badVar := func() error {
-		return planErrf("a per-hop predicate may only reference the relationship variable `%s`", v)
+	if bad := freeVarsOutside(e, []string{v}); len(bad) > 0 {
+		return planErrf("a per-hop predicate may only reference the relationship variable `%s` (found `%s`)", v, bad[0])
 	}
-	switch n := e.(type) {
-	case *ast.Lit:
-		return nil
-	case *ast.Var:
-		if n.Name != v {
-			return badVar()
-		}
-		return nil
-	case *ast.Prop:
-		if n.Var != v {
-			return badVar()
-		}
-		return nil
-	case *ast.Unary:
-		return predRefsOnly(n.Expr, v)
-	case *ast.IsNull:
-		return predRefsOnly(n.Expr, v)
-	case *ast.Binary:
-		if err := predRefsOnly(n.LHS, v); err != nil {
-			return err
-		}
-		return predRefsOnly(n.RHS, v)
-	case *ast.In:
-		if err := predRefsOnly(n.Expr, v); err != nil {
-			return err
-		}
-		return predRefsOnly(n.List, v)
-	case *ast.ListExpr:
-		for _, x := range n.Elems {
-			if err := predRefsOnly(x, v); err != nil {
-				return err
-			}
-		}
-		return nil
-	case *ast.Func:
-		for _, x := range n.Args {
-			if err := predRefsOnly(x, v); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return planErrf("unsupported expression in a per-hop relationship predicate")
+	return nil
 }
 
 // splitAndRef walks a WHERE's top-level AND chain, appending each conjunct.
