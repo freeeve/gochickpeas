@@ -1,6 +1,37 @@
 # 034: consolidate the monotonic-pushdown machinery
 
-Blocked on 033 (fix correctness first, then restructure).
+Was blocked on 033 -- now UNBLOCKED (033 done 2026-07-05, commit ceeed71;
+035 done same day, 99b16e9). Line numbers below predate those commits.
+
+## State to know before starting (post-033/035)
+
+- The correctness contract is now: the walk prunes with EXACTLY the
+  recognized filter's semantics, and every push form CONSUMES the conjunct
+  (no redundant guard anywhere). Any consolidation must preserve that
+  exactness -- the pinning tests are gql/mono_drop_test.go
+  (TestCrossSegmentMonoDropCorrectness, TestMonoSparseKeyMatchesFilter,
+  TestMonoViolationCountNullsPass, TestMonoDenseUnsetZeroSemantics,
+  TestMonoFloatKeyMatchesFilter, TestMinZeroNamedPathRejected) and
+  gql/internal/plan/mono_test.go.
+- MonoHopSpec now carries NullsPass (per-shape null semantics: all() form
+  prunes an incomparable pair, violation-count form passes it) -- a
+  normalized "is sorted(L)" recognizer must keep emitting that bit per
+  source shape. monoConjunctShape (mono.go) is the shared two-shape
+  recognizer entry the derived + cross-segment passes already use.
+- Min-0 gates live in tryPushMonoPred and applyMonoTarget (both bail;
+  applyMonoTarget returns bool so callers keep the conjunct). A named path
+  over min-0/unbounded quantifiers is rejected at build (build.go, next to
+  the ACYCLIC guard), so min-0 mono is unreachable from the query surface.
+- Exec side after 035: monoFilter compiles once per stage
+  (stageComp.monoFilters via buildMonoFilters, next to buildHopFilters);
+  varWalk persists on genScratch with an rm *graph.RelMatcher field and
+  traverses via AppendRelationshipsMatched/AppendNeighborsMatched. The
+  carry through dfs is (prevVal value.Value, havePrev bool); comparison is
+  monoFilter.allows using value.Compare. The generalized per-hop
+  carry+accept mechanism should subsume exactly this.
+- Dense-vs-sparse missingness (tasks/041) means the same query changes
+  results with column density -- walk==filter holds either way because
+  both read through the same compiled propReader; keep it that way.
 
 Review found the mono optimization is one logical rewrite fragmented across
 ~6 sites, and the recognizer set is accreting one matcher per surface

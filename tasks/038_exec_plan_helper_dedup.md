@@ -24,3 +24,12 @@ where one fix applied to a single copy silently diverges the other:
    centralize that dependency.
 
 Parity gate green after each extraction.
+
+Note (2026-07-05, post-033/035): line numbers above predate commits
+ceeed71/99b16e9 -- stage.go gained monoFilters in stageComp and
+varexpand.go was restructured, so re-grep the symbols. All four
+duplications still stand (none were touched). If extracting the shortest.go
+BFS core, consider also threading the per-stage RelMatcher through
+filteredNeighbors the way 035 did for the trail dfs (shortest.go still
+resolves types per call). The parity gate command:
+`go run ./cmd/gqlbench -manifest ~/rustychickpeas-ldbc/viz/data/gql_variants.tsv -verify-only`.
