@@ -18,9 +18,12 @@ import "slices"
 //   - Dense columns cannot distinguish "never set" from the zero value, so
 //     the thaw stages a pair for every position of a dense column (including
 //     atom-0 positions of a dense string column, mirroring the read layer,
-//     which reports those as present ""). Refinalize keeps such columns
-//     dense unless edits drop them below the 80% threshold, at which point
-//     storage selection re-decides.
+//     which reports those as present ""). Since tasks/041 Go only finalizes
+//     numeric/bool columns dense at full coverage, so this zero-fill
+//     materialization arises for those dtypes only when thawing a legacy or
+//     Rust-written file whose dense column was written at partial fill --
+//     the missingness was destroyed at that write, and refinalize keeps the
+//     zero-filled positions as genuine (staged) values.
 //   - Ghost nodes -- isolated, unlabeled, propertyless -- leave no
 //     identifiable trace. Known nodes rebuild from labels, rel endpoints,
 //     and column positions; ghosts outside that union are lost (their count

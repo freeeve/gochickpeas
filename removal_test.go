@@ -347,11 +347,12 @@ func TestRemovalThawInteraction(t *testing.T) {
 	if g2.NodeCount() != 2 || g2.RelCount() != 4 {
 		t.Fatalf("counts: %d nodes / %d rels", g2.NodeCount(), g2.RelCount())
 	}
-	// The pair removed above is gone; the column refinalizes dense at 3-of-4
-	// fill, so the position reads the dense layout's present-as-zero (the
-	// documented dense lossiness) rather than the original 4.
+	// The pair removed above is gone: at 3-of-4 fill the column refinalizes
+	// sparse (full coverage is required for dense since tasks/041), so the
+	// removed position reads absent -- a removal is now observable
+	// regardless of the surrounding fill ratio.
 	for r := range g2.Rels(1, chickpeas.Outgoing, "OTHER") {
-		if v := g2.RelProp(r.Pos, "OTHER").I64Or(-1); v != 0 {
+		if v, ok := g2.RelProp(r.Pos, "OTHER").I64(); ok {
 			t.Fatalf("removed rel prop survived refinalize: %d", v)
 		}
 	}

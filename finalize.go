@@ -1,8 +1,11 @@
 // Builder finalization: the mutable staging area becomes an immutable
 // Snapshot -- parallel CSR build (both directions), label/type indexes, and
-// per-column dense / rank-select / sparse storage selection with thresholds
-// ported exactly from the Rust finalize (so the same staged input finalizes
-// to a byte-identical RCPG file).
+// per-column dense / rank-select / sparse storage selection. The rank/
+// select thresholds and the str dense rule mirror the Rust finalize;
+// i64/f64/bool dense selection deliberately diverges to full-coverage-only
+// (missingness, tasks/041 -- mirror task filed in the Rust repo), so a
+// staged input with partially-filled numeric/bool columns no longer
+// finalizes byte-identically with Rust until they converge.
 
 package chickpeas
 
@@ -49,13 +52,51 @@ func sortPairsLastWriteWins[P any](pairs []P, id func(P) uint32) []P {
 	return out
 }
 
-// denseThreshold: >= 80% fill (by staged write count) stores dense.
+// denseThreshold (i64/f64/bool): only a FULL column (every position
+// staged) stores dense. Those dense layouts have no presence
+// representation -- an in-range read always reports present -- so storing
+// a partially-filled column dense silently turns "missing" into the zero
+// value, and observable property semantics (IS NULL, comparisons,
+// aggregates, the monotonic walk) would shift with the storage heuristic.
+// A partial column goes to rank-select or sparse, which represent absence
+// exactly. This diverges from the Rust finalize's historical >=80% rule
+// (tasks/041; a mirror task is filed in the Rust repo). Reading a legacy
+// file whose dense column was written at partial fill still reports the
+// destroyed positions as present-zero: that information is gone.
+//
+// pairCount counts staged writes, so duplicate writes to one position can
+// reach span without full coverage; the column builders confirm with
+// coversAllPositions before committing to dense.
 func denseThreshold(pairCount, span int) bool {
+	return pairCount >= span
+}
+
+// denseStrThreshold: str keeps the historical >=80% rule -- the dense str
+// layout encodes missing as atom 0 by design (the read layer folds the
+// empty-string check into Prop.Str), so partial fill loses nothing that
+// the format doesn't already conflate, and str selection stays
+// byte-identical with the Rust finalize.
+func denseStrThreshold(pairCount, span int) bool {
 	return pairCount >= int(float64(span)*0.8)
 }
 
+// coversAllPositions reports whether the pairs touch every position of the
+// span (the exactness check behind the dense selection: a write count can
+// reach span through duplicates while leaving positions unset).
+func coversAllPositions[P interface{ pairID() uint32 }](pairs []P, span int) bool {
+	seen := bitset.New(span)
+	covered := 0
+	for _, p := range pairs {
+		if id := int(p.pairID()); !seen.Get(id) {
+			seen.Set(id, true)
+			covered++
+		}
+	}
+	return covered == span
+}
+
 func columnFromPairsI64(pairs []i64Pair, span int) Column {
-	if denseThreshold(len(pairs), span) {
+	if denseThreshold(len(pairs), span) && coversAllPositions(pairs, span) {
 		col := make(denseI64Col, span)
 		for _, p := range pairs {
 			col[p.id] = p.val
@@ -74,7 +115,7 @@ func columnFromPairsI64(pairs []i64Pair, span int) Column {
 }
 
 func columnFromPairsF64(pairs []f64Pair, span int) Column {
-	if denseThreshold(len(pairs), span) {
+	if denseThreshold(len(pairs), span) && coversAllPositions(pairs, span) {
 		col := make(denseF64Col, span)
 		for _, p := range pairs {
 			col[p.id] = p.val
@@ -93,7 +134,7 @@ func columnFromPairsF64(pairs []f64Pair, span int) Column {
 }
 
 func columnFromPairsBool(pairs []boolPair, span int) Column {
-	if denseThreshold(len(pairs), span) {
+	if denseThreshold(len(pairs), span) && coversAllPositions(pairs, span) {
 		col := bitset.New(span)
 		for _, p := range pairs {
 			col.Set(int(p.id), p.val)
@@ -120,7 +161,7 @@ func columnFromPairsBool(pairs []boolPair, span int) Column {
 }
 
 func columnFromPairsStr(pairs []strPair, span int) Column {
-	if denseThreshold(len(pairs), span) {
+	if denseStrThreshold(len(pairs), span) {
 		col := make(denseStrCol, span)
 		for _, p := range pairs {
 			col[p.id] = p.val

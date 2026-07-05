@@ -56,9 +56,11 @@ func TestFinalizeMatchesGoldenBytes(t *testing.T) {
 
 	t.Run("small", func(t *testing.T) {
 		// The golden "small" hand-builds its rel column sparse at 1-of-2
-		// fill, but finalize (Rust and Go alike) stores that dense: the 80%
-		// threshold truncates to 1 (1 >= int(2*0.8)). So compare semantics
-		// against the golden file and pin the dense selection explicitly.
+		// fill; the historical finalize (Rust, and Go before tasks/041)
+		// stored that dense via the truncating 80% floor (1 >= int(2*0.8)),
+		// present-zeroing the unset position. Since 041, i64 dense requires
+		// full coverage, so 1-of-2 stays sparse -- matching the golden's own
+		// layout AND its absent semantics.
 		g := buildSmall(t).Finalize()
 		want := fixture(t, "small")
 		if g.NodeCount() != want.NodeCount() || g.RelCount() != want.RelCount() {
@@ -67,11 +69,9 @@ func TestFinalizeMatchesGoldenBytes(t *testing.T) {
 		if a, b := g.RelProp(0, "name").I64Or(-1), want.RelProp(0, "name").I64Or(-1); a != b {
 			t.Fatalf("rel prop at 0: %d vs %d", a, b)
 		}
-		// Dense storage zero-fills unset positions (present-as-zero) where
-		// sparse reports absent -- the inherent semantic of the dense
-		// layout, same as Rust.
-		if v, ok := g.RelProp(1, "name").I64(); !ok || v != 0 {
-			t.Fatalf("dense unset position: got (%d,%v), want present zero", v, ok)
+		// The unset position reads absent, independent of storage layout.
+		if v, ok := g.RelProp(1, "name").I64(); ok {
+			t.Fatalf("unset position must read absent, got (%d,%v)", v, ok)
 		}
 		if s := g.Prop(1, "name").StrOr(""); s != "bob" {
 			t.Fatalf("prop: %q", s)
@@ -80,8 +80,8 @@ func TestFinalizeMatchesGoldenBytes(t *testing.T) {
 		if !ok {
 			t.Fatal("rel col missing")
 		}
-		if _, dense := rc.I64().Slice(); !dense {
-			t.Fatal("1-of-2 staged rel column must finalize dense (80% floor truncates)")
+		if _, dense := rc.I64().Slice(); dense {
+			t.Fatal("1-of-2 staged rel column must not finalize dense (full coverage required)")
 		}
 	})
 

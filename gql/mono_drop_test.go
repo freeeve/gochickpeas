@@ -90,9 +90,10 @@ func TestCrossSegmentMonoDropCorrectness(t *testing.T) {
 
 // monoUnsetGraph builds decreasing-trail probes where some hops' keys are
 // unset -- the cases where the walk pruning and the filter semantics
-// historically diverged. sparse=true pads the createTime column below the
-// dense threshold so unset positions read as absent (Null); sparse=false
-// stays dense, where the engine's convention reads unset i64 as 0.
+// historically diverged. sparse=true pads the createTime column well below
+// any dense threshold; sparse=false leaves it unpadded at 5-of-7 fill,
+// which historically crossed the 80% dense threshold (unset read as 0)
+// and since tasks/041 stays sparse like everything below full coverage.
 func monoUnsetGraph(t *testing.T, sparse bool) *chickpeas.Snapshot {
 	t.Helper()
 	b := chickpeas.NewBuilder(10, 11)
@@ -205,24 +206,25 @@ func TestMonoViolationCountNullsPass(t *testing.T) {
 	}
 }
 
-// TestMonoDenseUnsetZeroSemantics pins the walk-equals-filter equivalence
-// on a DENSE column with unset positions: dense i64 storage cannot
-// represent missing, so both the filter's list elements and the walk's key
-// reads see 0 (the engine convention; task 041 tracks representing
-// missingness in dense columns -- update these expectations if that
-// changes).
-func TestMonoDenseUnsetZeroSemantics(t *testing.T) {
+// TestMonoUnsetUniformAcrossFill pins that missing-key semantics no longer
+// depend on the column's fill ratio: since tasks/041 a partially-filled
+// i64 column never stores dense (dense requires full coverage), so the
+// walk and the filter read an unset key as absent -> Null at ANY fill --
+// the same expectations as the padded sparse graph, on the unpadded one
+// that historically crossed the 80% dense threshold and read 0.
+func TestMonoUnsetUniformAcrossFill(t *testing.T) {
 	g := monoUnsetGraph(t, false)
-	// s5 violation form: ts=[9,0,3] -- (9,0) is no violation (descending),
-	// (0,3) is -- so w drops, matching the filter over the same 0 reads.
+	// s5 violation form: ts=[9,null,3] -- a null comparison is never a
+	// violation, so all of u, v, w survive (identical to the sparse graph).
 	got := runMonoQuery(t, g, "s5", "{1,3}", violationDescFilter)
-	if len(got) != 2 || !got["u"] || !got["v"] {
-		t.Fatalf("dense-unset violation form: got %v, want {u, v}", got)
+	if len(got) != 3 || !got["u"] || !got["v"] || !got["w"] {
+		t.Fatalf("unset violation form: got %v, want {u, v, w}", got)
 	}
-	// s4 all() form: [0] vacuous keeps m; [0,7] fails 0>7.
+	// s4 all() form: [null] vacuous keeps m; [null,7] compares null and
+	// drops n (identical to the sparse graph).
 	got = runMonoQuery(t, g, "s4", "{1,3}", allDescFilter)
 	if len(got) != 1 || !got["m"] {
-		t.Fatalf("dense-unset all() form: got %v, want {m}", got)
+		t.Fatalf("unset all() form: got %v, want {m}", got)
 	}
 }
 
