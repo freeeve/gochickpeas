@@ -152,10 +152,13 @@ func (s *SnapshotGraph) AppendNeighborsByType(dst []chickpeas.NodeID, node chick
 	return s.g.AppendNeighborsMatch(dst, node, dir, s.g.Match(types...))
 }
 
-// AppendRelationships appends traversed relationships' neighbors and
-// CSR positions to the parallel nodes/poss slices.
-func (s *SnapshotGraph) AppendRelationships(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, types []string) ([]chickpeas.NodeID, []uint32) {
-	for r := range s.g.Rels(node, dir, types...) {
+// AppendRelationshipsMatched appends traversed relationships' neighbors
+// and CSR positions to the parallel nodes/poss slices through a
+// pre-resolved matcher, skipping the per-call type-name resolution on hot
+// walk paths (the core iterator is a thin inlinable closure constructor,
+// so the range stays allocation-free).
+func (s *SnapshotGraph) AppendRelationshipsMatched(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) ([]chickpeas.NodeID, []uint32) {
+	for r := range s.g.RelsMatch(node, dir, m.m) {
 		nodes = append(nodes, r.Neighbor)
 		poss = append(poss, r.Pos)
 	}

@@ -85,9 +85,11 @@ type Graph interface {
 	// AppendNeighborsByType is AppendNeighborsMatched with per-call name
 	// resolution (empty types match every type).
 	AppendNeighborsByType(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, types []string) []chickpeas.NodeID
-	// AppendRelationships appends each traversed relationship's neighbor
-	// and CSR position to the parallel nodes/poss slices and returns them.
-	AppendRelationships(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, types []string) ([]chickpeas.NodeID, []uint32)
+	// AppendRelationshipsMatched appends each traversed relationship's
+	// neighbor and CSR position to the parallel nodes/poss slices through a
+	// pre-resolved matcher (same devirtualization rationale as
+	// AppendNeighborsMatched).
+	AppendRelationshipsMatched(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) ([]chickpeas.NodeID, []uint32)
 
 	// CompileNodeMatcher pre-resolves a node pattern's labels and inline
 	// {key: value} properties (params already resolved to values by the

@@ -40,7 +40,7 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 	start := len(*nodes)
 	if op.RelSlot != plan.NoSlot {
 		relStart := len(*rels)
-		*nodes, *rels = ctx.G.AppendRelationships(*nodes, *rels, fromID, op.Dir, op.Types)
+		*nodes, *rels = ctx.G.AppendRelationshipsMatched(*nodes, *rels, fromID, op.Dir, rm)
 		w := start
 		for i, nb := range (*nodes)[start:] {
 			if keep(nb) {
@@ -88,7 +88,7 @@ func buildSemijoins(ops []plan.BindOp) []semiCache {
 // semijoinCandidates yields the already-bound target once when the edge
 // from the row's from-node exists, else nothing. An empty set also stands
 // in for a target failing its own constraints.
-func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, cache semiCache, row []value.Value, out *[]graph.NodeID, buf *[]graph.NodeID) {
+func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, cache semiCache, row []value.Value, out *[]graph.NodeID, buf *[]graph.NodeID) {
 	fromID, ok1 := row[op.From].AsNode()
 	target, ok2 := row[op.To].AsNode()
 	if !ok1 || !ok2 {
@@ -97,7 +97,7 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, ca
 	set, ok := cache[target]
 	if !ok {
 		if ctx.G.NodeMatcherAccepts(m, target) {
-			set = reverseNeighborSet(ctx, target, op.Dir, op.Types, buf)
+			set = reverseNeighborSet(ctx, target, op.Dir, rm, buf)
 		}
 		cache[target] = set
 	}
@@ -106,12 +106,12 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, ca
 	}
 }
 
-// reverseNeighborSet is the set of nodes with a types relationship to c
-// over dir -- c's neighbors looking back along the flipped direction,
-// collected into a reused buffer and returned as a sorted id slice for O(log
-// n) membership probes.
-func reverseNeighborSet(ctx *eval.Ctx, c graph.NodeID, dir graph.Direction, types []string, buf *[]graph.NodeID) []uint32 {
-	*buf = ctx.G.AppendNeighborsByType((*buf)[:0], c, flipDir(dir), types)
+// reverseNeighborSet is the set of nodes with a matching relationship to c
+// over dir -- c's neighbors looking back along the flipped direction
+// (matchers are direction-independent), collected into a reused buffer and
+// returned as a sorted id slice for O(log n) membership probes.
+func reverseNeighborSet(ctx *eval.Ctx, c graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, buf *[]graph.NodeID) []uint32 {
+	*buf = ctx.G.AppendNeighborsMatched((*buf)[:0], c, flipDir(dir), rm)
 	set := make([]uint32, len(*buf))
 	copy(set, *buf)
 	slices.Sort(set)

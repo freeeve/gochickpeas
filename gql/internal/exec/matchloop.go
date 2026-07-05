@@ -12,7 +12,9 @@ import (
 )
 
 // genScratch holds the per-row DFS buffers, reused across a stage's row
-// loop so a scan/expand does not allocate per row.
+// loop so a scan/expand does not allocate per row. walk and dedup serve the
+// bounded trail enumeration the same way reach serves the reachability BFS
+// (one live walk per stage at a time).
 type genScratch struct {
 	cand      [][]graph.NodeID
 	candRel   [][]uint32
@@ -20,6 +22,8 @@ type genScratch struct {
 	candRange [][][2]int
 	pos       []int
 	reach     reachScratch
+	walk      varWalk
+	dedup     map[graph.NodeID]struct{}
 	semiBuf   []graph.NodeID
 }
 
@@ -145,13 +149,13 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 	switch op.Kind {
 	case plan.OpExpand:
 		if sc.semijoins[i] != nil {
-			semijoinCandidates(ctx, op, m, sc.semijoins[i], row, cand, &scratch.semiBuf)
+			semijoinCandidates(ctx, op, m, sc.relMatchers[i], sc.semijoins[i], row, cand, &scratch.semiBuf)
 			return
 		}
 		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])
 		return
 	case plan.OpVarExpand:
-		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i], &scratch.reach)
+		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], sc.monoFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i], scratch)
 		return
 	}
 	switch op.Source.Kind {

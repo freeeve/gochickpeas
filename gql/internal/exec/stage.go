@@ -17,6 +17,7 @@ type stageComp struct {
 	relMatchers  []*graph.RelMatcher
 	levelFilters [][]RowEval
 	hopFilters   []*hopFilter
+	monoFilters  []*monoFilter
 	semijoins    []semiCache
 }
 
@@ -30,6 +31,7 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
 		levelFilters: buildLevelFilters(ctx, stage, slots, constIn, sample),
 		hopFilters:   buildHopFilters(ctx, stage.Ops),
+		monoFilters:  buildMonoFilters(ctx, stage.Ops),
 		semijoins:    buildSemijoins(stage.Ops),
 	}
 	for i := range stage.Ops {

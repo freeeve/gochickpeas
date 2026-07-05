@@ -41,6 +41,26 @@ func buildHopFilters(ctx *eval.Ctx, ops []plan.BindOp) []*hopFilter {
 	return out
 }
 
+// buildMonoFilters compiles each var-length op's monotonic key reader once
+// for the stage, indexed by op (the per-row form allocated a scope map and
+// a compiled tree on every row entering the walk).
+func buildMonoFilters(ctx *eval.Ctx, ops []plan.BindOp) []*monoFilter {
+	out := make([]*monoFilter, len(ops))
+	for i := range ops {
+		if ops[i].Kind == plan.OpVarExpand && ops[i].MonoHop != nil {
+			mh := ops[i].MonoHop
+			scope := map[string]int{"__r": 0}
+			out[i] = &monoFilter{
+				eval:      compileEval(ctx, &ast.Prop{Var: "__r", Key: mh.RelKey}, scope),
+				scope:     scope,
+				ascending: mh.Ascending,
+				nullsPass: mh.NullsPass,
+			}
+		}
+	}
+	return out
+}
+
 // monoFilter reads each candidate hop's key so the DFS can prune a hop
 // that doesn't strictly continue the order vs the previous hop. Comparison
 // is the filter's own three-valued value.Compare, so any comparable kind
@@ -74,8 +94,10 @@ func (m *monoFilter) allows(prev, cur value.Value) bool {
 
 // varExpandCandidates fills the candidate buffers for a quantified hop:
 // endpoint nodes, and for a named rel variable the flat rel arena plus
-// per-candidate (start, len) ranges.
-func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, hop *hopFilter, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, rs *reachScratch) {
+// per-candidate (start, len) ranges. The walk state and dedup set live on
+// the stage's genScratch, reused across the row loop (the walk runs to
+// completion per call and is never nested, same as reachScratch).
+func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, hop *hopFilter, mono *monoFilter, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, scratch *genScratch) {
 	start, ok := row[op.From].AsNode()
 	if !ok {
 		return
@@ -92,38 +114,38 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	// set via dedup'd BFS, so an unbounded or cyclic walk can't explode
 	// into per-path enumeration.
 	if op.Min == 0 || op.Max == nil {
-		varReach(ctx, start, op, m, rm, bound, haveBound, cand, rs)
+		varReach(ctx, start, op, m, rm, bound, haveBound, cand, &scratch.reach)
 		return
 	}
-	w := &varWalk{
-		ctx: ctx, op: op, m: m, hop: hop,
+	// Reset the persistent walk in place: the buffer fields keep their
+	// backing arrays across rows.
+	w := &scratch.walk
+	*w = varWalk{
+		ctx: ctx, op: op, m: m, rm: rm, hop: hop, mono: mono,
 		bound: bound, haveBound: haveBound,
 		collectRels: op.RelSlot != plan.NoSlot,
 		max:         *op.Max,
 		cand:        cand, relData: relData, relRanges: relRanges,
+		pathRels: w.pathRels[:0], used: w.used[:0], visited: w.visited[:0],
+		scratch: w.scratch, nbufN: w.nbufN[:0], nbufP: w.nbufP[:0],
 	}
 	if op.Acyclic {
 		w.visited = append(w.visited, start)
-	}
-	if op.MonoHop != nil {
-		scope := map[string]int{"__r": 0}
-		w.mono = &monoFilter{
-			eval:      compileEval(ctx, &ast.Prop{Var: "__r", Key: op.MonoHop.RelKey}, scope),
-			scope:     scope,
-			ascending: op.MonoHop.Ascending,
-			nullsPass: op.MonoHop.NullsPass,
-		}
 	}
 	w.dfs(start, 0, value.Null(), false)
 	// Without a named rel variable the trail's positions are not bound;
 	// only then does endpoint dedup apply (first-seen order preserved).
 	if !w.collectRels {
 		if op.DedupEndpoints {
-			seen := make(map[graph.NodeID]struct{}, len(*cand))
+			if scratch.dedup == nil {
+				scratch.dedup = make(map[graph.NodeID]struct{}, len(*cand))
+			} else {
+				clear(scratch.dedup)
+			}
 			kept := (*cand)[:0]
 			for _, n := range *cand {
-				if _, dup := seen[n]; !dup {
-					seen[n] = struct{}{}
+				if _, dup := scratch.dedup[n]; !dup {
+					scratch.dedup[n] = struct{}{}
 					kept = append(kept, n)
 				}
 			}
@@ -196,6 +218,7 @@ type varWalk struct {
 	ctx         *eval.Ctx
 	op          *plan.BindOp
 	m           *graph.NodeMatcher
+	rm          *graph.RelMatcher
 	hop         *hopFilter
 	mono        *monoFilter
 	bound       graph.NodeID
@@ -243,14 +266,14 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, haveP
 	// otherwise the leaner neighbor batch. Batch appends replace the
 	// iter.Seq forms, which heap-allocate their closures per call.
 	if w.hop != nil || w.mono != nil || w.collectRels {
-		w.nbufN, w.nbufP = w.ctx.G.AppendRelationships(w.nbufN[:0], w.nbufP[:0], cur, w.op.Dir, w.op.Types)
+		w.nbufN, w.nbufP = w.ctx.G.AppendRelationshipsMatched(w.nbufN[:0], w.nbufP[:0], cur, w.op.Dir, w.rm)
 		for i, nb := range w.nbufN {
 			if p := w.nbufP[i]; w.hop == nil || w.hop.keep(w.ctx, p) {
 				buf = append(buf, nodePos{nb, p})
 			}
 		}
 	} else {
-		w.nbufN = w.ctx.G.AppendNeighborsByType(w.nbufN[:0], cur, w.op.Dir, w.op.Types)
+		w.nbufN = w.ctx.G.AppendNeighborsMatched(w.nbufN[:0], cur, w.op.Dir, w.rm)
 		for _, nb := range w.nbufN {
 			buf = append(buf, nodePos{nb, 0})
 		}
