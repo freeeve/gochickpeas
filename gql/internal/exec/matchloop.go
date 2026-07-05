@@ -20,6 +20,7 @@ type genScratch struct {
 	candRange [][][2]int
 	pos       []int
 	reach     reachScratch
+	semiBuf   []graph.NodeID
 }
 
 // reachScratch holds varReach's dedup'd-BFS working sets, reused across a
@@ -144,7 +145,7 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 	switch op.Kind {
 	case plan.OpExpand:
 		if sc.semijoins[i] != nil {
-			semijoinCandidates(ctx, op, m, sc.semijoins[i], row, cand)
+			semijoinCandidates(ctx, op, m, sc.semijoins[i], row, cand, &scratch.semiBuf)
 			return
 		}
 		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])

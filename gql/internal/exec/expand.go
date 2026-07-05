@@ -4,7 +4,7 @@
 package exec
 
 import (
-	"github.com/RoaringBitmap/roaring/v2"
+	"slices"
 
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -65,8 +65,10 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 }
 
 // semiCache memoizes per-target reverse-neighbor sets for one semijoin op,
-// so a constant target builds its set once for the whole stage.
-type semiCache map[graph.NodeID]*roaring.Bitmap
+// so a constant target builds its set once for the whole stage. Each set is
+// a sorted id slice probed by binary search -- one allocation per target,
+// versus a roaring bitmap's per-range containers for the same membership.
+type semiCache map[graph.NodeID][]uint32
 
 // buildSemijoins recognizes each bound-target rebind expand with no named
 // relationship as an existence semijoin: probe from's membership in
@@ -86,7 +88,7 @@ func buildSemijoins(ops []plan.BindOp) []semiCache {
 // semijoinCandidates yields the already-bound target once when the edge
 // from the row's from-node exists, else nothing. An empty set also stands
 // in for a target failing its own constraints.
-func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, cache semiCache, row []value.Value, out *[]graph.NodeID) {
+func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, cache semiCache, row []value.Value, out *[]graph.NodeID, buf *[]graph.NodeID) {
 	fromID, ok1 := row[op.From].AsNode()
 	target, ok2 := row[op.To].AsNode()
 	if !ok1 || !ok2 {
@@ -95,25 +97,25 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, ca
 	set, ok := cache[target]
 	if !ok {
 		if ctx.G.NodeMatcherAccepts(m, target) {
-			set = reverseNeighborSet(ctx, target, op.Dir, op.Types)
-		} else {
-			set = roaring.New()
+			set = reverseNeighborSet(ctx, target, op.Dir, op.Types, buf)
 		}
 		cache[target] = set
 	}
-	if set.Contains(uint32(fromID)) {
+	if _, found := slices.BinarySearch(set, uint32(fromID)); found {
 		*out = append(*out, target)
 	}
 }
 
 // reverseNeighborSet is the set of nodes with a types relationship to c
-// over dir -- c's neighbors looking back along the flipped direction.
-func reverseNeighborSet(ctx *eval.Ctx, c graph.NodeID, dir graph.Direction, types []string) *roaring.Bitmap {
-	bm := roaring.New()
-	for nb := range ctx.G.NeighborsByType(c, flipDir(dir), types) {
-		bm.Add(uint32(nb))
-	}
-	return bm
+// over dir -- c's neighbors looking back along the flipped direction,
+// collected into a reused buffer and returned as a sorted id slice for O(log
+// n) membership probes.
+func reverseNeighborSet(ctx *eval.Ctx, c graph.NodeID, dir graph.Direction, types []string, buf *[]graph.NodeID) []uint32 {
+	*buf = ctx.G.AppendNeighborsByType((*buf)[:0], c, flipDir(dir), types)
+	set := make([]uint32, len(*buf))
+	copy(set, *buf)
+	slices.Sort(set)
+	return set
 }
 
 // flipDir is the direction seen when traversing a relationship the other

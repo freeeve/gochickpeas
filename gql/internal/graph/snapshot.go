@@ -144,12 +144,12 @@ func (s *SnapshotGraph) AppendNeighborsMatched(dst []chickpeas.NodeID, node chic
 	return s.g.AppendNeighborsMatch(dst, node, dir, m.m)
 }
 
-// AppendNeighborsByType appends node's dir neighbors over types to dst.
+// AppendNeighborsByType appends node's dir neighbors over types to dst,
+// resolving the type match once and delegating to the core append accessor
+// so the fill stays allocation-free (the iter.Seq form escapes a per-call
+// yield closure across the package boundary).
 func (s *SnapshotGraph) AppendNeighborsByType(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, types []string) []chickpeas.NodeID {
-	for n := range s.g.Neighbors(node, dir, types...) {
-		dst = append(dst, n)
-	}
-	return dst
+	return s.g.AppendNeighborsMatch(dst, node, dir, s.g.Match(types...))
 }
 
 // AppendRelationships appends traversed relationships' neighbors and
