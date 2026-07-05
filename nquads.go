@@ -91,21 +91,41 @@ func (g *Snapshot) WriteNQuads(w io.Writer) error {
 
 	labelNames := g.Labels()
 	labelSets := make([]*nodeset.Set, len(labelNames))
+	labelTerms := make([]rdf.Term, len(labelNames))
 	for i, name := range labelNames {
 		labelSets[i], _ = g.NodesWithLabel(name)
+		labelTerms[i] = rdf.NewIRI(nqLabelPrefix + nqEscape(name))
 	}
 
+	// Per-relKey invariants precompute once: the predicate IRI (an
+	// allocating concat+escape) and the column lookup would otherwise
+	// recompute per (rel x relKey) in the inner loop -- M*K times for K
+	// distinct values.
 	type relColKey struct {
 		name string
-		key  PropertyKey
+		pred rdf.Term
+		col  Column
 	}
 	relKeys := make([]relColKey, 0, len(g.relColumns))
-	for k := range g.relColumns {
+	for k, col := range g.relColumns {
 		if name, ok := g.atoms.Resolve(k); ok {
-			relKeys = append(relKeys, relColKey{name: name, key: k})
+			relKeys = append(relKeys, relColKey{
+				name: name,
+				pred: rdf.NewIRI(nqPropPrefix + nqEscape(name)),
+				col:  col,
+			})
 		}
 	}
 	sort.Slice(relKeys, func(i, j int) bool { return relKeys[i].name < relKeys[j].name })
+
+	// The rel-type predicate is likewise invariant per type atom: resolve
+	// and escape each once instead of per rel.
+	typeTerms := make(map[RelType]rdf.Term, len(g.typeIndex))
+	for t := range g.typeIndex {
+		if name, ok := g.atoms.Resolve(t.ID()); ok {
+			typeTerms[t] = rdf.NewIRI(nqRelPrefix + nqEscape(name))
+		}
+	}
 
 	n := int(g.CSRIDSpace())
 	for u := range n {
@@ -116,7 +136,7 @@ func (g *Snapshot) WriteNQuads(w io.Writer) error {
 				buf = enc.AppendQuad(buf, rdf.Quad{
 					S: subj,
 					P: rdf.NewIRI(rdf.TypeIRI),
-					O: rdf.NewIRI(nqLabelPrefix + nqEscape(labelNames[i])),
+					O: labelTerms[i],
 				})
 			}
 		}
@@ -130,19 +150,18 @@ func (g *Snapshot) WriteNQuads(w io.Writer) error {
 			}
 		}
 		for pos := g.outOffsets[u]; pos < g.outOffsets[u+1]; pos++ {
-			typeName, _ := g.atoms.Resolve(g.outTypes[pos].ID())
 			relTerm := rdf.NewIRI(nqRelIDPrefix + strconv.FormatUint(uint64(pos), 10))
 			buf = enc.AppendQuad(buf, rdf.Quad{
 				S: subj,
-				P: rdf.NewIRI(nqRelPrefix + nqEscape(typeName)),
+				P: typeTerms[g.outTypes[pos]],
 				O: rdf.NewIRI(nqNodePrefix + strconv.FormatUint(uint64(g.outNbrs[pos]), 10)),
 				G: relTerm,
 			})
 			for _, rk := range relKeys {
-				if v, ok := g.relColumns[rk.key].Get(pos); ok {
+				if v, ok := rk.col.Get(pos); ok {
 					buf = enc.AppendQuad(buf, rdf.Quad{
 						S: relTerm,
-						P: rdf.NewIRI(nqPropPrefix + nqEscape(rk.name)),
+						P: rk.pred,
 						O: g.nqLiteral(v),
 					})
 				}
