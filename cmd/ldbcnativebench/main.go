@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -33,7 +32,7 @@ import (
 
 // outcome is one manifest row's verdict for the run summary.
 type outcome struct {
-	row    ldbc.NativeRow
+	row    ldbc.ManifestRow
 	status string // MATCH / DIFF / SKIP
 	detail string
 	rows   int
@@ -62,7 +61,7 @@ func run() error {
 		for id := range strings.SplitSeq(*only, ",") {
 			keep[strings.TrimSpace(id)] = true
 		}
-		rows = slices.DeleteFunc(rows, func(r ldbc.NativeRow) bool { return !keep[r.Query] })
+		rows = slices.DeleteFunc(rows, func(r ldbc.ManifestRow) bool { return !keep[r.Query] })
 	}
 	if len(rows) == 0 {
 		return fmt.Errorf("no manifest rows selected")
@@ -71,6 +70,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cellID := ldbc.CellIdentity{Engine: "gochickpeas (go)", Shape: "native kernel"}
 
 	var f, pf, cf *os.File
 	var enc, profEnc, codeEnc *json.Encoder
@@ -128,16 +128,11 @@ func run() error {
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
 			continue
 		}
-		normed, err := ldbc.ApplyNorm(cells, row.Norm)
+		match, detail, err := ldbc.VerifyCell(row, cells)
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
 		}
-		hash, err := ldbc.RowsHash(normed)
-		if err != nil {
-			return fmt.Errorf("%s: %w", id, err)
-		}
-		if hash != row.RefHash {
-			detail := fmt.Sprintf("hash %s != ref %s (%d rows)", hash, row.RefHash, len(cells))
+		if !match {
 			outcomes = append(outcomes, outcome{row: row, status: "DIFF", detail: detail})
 			fmt.Printf("%-16s DIFF  %s\n", id, detail)
 			continue
@@ -148,51 +143,14 @@ func run() error {
 			continue
 		}
 
-		samples := make([]float64, *runs)
-		for i := range samples {
-			t0 := time.Now()
-			if _, err := krun(); err != nil {
-				return fmt.Errorf("%s (timed run): %w", id, err)
-			}
-			samples[i] = float64(time.Since(t0).Microseconds()) / 1000.0
+		samples, err := ldbc.TimeSamples(*runs, func() error {
+			_, err := krun()
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("%s (timed run): %w", id, err)
 		}
-		// The suite runs FinBench at SF10, everything else here at SF1
-		// (the manifest's graph column implies it; the record schema
-		// wants it explicit).
-		sf := 1
-		if row.Family == "FinBench" {
-			sf = 10
-		}
-		slices.Sort(samples)
-		rec := ldbc.Record{
-			Family:         row.Family,
-			Query:          row.Query,
-			Variant:        row.Variant,
-			Engine:         "gochickpeas (go)",
-			Warmth:         "warm",
-			Ms:             ldbc.Percentile(samples, 0.5),
-			Rows:           len(cells),
-			SF:             sf,
-			Shape:          "native kernel",
-			Parity:         "MATCH",
-			EngineCommit:   stamp.Commit,
-			EngineDate:     stamp.Date,
-			EngineDateTime: stamp.DateTime,
-			EngineSubject:  stamp.Subject,
-			MeasuredDate:   time.Now().UTC().Format("2006-01-02"),
-			Source:         "emitted",
-			MsMin:          samples[0],
-			MsP25:          ldbc.Percentile(samples, 0.25),
-			MsP75:          ldbc.Percentile(samples, 0.75),
-			MsN:            len(samples),
-			Meta: ldbc.Meta{
-				Port:      "gochickpeas",
-				Graph:     filepath.Base(row.Graph),
-				GoVersion: runtime.Version(),
-				Nodes:     g.NodeCount(),
-				Rels:      g.RelCount(),
-			},
-		}
+		rec := ldbc.CellRecord(row, cellID, stamp, samples, len(cells), g)
 		if err := enc.Encode(rec); err != nil {
 			return err
 		}

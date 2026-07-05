@@ -16,25 +16,17 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 )
 
-// NativeRow is one native_variants.tsv row (6 tab-separated columns).
-type NativeRow struct {
-	Family  string
-	Query   string
-	Variant string
-	Graph   string
-	RefHash string
-	Norm    string
-}
-
-// LoadNativeManifest reads a native_variants.tsv: tab-separated, 6
-// columns, #-prefixed and blank lines skipped.
-func LoadNativeManifest(path string) ([]NativeRow, error) {
+// LoadNativeManifest reads a native_variants.tsv (tab-separated, 6
+// columns, #-prefixed and blank lines skipped) into ManifestRows with an
+// empty GQL column -- one manifest row type serves every emitter, so the
+// two manifests cannot drift structurally.
+func LoadNativeManifest(path string) ([]ManifestRow, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	var rows []NativeRow
+	var rows []ManifestRow
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	line := 0
@@ -48,7 +40,7 @@ func LoadNativeManifest(path string) ([]NativeRow, error) {
 		if len(cols) != 6 {
 			return nil, fmt.Errorf("%s:%d: %d columns, want 6", path, line, len(cols))
 		}
-		rows = append(rows, NativeRow{
+		rows = append(rows, ManifestRow{
 			Family: cols[0], Query: cols[1], Variant: cols[2], Graph: cols[3],
 			RefHash: cols[4], Norm: cols[5],
 		})

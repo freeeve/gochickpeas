@@ -24,8 +24,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 	"time"
 
@@ -187,42 +185,16 @@ func run() error {
 			if *verifyOnly {
 				continue
 			}
-			samples := make([]float64, *runs)
-			for i := range samples {
-				t0 := time.Now()
-				a.run()
-				samples[i] = float64(time.Since(t0).Microseconds()) / 1000.0
+			samples, err := ldbc.TimeSamples(*runs, func() error { a.run(); return nil })
+			if err != nil {
+				return err
 			}
-			slices.Sort(samples)
-			rec := ldbc.Record{
-				Family:         "GA",
-				Query:          a.name,
-				Variant:        "committed",
-				Engine:         "gochickpeas (go)",
-				Warmth:         "warm",
-				Ms:             ldbc.Percentile(samples, 0.5),
-				Rows:           ds.Len(),
-				SF:             1,
-				Shape:          "native kernel",
-				Parity:         parity,
-				EngineCommit:   stamp.Commit,
-				EngineDate:     stamp.Date,
-				EngineDateTime: stamp.DateTime,
-				EngineSubject:  stamp.Subject,
-				MeasuredDate:   time.Now().UTC().Format("2006-01-02"),
-				Source:         "emitted",
-				MsMin:          samples[0],
-				MsP25:          ldbc.Percentile(samples, 0.25),
-				MsP75:          ldbc.Percentile(samples, 0.75),
-				MsN:            len(samples),
-				Meta: ldbc.Meta{
-					Port:      "gochickpeas",
-					Graph:     name,
-					GoVersion: runtime.Version(),
-					Nodes:     g.NodeCount(),
-					Rels:      g.RelCount(),
-				},
-			}
+			rec := ldbc.NewRecord(ldbc.RecordSpec{
+				Family: "GA", Query: a.name, Variant: "committed",
+				Engine: "gochickpeas (go)", Shape: "native kernel",
+				SF: 1, Parity: parity, Rows: ds.Len(),
+				Meta: ldbc.Meta{Graph: name, Nodes: g.NodeCount(), Rels: g.RelCount()},
+			}, stamp, samples)
 			if err := enc.Encode(rec); err != nil {
 				return err
 			}

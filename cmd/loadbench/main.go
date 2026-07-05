@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"time"
 
@@ -99,34 +98,18 @@ func run() error {
 			}
 		}
 		rows := int(g.NodeCount()) + int(g.RelCount())
-		rec := ldbc.Record{
-			Family:       "LOAD",
-			Query:        c.query,
-			Variant:      c.variant,
-			Engine:       "gochickpeas (go)",
-			Warmth:       "warm",
-			Ms:           ms,
-			Rows:         rows,
-			SF:           c.sf,
-			Shape:        "load",
-			Parity:       parity,
-			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
-			EngineDateTime: stamp.DateTime, EngineSubject: stamp.Subject,
-			MeasuredDate: time.Now().UTC().Format("2006-01-02"),
-			Source:       "emitted",
-			MsMin:        samples[0],
-			MsP25:        ldbc.Percentile(samples, 0.25),
-			MsP75:        ldbc.Percentile(samples, 0.75),
-			MsN:          len(samples),
+		rec := ldbc.NewRecord(ldbc.RecordSpec{
+			Family: "LOAD", Query: c.query, Variant: c.variant,
+			Engine: "gochickpeas (go)", Shape: "load",
+			SF: c.sf, Parity: parity, Rows: rows,
 			Meta: ldbc.Meta{
-				Port: "gochickpeas", Graph: filepath.Base(c.path),
-				GoVersion: runtime.Version(),
-				Nodes:     g.NodeCount(), Rels: g.RelCount(),
+				Graph: filepath.Base(c.path),
+				Nodes: g.NodeCount(), Rels: g.RelCount(),
 				Format: c.variant, Bytes: info.Size(),
 				MbS:  float64(info.Size()) / (1 << 20) / (ms / 1000.0),
 				RecS: int64(float64(rows) / (ms / 1000.0)),
 			},
-		}
+		}, stamp, samples)
 		if err := enc.Encode(rec); err != nil {
 			return err
 		}
