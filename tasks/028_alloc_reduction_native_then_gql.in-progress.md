@@ -293,25 +293,32 @@ Then three more wins in the same round (2026-07-05), all parity-gated 49/49:
    enumeration. CR1 203.7 -> 81.8 ms (2.5x), 2.00M -> 833k allocs, 254M ->
    93M b. General across any LET-projected monotonic-trail filter; new test
    TestCrossSegmentMonoPushdown.
-   - Keep-vs-drop tradeoff (open decision): the filter conjunct is kept as a
-     redundant guard (matches the same-segment form). DROPPING it after
-     pushdown gives CR1 203.7 -> 36.8 ms (5.5x) / 653k allocs, but relies on
-     the walk pruning being exhaustively equivalent to the list filter -- it
-     is NOT in general (mono prunes a null key on the sole hop of a
-     min-length path, where `all(range(...))` is vacuously true). Dropping
-     would need a proven-equivalent guard condition (e.g. non-null key +
-     min>=2, or the walk emitting the vacuous-true short paths). Left safe
-     for now; Eve's call whether the extra 2x is worth deriving the exact
-     drop-safe condition.
+   - Keep-vs-drop RESOLVED (drop is unconditionally safe; guard consumed).
+     Worked out the drop-safe condition rigorously + empirically. The walk
+     emits a path only when every hop key coerces to an int (AsInt ok) and
+     strictly continues the order -- exactly the set all()/range accepts --
+     so the emitted set is a SUBSET of the filtered set (W subseteq
+     filter-accepted) and the post-filter removes nothing. The null-key
+     worry was a misread: an unset i64 rel prop reads as 0 (a present int,
+     AsInt ok), not null, so there is no vacuous-null divergence for int
+     keys; a genuinely non-int (e.g. string) key only makes the walk emit
+     FEWER paths (over-prune), which the guard cannot restore anyway, so it
+     is orthogonal to drop-vs-keep. Empirically: TestMonoPushdownFires
+     confirms the pushdown engages the walk pruning, and
+     TestCrossSegmentMonoDropCorrectness pins the engine result against the
+     plain filter semantics on decreasing / non-decreasing / vacuous-length
+     trails. pushCrossSegmentMono now consumes the conjunct. CR1 81.8 ->
+     49.5 ms (203.7 baseline: 4.1x), 833k -> 653k allocs. (The same-segment
+     pushDerivedMonoPred still keeps its guard -- unchanged, its own
+     established test; it is redundant there too and could be dropped as a
+     follow-up.)
 
-gql suite: 17,455,156 -> 1,827,046 allocs (89.5% total this round). Remaining
-top offenders: CR1 833k (surviving-path ts materialization + the redundant
-mono guard's interpreted all() re-eval -- would drop to ~653k if the filter
-is consumed, see tradeoff above), Q18 532k (inherent per-group /
-per-distinct-value adds), then everything <63k. Public core additions this
-round: Snapshot.AppendNeighborsMatch -- a version bump is warranted per the
-tagging policy when these land as a release (Eve opted to batch the tag for
-later).
+gql suite: 17,455,156 -> 1,646,547 allocs (90.6% total this round). Remaining
+top offenders: CR1 653k (surviving-path ts materialization + named-path
+reconstruction -- inherent), Q18 532k (inherent per-group / per-distinct-value
+adds), then everything <63k. Public core additions this round:
+Snapshot.AppendNeighborsMatch -- a version bump is warranted per the tagging
+policy when these land as a release (Eve opted to batch the tag for later).
 
 ### Next round (open)
 
