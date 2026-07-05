@@ -35,6 +35,11 @@ type inMembership struct {
 	hash    map[string]struct{}
 	linear  []value.Value
 	hasNull bool
+	// probe is a reused key buffer for memHash probes: resultFor runs
+	// once per row in a single execution's goroutine, so the encoded key
+	// need not escape between probes. A map lookup on string(probe) does
+	// not allocate.
+	probe []byte
 }
 
 // memKey projects a value to its membership key, comma-ok false when it
@@ -102,7 +107,8 @@ func (m *inMembership) resultFor(v value.Value) value.Value {
 			hit = m.nodes.Contains(uint32(id))
 		}
 	case memHash:
-		if key, ok := memKey(nil, v); ok {
+		if key, ok := memKey(m.probe[:0], v); ok {
+			m.probe = key
 			_, hit = m.hash[string(key)]
 		}
 	default:

@@ -127,6 +127,32 @@ func (g *Snapshot) NeighborsMatch(node NodeID, dir Direction, m RelMatch) iter.S
 	}
 }
 
+// AppendNeighborsMatch appends node's matching dir neighbors over a
+// pre-resolved RelMatch to dst. It walks the CSR ranges directly rather
+// than through a yield closure: neighborsYield is too large to inline, so
+// handing it a closure would heap-escape that closure on every call. The
+// walk mirrors neighborsYield exactly, minus the early-stop the fill never
+// needs.
+func (g *Snapshot) AppendNeighborsMatch(dst []NodeID, node NodeID, dir Direction, m RelMatch) []NodeID {
+	if dir == Outgoing || dir == Both {
+		lo, hi := relRange(g.outOffsets, node)
+		for k := lo; k < hi; k++ {
+			if m.matches(g.outTypes[k]) {
+				dst = append(dst, g.outNbrs[k])
+			}
+		}
+	}
+	if dir == Incoming || dir == Both {
+		lo, hi := relRange(g.inOffsets, node)
+		for k := lo; k < hi; k++ {
+			if m.matches(g.inTypes[k]) {
+				dst = append(dst, g.inNbrs[k])
+			}
+		}
+	}
+	return dst
+}
+
 // neighborsYield walks the CSR ranges, yielding matching neighbors. The
 // yield parameter never escapes, keeping range-over-func callers
 // allocation-free.

@@ -106,7 +106,59 @@ func (s *aggState) finalize() value.Value {
 type aggGroup struct {
 	keys   []value.Value
 	states []aggState
-	seen   []map[string]struct{}
+	seen   []distinctSet
+}
+
+// distinctSet is one aggregate's DISTINCT dedup set. Node and relationship
+// values -- the overwhelmingly common DISTINCT columns -- probe a compact
+// entity-id set keyed on the raw u32 (the Rust engine's entity-id fast
+// path), which allocates nothing per insert and stays small. Every other
+// kind falls back to the canonical AppendKey byte string, exactly the prior
+// behavior. The three maps are created lazily, so a uniform distinct column
+// (the common case) holds exactly one.
+type distinctSet struct {
+	nodes map[uint32]struct{}
+	rels  map[uint32]struct{}
+	other map[string]struct{}
+}
+
+// add reports whether v is newly seen (and records it), reusing scratch for
+// the byte-string fallback encoding. Node/rel identity is exact u32
+// equality, matching AppendKey's tagNode/tagRel + u32 encoding; the two
+// entity kinds key separate maps so a node and a relationship of equal id
+// never conflate.
+func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
+	switch v.Kind() {
+	case value.KindNode:
+		id, _ := v.AsNode()
+		if d.nodes == nil {
+			d.nodes = map[uint32]struct{}{}
+		}
+		if _, dup := d.nodes[uint32(id)]; dup {
+			return false
+		}
+		d.nodes[uint32(id)] = struct{}{}
+		return true
+	case value.KindRel:
+		pos, _ := v.AsRel()
+		if d.rels == nil {
+			d.rels = map[uint32]struct{}{}
+		}
+		if _, dup := d.rels[uint32(pos)]; dup {
+			return false
+		}
+		d.rels[uint32(pos)] = struct{}{}
+		return true
+	}
+	*scratch = value.AppendKey((*scratch)[:0], v)
+	if d.other == nil {
+		d.other = map[string]struct{}{}
+	}
+	if _, dup := d.other[string(*scratch)]; dup {
+		return false
+	}
+	d.other[string(*scratch)] = struct{}{}
+	return true
 }
 
 // aggregator is the single-pass group-by accumulator.
@@ -142,13 +194,10 @@ func freshGroup(proj *plan.ProjPlan, keys []value.Value) *aggGroup {
 	g := &aggGroup{
 		keys:   keys,
 		states: make([]aggState, len(proj.Aggs)),
-		seen:   make([]map[string]struct{}, len(proj.Aggs)),
+		seen:   make([]distinctSet, len(proj.Aggs)),
 	}
 	for i, ac := range proj.Aggs {
 		g.states[i].kind = ac.Kind
-		if ac.Distinct {
-			g.seen[i] = map[string]struct{}{}
-		}
 	}
 	return g
 }
@@ -179,11 +228,9 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 			arg = a.aggC[j].Eval(ctx, m, slots)
 		}
 		if proj.Aggs[j].Distinct && present && !arg.IsNull() {
-			a.dkScratch = value.AppendKey(a.dkScratch[:0], arg)
-			if _, dup := grp.seen[j][string(a.dkScratch)]; dup {
+			if !grp.seen[j].add(arg, &a.dkScratch) {
 				continue
 			}
-			grp.seen[j][string(a.dkScratch)] = struct{}{}
 		}
 		grp.states[j].update(arg, present)
 	}

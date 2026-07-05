@@ -123,18 +123,31 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		return value.Bool(ceval(ctx, n.e, g, row, slots).IsNull() != n.negated)
 	case *cSubquery:
 		var count int
-		if n.hasMemo {
+		switch {
+		case n.hasMemo:
+			if ik, ok := packNodeKey(n.memoSlots, row); ok {
+				if c, hit := n.memoI[ik]; hit {
+					count = c
+				} else {
+					count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
+					if n.memoI == nil {
+						n.memoI = map[uint64]int{}
+					}
+					n.memoI[ik] = count
+				}
+				break
+			}
 			n.key = n.key[:0]
 			for _, s := range n.memoSlots {
 				n.key = value.AppendKey(n.key, row[s])
 			}
-			if c, ok := n.memo[string(n.key)]; ok {
+			if c, hit := n.memo[string(n.key)]; hit {
 				count = c
 			} else {
 				count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
 				n.memo[string(n.key)] = count
 			}
-		} else {
+		default:
 			count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
 		}
 		if n.isCount {
@@ -170,6 +183,29 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		return eval.Eval(ctx, n.e, row, slots)
 	}
 	return value.Null()
+}
+
+// packNodeKey packs the correlated slots of a subquery into a single
+// uint64 memo key when they are one or two node ids, ok=false otherwise
+// (falling the caller back to the byte-string memo). Two node slots pack as
+// id0<<32 | id1; node ids fit u32, matching AppendKey's tagNode encoding.
+// Restricting the fast path to node kinds keeps a node and a relationship
+// of equal raw id from conflating, since a fixed subquery's memoSlots hold
+// a stable kind per position.
+func packNodeKey(slots []int, row []value.Value) (uint64, bool) {
+	switch len(slots) {
+	case 1:
+		if id, ok := row[slots[0]].AsNode(); ok {
+			return uint64(uint32(id)), true
+		}
+	case 2:
+		id0, ok0 := row[slots[0]].AsNode()
+		id1, ok1 := row[slots[1]].AsNode()
+		if ok0 && ok1 {
+			return uint64(uint32(id0))<<32 | uint64(uint32(id1)), true
+		}
+	}
+	return 0, false
 }
 
 // cevalBin mirrors the interpreter's binary dispatch over compiled

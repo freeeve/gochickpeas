@@ -207,6 +207,51 @@ Q18 2.0M. Known threads to pull, in rough order:
 4. TestPlanCacheConcurrent flake (Len()=0, pre-existing at a252f48) -- diagnose
    separately before it muddies a future round's gate.
 
+### Round 5 (2026-07-04, at 7533264) -- byte-string map-key inserts + traversal closure
+
+Re-emitted the baseline at HEAD 7533264 (031 N-Quads / 032 builder thaw did
+not perturb the gql alloc profile -- ranking held): IC3 4.25M, Q6 3.52M,
+Q12 3.09M, CR1 2.95M, Q18 1.98M. Per-query `-memprofile` pinpointed the
+alloc sites; every fix is a general engine primitive keyed on runtime value
+kind / generic operations, not a query recognizer (see the no-overfitting
+goal now in CLAUDE.md).
+
+Four wins, all parity-gated at 49/49 MATCH:
+
+1. **inMembership.resultFor scratch (IC3)** -- the memHash IN-probe called
+   `memKey(nil, v)` per row, allocating a fresh key each time. Reuse an
+   `inMembership.probe` byte buffer (probes run single-threaded per
+   execution; compiled trees are built per-run in execPlan, never shared
+   concurrently). IC3 4,252,190 -> 34,502 allocs (99.2%), 62.3M -> 10.0M b.
+2. **distinctSet entity-id fast path (Q6)** -- `count(DISTINCT v)` dedup kept
+   a `map[string]struct{}` whose per-insert `string(key)` allocated for every
+   new distinct value. Replaced the agg seen-set with node/rel `map[uint32]`
+   sets (the Rust engine's entity-id fast path) + a byte-string fallback for
+   other kinds. Q6 3,519,653 -> 37,545 allocs (98.9%), and bytes 330M -> 109M
+   (the compact u32 key also halves bytes vs the old string key). Dropped the
+   earlier value.CmpKey attempt (32-byte comparable key raised bytes to
+   560M) in favor of the u32 sets -- no public API addition, no version bump.
+3. **cSubquery packNodeKey memo (Q18)** -- correlated EXISTS/COUNT memo keyed
+   on `string(AppendKey(...))`, allocating per distinct correlated tuple.
+   Added a `memoI map[uint64]int` fast path that packs <=2 node-id slots into
+   a uint64 (Q18 correlates on two Person nodes); byte-string memo retained
+   for other shapes. Q18 1,980,274 -> 531,741 allocs (73%), 190M -> 125M b.
+   Remainder is per-group freshGroup / per-distinct-value adds (inherent).
+4. **Snapshot.AppendNeighborsMatch direct CSR walk (Q12)** -- the batch seam
+   method ranged over the `NeighborsMatch` iter.Seq, whose returned closure
+   heap-escapes the yield across the package boundary (neighborsYield is too
+   large to inline). Added a core append method that walks the CSR ranges
+   directly (no yield closure) and delegated the seam to it. Q12 3,091,197 ->
+   1,933,645 allocs (37%). Q12's remaining leader is exec.varReach's per-call
+   BFS state (shape-cache candidate -- next round).
+
+gql suite: 17,455,156 -> 7,044,924 allocs (60% further reduction). New top
+offenders: CR1 2.95M (untouched -- interpreted eval + roaring bitmap churn:
+extendRow / evalScalarFunc / evalListComp / value.List / roaring New; a
+deeper eval refactor), Q12 1.93M (varReach BFS state), IC5 625k, Q18 532k,
+IS5 412k. Note: added a public core method (Snapshot.AppendNeighborsMatch) --
+a version bump is warranted per the tagging policy if these land as a release.
+
 ### Next round (open)
 
 - gql Q18 / IC9 / CR1: allocations sit in eval/aggregate/projection (28.5M / 10.3M /

@@ -79,6 +79,11 @@ type cSubquery struct {
 	memoSlots []int
 	hasMemo   bool
 	memo      map[string]int
+	// memoI is the entity-id fast-path memo: when every correlated slot
+	// holds a node id (<=2 of them), the key packs into a uint64 and a
+	// miss's insert allocates nothing, unlike the byte-string memo. Both
+	// are lazy; a subquery uses whichever its correlated slots select.
+	memoI map[uint64]int
 	// key is the reusable memo-key buffer: lookups probe string(key)
 	// without allocating; only a miss's insert converts.
 	key []byte

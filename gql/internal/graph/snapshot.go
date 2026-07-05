@@ -136,14 +136,12 @@ func (s *SnapshotGraph) Relationships(node chickpeas.NodeID, dir chickpeas.Direc
 	}
 }
 
-// AppendNeighborsMatched appends node's matching dir neighbors to dst.
-// The range over the core accessor devirtualizes inside this named
-// method, so the fill is allocation-free beyond dst growth.
+// AppendNeighborsMatched appends node's matching dir neighbors to dst,
+// delegating to the core append accessor so the fill stays allocation-free
+// across the package boundary (the iter.Seq form would escape a per-call
+// yield closure to the heap).
 func (s *SnapshotGraph) AppendNeighborsMatched(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) []chickpeas.NodeID {
-	for n := range s.g.NeighborsMatch(node, dir, m.m) {
-		dst = append(dst, n)
-	}
-	return dst
+	return s.g.AppendNeighborsMatch(dst, node, dir, m.m)
 }
 
 // AppendNeighborsByType appends node's dir neighbors over types to dst.

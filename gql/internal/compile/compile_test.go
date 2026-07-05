@@ -159,11 +159,13 @@ func TestSubqueryMemoAndSlots(t *testing.T) {
 	if !c.Eval(ctx, row, slots).IsTruthy() {
 		t.Fatal("alice knows bob")
 	}
-	if len(sub.memo) != 1 {
+	// A node-valued correlated slot memoizes via the entity-id fast path
+	// (memoI), leaving the byte-string memo empty.
+	if len(sub.memoI) != 1 || len(sub.memo) != 0 {
 		t.Fatal("result memoized")
 	}
 	// Memoized result reused for the same correlated binding.
-	if !c.Eval(ctx, row, slots).IsTruthy() || len(sub.memo) != 1 {
+	if !c.Eval(ctx, row, slots).IsTruthy() || len(sub.memoI) != 1 {
 		t.Fatal("memo hit")
 	}
 	// Slots: the memoized subquery pushes down to its correlated slots.
