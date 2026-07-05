@@ -216,3 +216,66 @@ func TestThawThenEdit(t *testing.T) {
 		t.Fatal("source snapshot sees the new node's property")
 	}
 }
+
+// TestThawRelIndexInterleaving pins the lazy (u, v, type) first-match
+// index across a thaw + AddRel interleaving: the index builds over the
+// thaw-restaged rels on first SetRelProp use, AddRel must maintain it for
+// triples added afterwards, and a later parallel duplicate must not steal
+// the first match. Thaw restages through the builder's staging core, so
+// this covers the invariant living in one place.
+func TestThawRelIndexInterleaving(t *testing.T) {
+	b := chickpeas.NewBuilder(0, 0)
+	if _, err := b.AddNodeWithID(0, "L"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddNodeWithID(1, "L"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // parallel (0)-[:R]->(1) pair
+		if _, err := b.AddRel(0, 1, "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+
+	b2 := chickpeas.NewBuilderFromSnapshot(g)
+	// Force the lazy index to build over the thaw-restaged rels.
+	if err := b2.SetRelProp(0, 1, "R", "first", int64(1)); err != nil {
+		t.Fatal(err)
+	}
+	// A triple added AFTER the index exists must be resolvable through it.
+	if _, err := b2.AddRel(1, 0, "R"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.SetRelProp(1, 0, "R", "back", int64(2)); err != nil {
+		t.Fatalf("index not maintained for a post-thaw AddRel: %v", err)
+	}
+	// A later parallel duplicate must not steal the first match.
+	if _, err := b2.AddRel(0, 1, "R"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.SetRelProp(0, 1, "R", "still", int64(3)); err != nil {
+		t.Fatal(err)
+	}
+	g2 := b2.Finalize()
+
+	// The first parallel rel carries both first-match writes; the other
+	// parallels carry neither.
+	var first, back, still []int64
+	for r := range g2.Rels(0, chickpeas.Outgoing) {
+		first = append(first, g2.RelProp(r.Pos, "first").I64Or(-1))
+		still = append(still, g2.RelProp(r.Pos, "still").I64Or(-1))
+	}
+	for r := range g2.Rels(1, chickpeas.Outgoing) {
+		back = append(back, g2.RelProp(r.Pos, "back").I64Or(-1))
+	}
+	if !slices.Equal(first, []int64{1, -1, -1}) {
+		t.Fatalf("first-match write landed wrong: %v", first)
+	}
+	if !slices.Equal(still, []int64{3, -1, -1}) {
+		t.Fatalf("post-duplicate first-match write landed wrong: %v", still)
+	}
+	if !slices.Equal(back, []int64{2}) {
+		t.Fatalf("post-thaw AddRel write landed wrong: %v", back)
+	}
+}

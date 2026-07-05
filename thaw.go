@@ -71,22 +71,30 @@ func NewBuilderFromSnapshot(g *Snapshot) *Builder {
 
 // thawRels stages g's rels in an order consistent with both CSR directions,
 // returning the outgoing-CSR position -> staged rel index map (for rel
-// column restaging). Degrees and known endpoints rebuild alongside.
+// column restaging). Each rel goes through the builder's staging core
+// (addRelTyped) so degrees, known endpoints, ceilings, and any future
+// staging invariant stay owned by one function.
 func thawRels(b *Builder, g *Snapshot) []uint32 {
 	order := thawRelOrder(g)
 	outToStaging := make([]uint32, len(order))
 	srcOf := ownersFromOffsets(g.outOffsets)
-	for i, outPos := range order {
+	for _, outPos := range order {
 		u, v := srcOf[outPos], g.outNbrs[outPos]
-		b.rels = append(b.rels, [2]NodeID{u, v})
-		b.relTypes = append(b.relTypes, g.outTypes[outPos])
-		b.degOut[u]++
-		b.degIn[v]++
-		b.knownNodes.Add(u)
-		b.knownNodes.Add(v)
-		outToStaging[outPos] = uint32(i)
+		idx, err := b.addRelTyped(u, v, g.outTypes[outPos])
+		thawMust(err)
+		outToStaging[outPos] = uint32(idx)
 	}
 	return outToStaging
+}
+
+// thawMust asserts a staging call that cannot fail during thaw: every id
+// and index comes from a consistent snapshot, which already fits the
+// builder's ceilings (the builder is pre-sized to the snapshot's id space
+// and rel count). A failure here is an engine bug, not caller input.
+func thawMust(err error) {
+	if err != nil {
+		panic("chickpeas: thaw staging invariant violated: " + err.Error())
+	}
 }
 
 // thawRelOrder computes a staging order (as outgoing-CSR positions) that is
@@ -181,7 +189,9 @@ func ownersFromOffsets(offsets []uint32) []NodeID {
 
 // thawNodeColumn restages one node column as builder pairs (Entries yields
 // every position of a dense column, present positions of sparse and
-// rank/select layouts), registering each position as a known node.
+// rank/select layouts), installed through the builder's bulk staging entry
+// so each position registers as a known node under the builder's own
+// invariants.
 func thawNodeColumn(b *Builder, key PropertyKey, col Column) {
 	switch col.Dtype() {
 	case DtypeI64:
@@ -189,38 +199,36 @@ func thawNodeColumn(b *Builder, key PropertyKey, col Column) {
 		for pos, v := range col.Entries() {
 			x, _ := v.I64()
 			pairs = append(pairs, i64Pair{id: pos, val: x})
-			b.knownNodes.Add(pos)
 		}
-		b.nodeColI64[key] = pairs
+		thawMust(setNodeColumnPairs(b, b.nodeColI64, key, pairs))
 	case DtypeF64:
 		pairs := make([]f64Pair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			x, _ := v.F64()
 			pairs = append(pairs, f64Pair{id: pos, val: x})
-			b.knownNodes.Add(pos)
 		}
-		b.nodeColF64[key] = pairs
+		thawMust(setNodeColumnPairs(b, b.nodeColF64, key, pairs))
 	case DtypeBool:
 		pairs := make([]boolPair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			x, _ := v.Bool()
 			pairs = append(pairs, boolPair{id: pos, val: x})
-			b.knownNodes.Add(pos)
 		}
-		b.nodeColBool[key] = pairs
+		thawMust(setNodeColumnPairs(b, b.nodeColBool, key, pairs))
 	case DtypeStr:
 		pairs := make([]strPair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			atom, _ := v.StrID()
 			pairs = append(pairs, strPair{id: pos, val: atom})
-			b.knownNodes.Add(pos)
 		}
-		b.nodeColStr[key] = pairs
+		thawMust(setNodeColumnPairs(b, b.nodeColStr, key, pairs))
 	}
 }
 
 // thawRelColumn restages one rel column, remapping stored outgoing-CSR
-// positions to staged rel indexes (Finalize maps them back).
+// positions to staged rel indexes (Finalize maps them back), installed
+// through the builder's bulk staging entry so every id is checked as a
+// live staged rel index.
 func thawRelColumn(b *Builder, key PropertyKey, col Column, outToStaging []uint32) {
 	switch col.Dtype() {
 	case DtypeI64:
@@ -229,27 +237,27 @@ func thawRelColumn(b *Builder, key PropertyKey, col Column, outToStaging []uint3
 			x, _ := v.I64()
 			pairs = append(pairs, i64Pair{id: outToStaging[pos], val: x})
 		}
-		b.relColI64[key] = pairs
+		thawMust(setRelColumnPairs(b, b.relColI64, key, pairs))
 	case DtypeF64:
 		pairs := make([]f64Pair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			x, _ := v.F64()
 			pairs = append(pairs, f64Pair{id: outToStaging[pos], val: x})
 		}
-		b.relColF64[key] = pairs
+		thawMust(setRelColumnPairs(b, b.relColF64, key, pairs))
 	case DtypeBool:
 		pairs := make([]boolPair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			x, _ := v.Bool()
 			pairs = append(pairs, boolPair{id: outToStaging[pos], val: x})
 		}
-		b.relColBool[key] = pairs
+		thawMust(setRelColumnPairs(b, b.relColBool, key, pairs))
 	case DtypeStr:
 		pairs := make([]strPair, 0, col.Len())
 		for pos, v := range col.Entries() {
 			atom, _ := v.StrID()
 			pairs = append(pairs, strPair{id: outToStaging[pos], val: atom})
 		}
-		b.relColStr[key] = pairs
+		thawMust(setRelColumnPairs(b, b.relColStr, key, pairs))
 	}
 }

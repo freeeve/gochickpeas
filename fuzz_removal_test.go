@@ -210,8 +210,13 @@ func applyOp(t *testing.T, b *chickpeas.Builder, m *oracleModel, r *opReader) bo
 			if err != nil {
 				t.Fatalf("RemoveRelProp on live rel: %v", err)
 			}
-			if _, had := rel.props[key]; removed != had {
-				t.Fatalf("RemoveRelProp removed=%v, model had key %q: %v", removed, key, had)
+			// One-directional check: a key the model holds must report
+			// removed. The converse doesn't hold across the mid-run thaw --
+			// a dense column materializes staged zero pairs at positions the
+			// model treats as absent (the documented dense lossiness), and
+			// removing one is a real removal the model can't see.
+			if _, had := rel.props[key]; had && !removed {
+				t.Fatalf("RemoveRelProp removed=false, model had key %q", key)
 			}
 			delete(rel.props, key)
 		} else if err == nil {
