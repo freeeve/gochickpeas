@@ -19,6 +19,18 @@ type genScratch struct {
 	candData  [][]uint32
 	candRange [][][2]int
 	pos       []int
+	reach     reachScratch
+}
+
+// reachScratch holds varReach's dedup'd-BFS working sets, reused across a
+// stage's row loop (the walk runs to completion per call and is never
+// nested, so a single set serves every var-length reach in the stage).
+type reachScratch struct {
+	expanded map[graph.NodeID]struct{}
+	emitted  map[graph.NodeID]struct{}
+	frontier []graph.NodeID
+	next     []graph.NodeID
+	nbuf     []graph.NodeID
 }
 
 // genMatches walks the ops' bind chain over one input row, handing each
@@ -138,7 +150,7 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])
 		return
 	case plan.OpVarExpand:
-		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i])
+		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopFilters[i], row, cand, &scratch.candData[i], &scratch.candRange[i], &scratch.reach)
 		return
 	}
 	switch op.Source.Kind {

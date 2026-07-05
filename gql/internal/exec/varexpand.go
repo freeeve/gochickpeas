@@ -56,7 +56,7 @@ func (m *monoFilter) value(ctx *eval.Ctx, pos uint32) (int64, bool) {
 // varExpandCandidates fills the candidate buffers for a quantified hop:
 // endpoint nodes, and for a named rel variable the flat rel arena plus
 // per-candidate (start, len) ranges.
-func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, hop *hopFilter, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int) {
+func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, hop *hopFilter, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, rs *reachScratch) {
 	start, ok := row[op.From].AsNode()
 	if !ok {
 		return
@@ -73,7 +73,7 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	// set via dedup'd BFS, so an unbounded or cyclic walk can't explode
 	// into per-path enumeration.
 	if op.Min == 0 || op.Max == nil {
-		varReach(ctx, start, op, m, rm, bound, haveBound, cand)
+		varReach(ctx, start, op, m, rm, bound, haveBound, cand, rs)
 		return
 	}
 	w := &varWalk{
@@ -120,7 +120,7 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 // neighbors explored once, so cycles terminate); emitted dedups the result
 // separately so a node re-reached via a cycle at depth >= min -- e.g. the
 // start when min >= 1 -- still emits once.
-func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, bound graph.NodeID, haveBound bool, out *[]graph.NodeID) {
+func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, bound graph.NodeID, haveBound bool, out *[]graph.NodeID, rs *reachScratch) {
 	cap := uint64(1<<63 - 1)
 	if op.Max != nil {
 		cap = *op.Max
@@ -128,34 +128,45 @@ func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeM
 	keep := func(nb graph.NodeID) bool {
 		return (!haveBound || bound == nb) && ctx.G.NodeMatcherAccepts(m, nb)
 	}
-	expanded := map[graph.NodeID]struct{}{start: {}}
-	emitted := map[graph.NodeID]struct{}{}
+	// Reuse the stage's working sets: clear the dedup maps and reset the
+	// frontier/neighbor buffers rather than allocating them per row.
+	if rs.expanded == nil {
+		rs.expanded = map[graph.NodeID]struct{}{}
+		rs.emitted = map[graph.NodeID]struct{}{}
+	} else {
+		clear(rs.expanded)
+		clear(rs.emitted)
+	}
+	rs.expanded[start] = struct{}{}
 	if op.Min == 0 && keep(start) {
-		emitted[start] = struct{}{}
+		rs.emitted[start] = struct{}{}
 		*out = append(*out, start)
 	}
-	frontier := []graph.NodeID{start}
-	var nbuf []graph.NodeID // batch buffer: the iter.Seq form allocates per (u) call
+	frontier := append(rs.frontier[:0], start)
+	next := rs.next[:0]
 	for depth := uint64(0); len(frontier) > 0 && depth < cap; depth++ {
 		d := depth + 1
-		var next []graph.NodeID
+		next = next[:0]
 		for _, u := range frontier {
-			nbuf = ctx.G.AppendNeighborsMatched(nbuf[:0], u, op.Dir, rm)
-			for _, nb := range nbuf {
+			rs.nbuf = ctx.G.AppendNeighborsMatched(rs.nbuf[:0], u, op.Dir, rm)
+			for _, nb := range rs.nbuf {
 				if d >= op.Min && keep(nb) {
-					if _, dup := emitted[nb]; !dup {
-						emitted[nb] = struct{}{}
+					if _, dup := rs.emitted[nb]; !dup {
+						rs.emitted[nb] = struct{}{}
 						*out = append(*out, nb)
 					}
 				}
-				if _, seen := expanded[nb]; !seen {
-					expanded[nb] = struct{}{}
+				if _, seen := rs.expanded[nb]; !seen {
+					rs.expanded[nb] = struct{}{}
 					next = append(next, nb)
 				}
 			}
 		}
-		frontier = next
+		// Swap the two persistent buffers: next becomes the frontier, the
+		// old frontier is reused as next's backing.
+		frontier, next = next, frontier
 	}
+	rs.frontier, rs.next = frontier, next
 }
 
 // varWalk is the bounded trail enumeration's state: emitted endpoints (one
