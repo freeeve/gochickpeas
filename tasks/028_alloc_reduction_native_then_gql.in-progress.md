@@ -273,17 +273,45 @@ Then three more wins in the same round (2026-07-05), all parity-gated 49/49:
    to the direct core CSR walk). IC5 625,042 -> 27,177 allocs (95.7%),
    30M -> 17M b.
 
-gql suite: 17,455,156 -> 2,995,346 allocs (83% total this round). Remaining
-top offender is CR1 2.0M (67% of the suite) -- dominated by inherent per-path
-materialization (named-path reconstructPathNodes / value.Path, the `LET ts =
-[r IN rels(p) | ...]` list, the `all(i IN range(...))` range list) that
-mirrors the Rust reference's own per-path cost, plus the one-time lazy
-property-value index build (warmup, not in the warm-run delta). nodeset.
-FromBitmap is spread across the whole match machinery, not a single clone.
-Q18 532k next (inherent per-group / per-distinct-value adds). Public core
-additions this round: Snapshot.AppendNeighborsMatch -- a version bump is
-warranted per the tagging policy when these land as a release (Eve opted to
-batch the tag for later).
+9. **cross-segment monotonic pushdown into the TRAIL walk (CR1)** -- CR1's
+   `LET ts = [r IN rels(p) | r.createTime] FILTER all(i IN range(0,size(ts)-2)
+   WHERE ts[i] > ts[i+1])` expresses a strictly-decreasing constraint on the
+   trail's edge times. The engine already had projection-derived mono
+   pushdown (derivedMonoShape handles both `<`/`>`) + the varWalk mono
+   pruning, but it only fired when the LET projection and the FILTER shared a
+   segment. GQL lowers LET and FILTER as separate clauses, so CR1's filter
+   (Segment 1) sat downstream of the var-expand + ts-definition (Segment 0),
+   out of the same-segment pushdown's reach -- the plan showed no MonoHop and
+   ran `all(...)` post-enumeration on all ~93 paths. Added
+   pushCrossSegmentMono: after planPart assembles the segments, walk back
+   from a later segment's mono-shaped filter conjunct to the segment defining
+   the alias as a rels-comprehension (unbroken passthrough required between),
+   push MonoHopSpec onto its var-expand. CPU profile confirmed the lever was
+   time, not allocs: interpreted per-path eval (eval.Eval 31% + ceval 34% +
+   evalBinary/evalIndex) of the comprehension + quantifier, once per
+   enumerated path. Now the walk prunes non-monotonic trails during
+   enumeration. CR1 203.7 -> 81.8 ms (2.5x), 2.00M -> 833k allocs, 254M ->
+   93M b. General across any LET-projected monotonic-trail filter; new test
+   TestCrossSegmentMonoPushdown.
+   - Keep-vs-drop tradeoff (open decision): the filter conjunct is kept as a
+     redundant guard (matches the same-segment form). DROPPING it after
+     pushdown gives CR1 203.7 -> 36.8 ms (5.5x) / 653k allocs, but relies on
+     the walk pruning being exhaustively equivalent to the list filter -- it
+     is NOT in general (mono prunes a null key on the sole hop of a
+     min-length path, where `all(range(...))` is vacuously true). Dropping
+     would need a proven-equivalent guard condition (e.g. non-null key +
+     min>=2, or the walk emitting the vacuous-true short paths). Left safe
+     for now; Eve's call whether the extra 2x is worth deriving the exact
+     drop-safe condition.
+
+gql suite: 17,455,156 -> 1,827,046 allocs (89.5% total this round). Remaining
+top offenders: CR1 833k (surviving-path ts materialization + the redundant
+mono guard's interpreted all() re-eval -- would drop to ~653k if the filter
+is consumed, see tradeoff above), Q18 532k (inherent per-group /
+per-distinct-value adds), then everything <63k. Public core additions this
+round: Snapshot.AppendNeighborsMatch -- a version bump is warranted per the
+tagging policy when these land as a release (Eve opted to batch the tag for
+later).
 
 ### Next round (open)
 
