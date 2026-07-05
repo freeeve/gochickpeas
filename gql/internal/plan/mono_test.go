@@ -84,10 +84,41 @@ func TestDerivedMonoPushdownBothForms(t *testing.T) {
 		if ve.MonoHop == nil || ve.MonoHop.RelKey != "ts" || !ve.MonoHop.Ascending {
 			t.Fatalf("violation=%v: mono = %+v, want ascending ts", violation, ve.MonoHop)
 		}
-		// The post-filter stays in place (redundant, guards correctness).
-		if p.Branches[0][0].PostWhere == nil {
-			t.Fatalf("violation=%v: post-where must remain", violation)
+		// The spec carries the recognized shape's null semantics: an
+		// incomparable pair prunes the all() form but passes the
+		// violation-count form.
+		if ve.MonoHop.NullsPass != violation {
+			t.Fatalf("violation=%v: NullsPass = %v", violation, ve.MonoHop.NullsPass)
 		}
+		// The conjunct is consumed -- the walk prunes with the exact filter
+		// semantics, so the post-filter would remove nothing.
+		if p.Branches[0][0].PostWhere != nil {
+			t.Fatalf("violation=%v: mono conjunct must be consumed, PostWhere = %v", violation, p.Branches[0][0].PostWhere)
+		}
+	}
+}
+
+// TestMonoMinZeroKeepsFilter pins the min-0 gate: a {0,n} quantifier
+// resolves via the reachability BFS, which has no walk order to prune, so
+// applyMonoTarget must refuse the attach (reporting false so the caller
+// keeps the conjunct as a post filter). The query surfaces reject min-0
+// rel variables and named paths earlier, so the gate is exercised directly.
+func TestMonoMinZeroKeepsFilter(t *testing.T) {
+	three := uint64(3)
+	mk := func(min uint64) []Stage {
+		return []Stage{&MatchStage{Ops: []BindOp{{
+			Kind: OpVarExpand, RelVar: "e", Min: min, Max: &three,
+		}}}}
+	}
+	if applyMonoTarget(mk(0), "e", NoSlot, "ts", true, false) {
+		t.Fatal("min-0 var-expand must not accept a MonoHopSpec")
+	}
+	stages := mk(1)
+	if !applyMonoTarget(stages, "e", NoSlot, "ts", true, false) {
+		t.Fatal("min-1 var-expand must accept the MonoHopSpec")
+	}
+	if stages[0].(*MatchStage).Ops[0].MonoHop == nil {
+		t.Fatal("spec not attached")
 	}
 }
 

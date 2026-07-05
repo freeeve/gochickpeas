@@ -103,11 +103,16 @@ type RelHopPred struct {
 }
 
 // MonoHopSpec is a path-ordered monotonic constraint on a bounded
-// var-expand: each hop's RelKey (an i64 property) must strictly continue
-// the order vs the previous hop, pruned during the walk.
+// var-expand: each hop's RelKey property must strictly continue the order
+// vs the previous hop, pruned during the walk with the same three-valued
+// value.Compare the source filter uses (any comparable kind, not just i64).
+// NullsPass carries the recognized shape's null semantics: an incomparable
+// pair (missing key, NaN, mixed kinds) fails an all()-shape comparison and
+// prunes, but is not a violation in the violation-count shape and passes.
 type MonoHopSpec struct {
 	RelKey    string
 	Ascending bool
+	NullsPass bool
 }
 
 // AggKind is an aggregate function kind.

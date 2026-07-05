@@ -135,9 +135,10 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		}
 	}
 
-	// Recognize the projection-derived form of the monotonic constraint
-	// and push it onto the originating bounded var-expand.
-	pushDerivedMonoPred(&proj, postWhere, stages, slots)
+	// Recognize the projection-derived form of the monotonic constraint,
+	// push it onto the originating bounded var-expand, and consume the
+	// conjunct (the walk prunes with the exact filter semantics).
+	postWhere = pushDerivedMonoPred(&proj, postWhere, stages, slots)
 
 	return &Segment{
 		Stages:    stages,
@@ -281,6 +282,13 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 				return nil, planErrf("ACYCLIC requires a bounded quantifier with min >= 1 -- a zero-length or unbounded pattern resolves a reachable set, not paths")
 			}
 			op.Acyclic = true
+		}
+		// A named path needs each hop's rel positions, but a zero-length or
+		// unbounded quantifier resolves a reachable set with no per-path rel
+		// lists -- reject like the rel-variable case instead of leaving a
+		// rels slot the executor can never fill.
+		if bindingPath && op.Kind == OpVarExpand && (op.Min == 0 || op.Max == nil) {
+			return nil, planErrf("a named path is not supported over a zero-length or unbounded quantified pattern -- it resolves a reachable set, not paths")
 		}
 		ops = append(ops, op)
 		prev = sn

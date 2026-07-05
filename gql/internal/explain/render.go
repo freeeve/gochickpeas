@@ -281,7 +281,11 @@ func opLabel(op *plan.BindOp, names []string) string {
 			if op.MonoHop.Ascending {
 				ad = "asc"
 			}
-			mono = fmt.Sprintf(" [mono %s %s]", op.MonoHop.RelKey, ad)
+			np := ""
+			if op.MonoHop.NullsPass {
+				np = " nullspass"
+			}
+			mono = fmt.Sprintf(" [mono %s %s%s]", op.MonoHop.RelKey, ad, np)
 		}
 		return "VarExpand " + fmtHop(nameOf(op.From, names), op.Dir, op.Types, nameOf(op.To, names), length) + mono
 	}

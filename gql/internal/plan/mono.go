@@ -45,8 +45,11 @@ func tryPushMonoPred(c ast.Expr, ops []BindOp) bool {
 	for i := range ops {
 		op := &ops[i]
 		if op.Kind == OpVarExpand && op.RelVar == e {
-			if op.MonoHop != nil || op.Max == nil {
-				return false // one spec; bounded var-length only
+			if op.MonoHop != nil || op.Max == nil || op.Min == 0 {
+				// One spec; bounded var-length only; a min-0 quantifier
+				// resolves via the reachability BFS, which has no walk
+				// order to prune -- the conjunct stays a post filter.
+				return false
 			}
 			op.MonoHop = &MonoHopSpec{RelKey: k1, Ascending: ascending}
 			return true
@@ -58,33 +61,43 @@ func tryPushMonoPred(c ast.Expr, ops []BindOp) bool {
 // pushDerivedMonoPred is the projection-derived counterpart: the filter
 // lives in the segment PostWhere and names a projected alias defined as
 // [r IN rels(p) | r.k] (or over a bare rel-list variable); resolve the
-// alias to its source var-expand and push the spec. The post-filter and
-// projection stay in place (the pushdown is a pure pruning; the redundant
-// filter guards correctness).
-func pushDerivedMonoPred(proj *ProjPlan, postWhere ast.Expr, stages []Stage, slots map[string]int) {
+// alias to its source var-expand, push the spec, and consume the conjunct
+// (the walk prunes with the exact filter semantics -- see the equivalence
+// note on pushCrossSegmentMono). Returns the remaining PostWhere.
+func pushDerivedMonoPred(proj *ProjPlan, postWhere ast.Expr, stages []Stage, slots map[string]int) ast.Expr {
 	if postWhere == nil {
-		return
+		return nil
 	}
 	var conjs []ast.Expr
 	splitAndRef(postWhere, &conjs)
+	var kept []ast.Expr
 	for _, c := range conjs {
-		alias, ascending, ok := derivedMonoShape(c)
-		if !ok {
-			alias, ascending, ok = violationCountMonoShape(c)
+		alias, ascending, nullsPass, ok := monoConjunctShape(c)
+		if ok {
+			if src, key, ok := derivedListSource(proj, alias); ok {
+				if relVar, relSlot, ok := resolveMonoTarget(stages, slots, src); ok {
+					if applyMonoTarget(stages, relVar, relSlot, key, ascending, nullsPass) {
+						continue
+					}
+				}
+			}
 		}
-		if !ok {
-			continue
-		}
-		src, key, ok := derivedListSource(proj, alias)
-		if !ok {
-			continue
-		}
-		relVar, relSlot, ok := resolveMonoTarget(stages, slots, src)
-		if !ok {
-			continue
-		}
-		applyMonoTarget(stages, relVar, relSlot, key, ascending)
+		kept = append(kept, c)
 	}
+	return rebuildAnd(kept)
+}
+
+// monoConjunctShape recognizes either monotonic filter surface over a list
+// alias, returning the alias, direction, and the shape's null semantics
+// (NullsPass on MonoHopSpec).
+func monoConjunctShape(c ast.Expr) (string, bool, bool, bool) {
+	if alias, ascending, ok := derivedMonoShape(c); ok {
+		return alias, ascending, false, true
+	}
+	if alias, ascending, ok := violationCountMonoShape(c); ok {
+		return alias, ascending, true, true
+	}
+	return "", false, false, false
 }
 
 // derivedMonoShape matches all(i IN range(0,size(L)-2) WHERE L[i] {<,>}
@@ -287,12 +300,16 @@ func derivedListSourceExpr(e ast.Expr) (string, string, bool) {
 // passthrough in between), push the MonoHopSpec onto its bounded var-expand,
 // and consume the conjunct.
 //
-// Consuming (rather than the same-segment form's redundant-guard keep) is
-// safe because the walk emits a path only when every hop's key coerces to an
-// int and strictly continues the order -- exactly the paths the all()/range
-// filter accepts -- so the emitted set is a subset of the filtered set and
-// re-checking removes nothing. TestCrossSegmentMonoDropCorrectness pins this
-// against the plain filter semantics.
+// Consuming the conjunct is safe because the walk prunes with the exact
+// filter semantics: hop pairs compare via the same three-valued
+// value.Compare the filter's </> uses, an incomparable pair (missing key,
+// NaN, mixed kinds) prunes for the all() shape and passes for the
+// violation-count shape (NullsPass), and a path's first hop carries no
+// comparison -- so the emitted set equals the filtered set and re-checking
+// removes nothing. Min-0 quantifiers never get a spec (the reachability BFS
+// has no walk order), keeping their conjunct as the post filter.
+// TestCrossSegmentMonoDropCorrectness pins the equivalence against the
+// plain filter semantics, including sparse and float keys.
 func pushCrossSegmentMono(segments []*Segment) {
 	for fi := 1; fi < len(segments); fi++ {
 		fseg := segments[fi]
@@ -303,11 +320,8 @@ func pushCrossSegmentMono(segments []*Segment) {
 		splitAndRef(fseg.PostWhere, &conjs)
 		var kept []ast.Expr
 		for _, c := range conjs {
-			alias, ascending, ok := derivedMonoShape(c)
-			if !ok {
-				alias, ascending, ok = violationCountMonoShape(c)
-			}
-			if ok && tryPushMonoAcross(segments, fi, alias, ascending) {
+			alias, ascending, nullsPass, ok := monoConjunctShape(c)
+			if ok && tryPushMonoAcross(segments, fi, alias, ascending, nullsPass) {
 				continue
 			}
 			kept = append(kept, c)
@@ -320,7 +334,7 @@ func pushCrossSegmentMono(segments []*Segment) {
 // the rels-comprehension and pushes the mono spec onto its var-expand. The
 // alias must pass through unchanged from its definition to the filter, so a
 // segment that rebinds it to a different expression stops the search.
-func tryPushMonoAcross(segments []*Segment, fi int, alias string, ascending bool) bool {
+func tryPushMonoAcross(segments []*Segment, fi int, alias string, ascending, nullsPass bool) bool {
 	for di := fi - 1; di >= 0; di-- {
 		expr, found := aliasReturnExpr(&segments[di].Proj, alias)
 		if !found {
@@ -331,8 +345,7 @@ func tryPushMonoAcross(segments []*Segment, fi int, alias string, ascending bool
 			if !ok {
 				return false
 			}
-			applyMonoTarget(segments[di].Stages, relVar, relSlot, key, ascending)
-			return true
+			return applyMonoTarget(segments[di].Stages, relVar, relSlot, key, ascending, nullsPass)
 		}
 		if !isVar(expr, alias) {
 			return false
@@ -395,8 +408,10 @@ func resolveMonoTarget(stages []Stage, slots map[string]int, src string) (string
 }
 
 // applyMonoTarget sets MonoHop on the identified bounded var-expand (when
-// it has no spec yet).
-func applyMonoTarget(stages []Stage, relVar string, relSlot int, key string, ascending bool) {
+// it has no spec yet), reporting whether it attached. A min-0 quantifier
+// never gets a spec: exec resolves it via the reachability BFS, which has
+// no walk order to prune, so the caller must keep the conjunct.
+func applyMonoTarget(stages []Stage, relVar string, relSlot int, key string, ascending, nullsPass bool) bool {
 	for _, s := range stages {
 		ms, ok := s.(*MatchStage)
 		if !ok {
@@ -404,16 +419,21 @@ func applyMonoTarget(stages []Stage, relVar string, relSlot int, key string, asc
 		}
 		for i := range ms.Ops {
 			op := &ms.Ops[i]
-			if op.Kind != OpVarExpand || op.Max == nil || op.MonoHop != nil {
+			if op.Kind != OpVarExpand {
 				continue
 			}
 			hit := (relVar != "" && op.RelVar == relVar) || (relVar == "" && relSlot != NoSlot && op.RelSlot == relSlot)
-			if hit {
-				op.MonoHop = &MonoHopSpec{RelKey: key, Ascending: ascending}
-				return
+			if !hit {
+				continue
 			}
+			if op.Max == nil || op.Min == 0 || op.MonoHop != nil {
+				return false
+			}
+			op.MonoHop = &MonoHopSpec{RelKey: key, Ascending: ascending, NullsPass: nullsPass}
+			return true
 		}
 	}
+	return false
 }
 
 func isVar(e ast.Expr, name string) bool {

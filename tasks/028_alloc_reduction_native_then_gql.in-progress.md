@@ -312,6 +312,19 @@ Then three more wins in the same round (2026-07-05), all parity-gated 49/49:
      pushDerivedMonoPred still keeps its guard -- unchanged, its own
      established test; it is redundant there too and could be dropped as a
      follow-up.)
+   - CORRECTION (033, 2026-07-05): the "unconditionally safe" rationale was
+     wrong on two counts. "Unset i64 reads as 0" holds only for DENSE
+     columns (>= 80% fill); sparse/rank columns return absent -> Null, so
+     the AsInt-only walk over-pruned rows the filter keeps (vacuous 1-hop,
+     violation-count nulls) -- and over-pruning is precisely what a kept
+     guard cannot restore, so the same-segment "guard keeps it correct"
+     belief was equally wrong. Non-int keys (float) emptied results the
+     same way. Fixed by making the walk mirror the filter exactly: hop
+     pairs compare via three-valued value.Compare, MonoHopSpec.NullsPass
+     carries the per-shape null semantics, min-0 never gets a spec, and
+     both push forms consume the conjunct. CR1 unchanged (~same ms).
+     Details in tasks/033; the dense-0-vs-sparse-null engine wart is
+     tasks/041.
 
 gql suite: 17,455,156 -> 1,646,547 allocs (90.6% total this round). Remaining
 top offenders: CR1 653k (surviving-path ts materialization + named-path

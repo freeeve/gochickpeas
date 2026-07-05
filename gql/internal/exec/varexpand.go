@@ -41,16 +41,35 @@ func buildHopFilters(ctx *eval.Ctx, ops []plan.BindOp) []*hopFilter {
 	return out
 }
 
-// monoFilter reads each candidate hop's i64 key so the DFS can prune a
-// hop that doesn't strictly continue the order vs the previous hop.
+// monoFilter reads each candidate hop's key so the DFS can prune a hop
+// that doesn't strictly continue the order vs the previous hop. Comparison
+// is the filter's own three-valued value.Compare, so any comparable kind
+// works and the pruned set exactly matches the source filter: an
+// incomparable pair (missing key, NaN, mixed kinds) fails an all()-shape
+// comparison and prunes, but is not a violation in the violation-count
+// shape and passes (nullsPass).
 type monoFilter struct {
 	eval      RowEval
 	scope     map[string]int
 	ascending bool
+	nullsPass bool
 }
 
-func (m *monoFilter) value(ctx *eval.Ctx, pos uint32) (int64, bool) {
-	return m.eval.Eval(ctx, []value.Value{value.Rel(pos)}, m.scope).AsInt()
+func (m *monoFilter) value(ctx *eval.Ctx, pos uint32) value.Value {
+	return m.eval.Eval(ctx, []value.Value{value.Rel(pos)}, m.scope)
+}
+
+// allows reports whether a hop whose key is cur may follow a hop whose key
+// is prev under the spec's order and null semantics.
+func (m *monoFilter) allows(prev, cur value.Value) bool {
+	c, ok := value.Compare(prev, cur)
+	if !ok {
+		return m.nullsPass
+	}
+	if m.ascending {
+		return c < 0
+	}
+	return c > 0
 }
 
 // varExpandCandidates fills the candidate buffers for a quantified hop:
@@ -92,9 +111,10 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 			eval:      compileEval(ctx, &ast.Prop{Var: "__r", Key: op.MonoHop.RelKey}, scope),
 			scope:     scope,
 			ascending: op.MonoHop.Ascending,
+			nullsPass: op.MonoHop.NullsPass,
 		}
 	}
-	w.dfs(start, 0, 0, false)
+	w.dfs(start, 0, value.Null(), false)
 	// Without a named rel variable the trail's positions are not bound;
 	// only then does endpoint dedup apply (first-seen order preserved).
 	if !w.collectRels {
@@ -209,7 +229,7 @@ type nodePos struct {
 // dfs enumerates trails of length min..=max with no repeated relationship,
 // emitting each qualifying endpoint (one entry per trail, matching the
 // per-path semantics).
-func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bool) {
+func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal value.Value, havePrev bool) {
 	if depth >= w.max {
 		return
 	}
@@ -251,20 +271,21 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, prevVal int64, havePrev bo
 		if w.op.Acyclic && containsNode(w.visited, nb) {
 			continue
 		}
-		w.used = append(w.used, edge)
-		if w.op.Acyclic {
-			w.visited = append(w.visited, nb)
-		}
-		// Monotonic pruning: the hop's key must strictly continue the
-		// order vs the previous hop, else this trail can't satisfy it.
+		// Monotonic pruning: the hop's key must continue the order vs the
+		// previous hop under the spec's exact filter semantics, else no
+		// trail through this hop can satisfy it. The first hop carries no
+		// comparison (a length-1 trail has none to fail).
 		curVal, haveCur := prevVal, havePrev
 		if w.mono != nil {
-			v, ok := w.mono.value(w.ctx, pos)
-			if !ok || (havePrev && ((w.mono.ascending && v <= prevVal) || (!w.mono.ascending && v >= prevVal))) {
-				w.used = w.used[:len(w.used)-1]
+			v := w.mono.value(w.ctx, pos)
+			if havePrev && !w.mono.allows(prevVal, v) {
 				continue
 			}
 			curVal, haveCur = v, true
+		}
+		w.used = append(w.used, edge)
+		if w.op.Acyclic {
+			w.visited = append(w.visited, nb)
 		}
 		if w.collectRels {
 			w.pathRels = append(w.pathRels, pos)

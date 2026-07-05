@@ -44,7 +44,45 @@ Same-segment `pushDerivedMonoPred` KEEPS the conjunct as a guard
 bugs 1-2 make the walk under-emit (guard cannot re-admit rows), restoring the
 guard alone does NOT fix bug 1; it does mask bug 3.
 
-## Fix direction
+## Resolution (2026-07-05)
+
+Fixed by making the walk mirror the filter exactly, instead of gating:
+
+- exec monoFilter carries the previous hop key as a value.Value and
+  compares with the filter's own three-valued value.Compare -- float/
+  string/temporal keys now prune exactly like the plain filter (bug 2),
+  and the first hop carries no comparison, so vacuous 1-hop trails
+  survive (bug 1a).
+- MonoHopSpec gained NullsPass: an incomparable pair (missing key, NaN,
+  mixed kinds) prunes the all() shape but passes the violation-count
+  shape, matching each shape's null semantics (bug 1b).
+- Min-0 quantifiers never get a spec (tryPushMonoPred + applyMonoTarget
+  gates); the conjunct stays a post filter (bug 3). The end-to-end min-0
+  scenario turned out to be unreachable through the query surfaces: a rel
+  variable over min-0 was already rejected, and a NAMED PATH over min-0/
+  unbounded quantifiers crashed the executor (unfillable rels slot) --
+  now a clean plan error, pinned by TestMinZeroNamedPathRejected.
+- With the walk exact, all push forms consume the conjunct uniformly
+  (pushDerivedMonoPred now consumes too -- divergence resolved by
+  dropping both, per 028's intent, now actually safe).
+- Also fixed in passing: mono-prune inside the dfs leaked a visited entry
+  in ACYCLIC mode (the old rollback popped used only); the check now runs
+  before the used/visited pushes.
+
+Discoveries filed separately:
+- tasks/041: dense (>= 80% fill) i64/f64/bool columns cannot represent
+  missing -- unset reads as 0 with ok=true, so property semantics flip on
+  the storage heuristic. On dense columns walk==filter over the 0 reads
+  (pinned by TestMonoDenseUnsetZeroSemantics); the divergences above are
+  real on sparse columns (pinned by TestMonoSparseKeyMatchesFilter /
+  TestMonoViolationCountNullsPass with a padded-sparse fixture).
+- The 028 "drop unconditionally safe" note carries a dated correction.
+
+Gates: gql suite green, full repo suite green, parity 49/49 MATCH, CR1
+timing unchanged within noise (A/B medians 86.0 vs 67.1 ms, mins ~57 vs
+~59 -- machine noise dominates).
+
+## Fix direction (original)
 
 - Gate the pushdown on provable safety: only push (and only drop the guard)
   when the key's column is i64 and the walk semantics provably match the
