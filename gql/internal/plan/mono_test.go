@@ -155,18 +155,15 @@ func TestCrossSegmentMonoPushdown(t *testing.T) {
 	if ve == nil || ve.MonoHop == nil || ve.MonoHop.RelKey != "ts" || !ve.MonoHop.Ascending {
 		t.Fatalf("cross-segment mono = %+v, want ascending ts pushed onto the var-expand", ve)
 	}
-	// The filter conjunct stays as a redundant correctness guard: pushdown
-	// only adds walk pruning, it does not change the result set.
-	guard := false
+	// The lone monotonic conjunct is consumed -- the walk pruning emits
+	// exactly the filtered set, so the post-filter would remove nothing
+	// (see TestCrossSegmentMonoDropCorrectness in the gql package).
 	for _, segs := range p.Branches {
 		for _, s := range segs {
 			if s.PostWhere != nil {
-				guard = true
+				t.Fatalf("cross-segment mono conjunct must be consumed, PostWhere = %v", s.PostWhere)
 			}
 		}
-	}
-	if !guard {
-		t.Fatal("monotonic filter guard must remain after cross-segment pushdown")
 	}
 }
 

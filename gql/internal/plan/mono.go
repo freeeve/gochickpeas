@@ -284,9 +284,15 @@ func derivedListSourceExpr(e ast.Expr) (string, string, bool) {
 // pushDerivedMonoPred cannot see the originating var-expand. For each later
 // segment's monotonic-shaped filter conjunct, walk back to the segment that
 // defines the alias as a rels-comprehension (requiring an unbroken
-// passthrough in between) and push the MonoHopSpec onto its bounded
-// var-expand. Like the same-segment form, the filter conjunct stays in place
-// as a redundant correctness guard; the pushdown only adds the walk pruning.
+// passthrough in between), push the MonoHopSpec onto its bounded var-expand,
+// and consume the conjunct.
+//
+// Consuming (rather than the same-segment form's redundant-guard keep) is
+// safe because the walk emits a path only when every hop's key coerces to an
+// int and strictly continues the order -- exactly the paths the all()/range
+// filter accepts -- so the emitted set is a subset of the filtered set and
+// re-checking removes nothing. TestCrossSegmentMonoDropCorrectness pins this
+// against the plain filter semantics.
 func pushCrossSegmentMono(segments []*Segment) {
 	for fi := 1; fi < len(segments); fi++ {
 		fseg := segments[fi]
@@ -295,15 +301,18 @@ func pushCrossSegmentMono(segments []*Segment) {
 		}
 		var conjs []ast.Expr
 		splitAndRef(fseg.PostWhere, &conjs)
+		var kept []ast.Expr
 		for _, c := range conjs {
 			alias, ascending, ok := derivedMonoShape(c)
 			if !ok {
 				alias, ascending, ok = violationCountMonoShape(c)
 			}
-			if ok {
-				tryPushMonoAcross(segments, fi, alias, ascending)
+			if ok && tryPushMonoAcross(segments, fi, alias, ascending) {
+				continue
 			}
+			kept = append(kept, c)
 		}
+		fseg.PostWhere = rebuildAnd(kept)
 	}
 }
 
