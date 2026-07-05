@@ -10,20 +10,40 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// extendRow binds extra variables in slots appended past row, returning
-// the extended row and slot map (copies; the originals are untouched).
-func extendRow(row []value.Value, slots map[string]int, vars ...string) ([]value.Value, map[string]int, []int) {
-	inner := make(map[string]int, len(slots)+len(vars))
-	maps.Copy(inner, slots)
-	extended := make([]value.Value, len(row), len(row)+len(vars))
-	copy(extended, row)
-	idx := make([]int, len(vars))
-	for i, v := range vars {
-		idx[i] = len(extended)
-		inner[v] = len(extended)
-		extended = append(extended, value.Null())
+// scopeFor binds extra variables in slots appended past row, returning the
+// extended row, slot map, and iteration-variable indices. It caches the
+// lexically-invariant slot map and idx per node on the Ctx and reuses a
+// refilled row buffer, so a list scope evaluated once per outer row (a
+// comprehension or quantifier in a hot filter) allocates nothing after the
+// first call. The originals are untouched.
+func (c *Ctx) scopeFor(node ast.Expr, row []value.Value, slots map[string]int, vars ...string) ([]value.Value, map[string]int, []int) {
+	s := c.scopes[node]
+	if s == nil || s.baseLen != len(row) {
+		s = &scopeScratch{
+			slots:   make(map[string]int, len(slots)+len(vars)),
+			idx:     make([]int, len(vars)),
+			baseLen: len(row),
+		}
+		maps.Copy(s.slots, slots)
+		for i, v := range vars {
+			s.idx[i] = len(row) + i
+			s.slots[v] = len(row) + i
+		}
+		if c.scopes == nil {
+			c.scopes = map[ast.Expr]*scopeScratch{}
+		}
+		c.scopes[node] = s
 	}
-	return extended, inner, idx
+	need := len(row) + len(vars)
+	if cap(s.row) < need {
+		s.row = make([]value.Value, need)
+	}
+	s.row = s.row[:need]
+	copy(s.row, row)
+	for i := range vars {
+		s.row[len(row)+i] = value.Null()
+	}
+	return s.row, s.slots, s.idx
 }
 
 // evalListPred evaluates all/any/none/single(var IN list WHERE pred):
@@ -36,7 +56,7 @@ func evalListPred(ctx *Ctx, e *ast.ListPred, row []value.Value, slots map[string
 	if !ok {
 		return value.Null()
 	}
-	inner, innerSlots, idx := extendRow(row, slots, e.Var)
+	inner, innerSlots, idx := ctx.scopeFor(e, row, slots, e.Var)
 	nTrue, nNull := 0, 0
 	for _, el := range items {
 		inner[idx[0]] = el
@@ -91,7 +111,7 @@ func evalReduce(ctx *Ctx, e *ast.Reduce, row []value.Value, slots map[string]int
 	if !ok {
 		return value.Null()
 	}
-	inner, innerSlots, idx := extendRow(row, slots, e.Acc, e.Var)
+	inner, innerSlots, idx := ctx.scopeFor(e, row, slots, e.Acc, e.Var)
 	inner[idx[0]] = Eval(ctx, e.Init, row, slots)
 	for _, el := range items {
 		inner[idx[1]] = el
@@ -108,7 +128,7 @@ func evalListComp(ctx *Ctx, e *ast.ListComp, row []value.Value, slots map[string
 	if !ok {
 		return value.Null()
 	}
-	inner, innerSlots, idx := extendRow(row, slots, e.Var)
+	inner, innerSlots, idx := ctx.scopeFor(e, row, slots, e.Var)
 	var out []value.Value
 	for _, el := range items {
 		inner[idx[0]] = el

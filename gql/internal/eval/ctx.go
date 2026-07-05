@@ -35,6 +35,21 @@ type Ctx struct {
 	// scan stays valid; a fresh Ctx per run keeps prepared-plan reuse
 	// safe).
 	subqShapes map[*ast.Pattern]*subqueryShape
+	// scopes caches each list-scope node's reusable inner scope (the slot
+	// map and idx are lexically invariant across the node's per-row
+	// evaluations; the row buffer is refilled each call). A tree AST never
+	// evaluates one node re-entrantly, so a single buffer per node is safe.
+	scopes map[ast.Expr]*scopeScratch
+}
+
+// scopeScratch is one list-scope node's reused inner environment: the slot
+// map and iteration-variable indices built once, and a row buffer refilled
+// from the outer row on each evaluation.
+type scopeScratch struct {
+	slots   map[string]int
+	idx     []int
+	row     []value.Value
+	baseLen int
 }
 
 // ParamValue resolves an auto-lifted slot; out of range is Null.
