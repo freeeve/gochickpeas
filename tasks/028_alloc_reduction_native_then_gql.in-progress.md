@@ -245,22 +245,58 @@ Four wins, all parity-gated at 49/49 MATCH:
    1,933,645 allocs (37%). Q12's remaining leader is exec.varReach's per-call
    BFS state (shape-cache candidate -- next round).
 
-gql suite: 17,455,156 -> 7,044,924 allocs (60% further reduction). New top
-offenders: CR1 2.95M (untouched -- interpreted eval + roaring bitmap churn:
-extendRow / evalScalarFunc / evalListComp / value.List / roaring New; a
-deeper eval refactor), Q12 1.93M (varReach BFS state), IC5 625k, Q18 532k,
-IS5 412k. Note: added a public core method (Snapshot.AppendNeighborsMatch) --
-a version bump is warranted per the tagging policy if these land as a release.
+Then three more wins in the same round (2026-07-05), all parity-gated 49/49:
+
+5. **list-scope inner environment cache (CR1)** -- extendRow rebuilt a
+   comprehension/quantifier/reduce inner scope (full slot-map copy + two
+   slices) on every per-row evaluation. Cache the lexically-invariant slot
+   map + idx per AST node on the Ctx (alongside subqShapes) and refill only
+   the row buffer; a tree AST never evaluates a node re-entrantly, so one
+   buffer per node is safe. CR1 2,951,398 -> 2,000,491 allocs, 366M -> 254M b.
+   General across every list comp / all-any-none-single / reduce.
+6. **varReach dedup-BFS scratch reuse (Q12)** -- the distinct-reachable BFS
+   allocated two dedup maps + frontier/next/neighbor slices per outer row.
+   Hang a reachScratch on the stage's genScratch (already row-loop-reused),
+   clear + reset per call, double-buffer the frontier via a swap. Q12
+   1,933,645 -> 62,772 allocs (96.8%), 20.5M -> 5.5M b.
+7. **decorate-sort-undecorate ORDER BY (IS5)** -- the sort comparator
+   re-evaluated each row's ORDER BY key per comparison (O(n log n) row+scope
+   allocs). Precompute each row's key vector once into a flat buffer under an
+   invariant scope, then compare precomputed keys; shared by the projection
+   and aggregate sort paths (retired cmpOrder/orderKey). IS5 412,413 -> 320
+   allocs. General across every non-trivial ORDER BY.
+8. **sorted-slice semijoin sets (IC5)** -- the bound-target rebind semijoin
+   memoized each target's reverse-neighbor set as a roaring bitmap built one
+   Add at a time (a container per 64k id range). The set is only probed for
+   membership, so hold it as a sorted id slice (one alloc/target) + binary
+   search, filled via the now-closure-free AppendNeighborsByType (delegates
+   to the direct core CSR walk). IC5 625,042 -> 27,177 allocs (95.7%),
+   30M -> 17M b.
+
+gql suite: 17,455,156 -> 2,995,346 allocs (83% total this round). Remaining
+top offender is CR1 2.0M (67% of the suite) -- dominated by inherent per-path
+materialization (named-path reconstructPathNodes / value.Path, the `LET ts =
+[r IN rels(p) | ...]` list, the `all(i IN range(...))` range list) that
+mirrors the Rust reference's own per-path cost, plus the one-time lazy
+property-value index build (warmup, not in the warm-run delta). nodeset.
+FromBitmap is spread across the whole match machinery, not a single clone.
+Q18 532k next (inherent per-group / per-distinct-value adds). Public core
+additions this round: Snapshot.AppendNeighborsMatch -- a version bump is
+warranted per the tagging policy when these land as a release (Eve opted to
+batch the tag for later).
 
 ### Next round (open)
 
-- gql Q18 / IC9 / CR1: allocations sit in eval/aggregate/projection (28.5M / 10.3M /
-  4.9M) -- profile the segment pipeline (per-row []value.Value copies in rowsrc/project,
-  aggregate group state, value boxing in date/list functions), then the deferred
-  streaming top-k/aggregate segments from [[gql-port-progress]] if profiles point there.
+- CR1 last mile (optional, ~440k): `all(x IN range(a,b) WHERE p)` materializes
+  the range list only to iterate it -- a lazy range source inside the
+  quantifier/comprehension evaluators would avoid applyRange's list + per-elem
+  boxing. General for any range-in-quantifier idiom, but a targeted eval
+  special-case; weigh against the no-overfitting bar before landing.
 - native: remaining ~2.3M suite allocs are result-row [][]any boxing (proportional to
   emitted rows, same materialization cost the rust side pays) and kernel-local maps
   (BI/Q18 199k, SPB a13 1.0M for 336k rows). Only worth touching with a general
   mechanism (e.g. arena rows), not per-kernel tweaks.
 - shortest.go filteredNeighbors still uses the iter.Seq seam (low volume; convert if a
   profile ever surfaces it).
+- TestPlanCacheConcurrent flake (Len()=0, pre-existing at a252f48) -- has not
+  recurred under -race this round, but still wants its own diagnosis.
