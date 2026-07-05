@@ -246,30 +246,100 @@ func derivedListSource(proj *ProjPlan, alias string) (string, string, bool) {
 		if proj.Returns[i].Name != alias {
 			continue
 		}
-		lc, ok := proj.Returns[i].Expr.(*ast.ListComp)
-		if !ok || lc.Filter != nil || lc.Map == nil {
-			return "", "", false
-		}
-		src := relsArg(lc.List)
-		if src == "" {
-			src = asVarName(lc.List)
-		}
-		if src == "" {
-			return "", "", false
-		}
-		switch m := lc.Map.(type) {
-		case *ast.Prop:
-			if m.Var == lc.Var {
-				return src, m.Key, true
-			}
-		case *ast.PropOf:
-			if isVar(m.Base, lc.Var) {
-				return src, m.Key, true
-			}
-		}
-		return "", "", false
+		return derivedListSourceExpr(proj.Returns[i].Expr)
 	}
 	return "", "", false
+}
+
+// derivedListSourceExpr matches a [r IN rels(src) | r.key] comprehension
+// expression to its rels source and property key.
+func derivedListSourceExpr(e ast.Expr) (string, string, bool) {
+	lc, ok := e.(*ast.ListComp)
+	if !ok || lc.Filter != nil || lc.Map == nil {
+		return "", "", false
+	}
+	src := relsArg(lc.List)
+	if src == "" {
+		src = asVarName(lc.List)
+	}
+	if src == "" {
+		return "", "", false
+	}
+	switch m := lc.Map.(type) {
+	case *ast.Prop:
+		if m.Var == lc.Var {
+			return src, m.Key, true
+		}
+	case *ast.PropOf:
+		if isVar(m.Base, lc.Var) {
+			return src, m.Key, true
+		}
+	}
+	return "", "", false
+}
+
+// pushCrossSegmentMono handles the projection-derived monotonic constraint
+// when GQL's LET (the ts = [r IN rels(p) | r.key] projection) and the FILTER
+// that reads it land in different segments: the same-segment
+// pushDerivedMonoPred cannot see the originating var-expand. For each later
+// segment's monotonic-shaped filter conjunct, walk back to the segment that
+// defines the alias as a rels-comprehension (requiring an unbroken
+// passthrough in between) and push the MonoHopSpec onto its bounded
+// var-expand. Like the same-segment form, the filter conjunct stays in place
+// as a redundant correctness guard; the pushdown only adds the walk pruning.
+func pushCrossSegmentMono(segments []*Segment) {
+	for fi := 1; fi < len(segments); fi++ {
+		fseg := segments[fi]
+		if fseg.PostWhere == nil {
+			continue
+		}
+		var conjs []ast.Expr
+		splitAndRef(fseg.PostWhere, &conjs)
+		for _, c := range conjs {
+			alias, ascending, ok := derivedMonoShape(c)
+			if !ok {
+				alias, ascending, ok = violationCountMonoShape(c)
+			}
+			if ok {
+				tryPushMonoAcross(segments, fi, alias, ascending)
+			}
+		}
+	}
+}
+
+// tryPushMonoAcross searches segments before fi for the one defining alias as
+// the rels-comprehension and pushes the mono spec onto its var-expand. The
+// alias must pass through unchanged from its definition to the filter, so a
+// segment that rebinds it to a different expression stops the search.
+func tryPushMonoAcross(segments []*Segment, fi int, alias string, ascending bool) bool {
+	for di := fi - 1; di >= 0; di-- {
+		expr, found := aliasReturnExpr(&segments[di].Proj, alias)
+		if !found {
+			return false
+		}
+		if src, key, ok := derivedListSourceExpr(expr); ok {
+			relVar, relSlot, ok := resolveMonoTarget(segments[di].Stages, segments[di].Slots, src)
+			if !ok {
+				return false
+			}
+			applyMonoTarget(segments[di].Stages, relVar, relSlot, key, ascending)
+			return true
+		}
+		if !isVar(expr, alias) {
+			return false
+		}
+	}
+	return false
+}
+
+// aliasReturnExpr returns the projection expression bound to alias.
+func aliasReturnExpr(proj *ProjPlan, alias string) (ast.Expr, bool) {
+	for i := range proj.Returns {
+		if proj.Returns[i].Name == alias {
+			return proj.Returns[i].Expr, true
+		}
+	}
+	return nil, false
 }
 
 // resolveMonoTarget resolves rels(src) to the exact bounded var-expand to

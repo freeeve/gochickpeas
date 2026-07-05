@@ -91,6 +91,85 @@ func TestDerivedMonoPushdownBothForms(t *testing.T) {
 	}
 }
 
+// crossSegmentMonoQuery builds the CR1 shape where the LET projection and
+// the FILTER are separate clauses, so they lower into adjacent segments:
+// MATCH p = (a)-[:KNOWS]->{1,3}(b) WITH b, [r IN rels(p) | r.ts] AS ts
+// (no where) WITH b, ts WHERE all(i IN range(0,size(ts)-2) WHERE ts[i] <
+// ts[i+1]) RETURN b.
+func crossSegmentMonoQuery() *ast.Query {
+	one, three := uint64(1), uint64(3)
+	pattern := ast.Pattern{
+		Start: ast.NodePat{Var: "a", Labels: []string{"Person"}},
+		Hops: []ast.PatternHop{{
+			Rel:  ast.RelPat{Var: "e", Dir: ast.DirOut, Types: []string{"KNOWS"}, Length: &ast.VarLength{Min: &one, Max: &three}},
+			Node: ast.NodePat{Var: "b", Labels: []string{"Person"}},
+		}},
+	}
+	tsComp := &ast.ListComp{Var: "r", List: &ast.Var{Name: "e"}, Map: &ast.Prop{Var: "r", Key: "ts"}}
+	idx := func(i ast.Expr) ast.Expr { return &ast.Index{Base: &ast.Var{Name: "ts"}, Idx: i} }
+	iVar := &ast.Var{Name: "i"}
+	plusOne := &ast.Binary{Op: ast.OpAdd, LHS: iVar, RHS: &ast.Lit{Value: ast.IntLit(1)}}
+	sizeTs := &ast.Func{Name: "size", Args: []ast.Expr{&ast.Var{Name: "ts"}}}
+	where := &ast.ListPred{
+		Quant: ast.QuantAll,
+		Var:   "i",
+		List: &ast.Func{Name: "range", Args: []ast.Expr{
+			&ast.Lit{Value: ast.IntLit(0)},
+			&ast.Binary{Op: ast.OpSub, LHS: sizeTs, RHS: &ast.Lit{Value: ast.IntLit(2)}},
+		}},
+		Pred: &ast.Binary{Op: ast.OpLt, LHS: idx(iVar), RHS: idx(plusOne)},
+	}
+	return &ast.Query{Parts: []ast.QueryPart{{
+		Clauses: []ast.Clause{
+			&ast.Match{Patterns: []ast.Pattern{pattern}},
+			// LET: project ts, no filter -- ends one segment.
+			&ast.With{Proj: ast.Projection{Items: []ast.ReturnItem{
+				{Expr: &ast.Var{Name: "b"}, Alias: "b"},
+				{Expr: tsComp, Alias: "ts"},
+			}}},
+			// FILTER: passthrough projection with the monotonic where -- a
+			// second segment that no longer holds the var-expand.
+			&ast.With{
+				Proj:  ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Var{Name: "b"}, Alias: "b"}, {Expr: &ast.Var{Name: "ts"}, Alias: "ts"}}},
+				Where: where,
+			},
+		},
+		Ret: ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Var{Name: "b"}, Alias: "b"}}},
+	}}}
+}
+
+func TestCrossSegmentMonoPushdown(t *testing.T) {
+	g := buildFixture(t)
+	p, err := Build(crossSegmentMonoQuery(), g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The var-expand lives in the first segment; the filter in a later one.
+	ms := firstMatch(t, p)
+	var ve *BindOp
+	for i := range ms.Ops {
+		if ms.Ops[i].Kind == OpVarExpand {
+			ve = &ms.Ops[i]
+		}
+	}
+	if ve == nil || ve.MonoHop == nil || ve.MonoHop.RelKey != "ts" || !ve.MonoHop.Ascending {
+		t.Fatalf("cross-segment mono = %+v, want ascending ts pushed onto the var-expand", ve)
+	}
+	// The filter conjunct stays as a redundant correctness guard: pushdown
+	// only adds walk pruning, it does not change the result set.
+	guard := false
+	for _, segs := range p.Branches {
+		for _, s := range segs {
+			if s.PostWhere != nil {
+				guard = true
+			}
+		}
+	}
+	if !guard {
+		t.Fatal("monotonic filter guard must remain after cross-segment pushdown")
+	}
+}
+
 func TestProjectionFusionFires(t *testing.T) {
 	g := buildFixture(t)
 	// RETURN..NEXT (pure, aliased) then RETURN..NEXT (aggregating): the
