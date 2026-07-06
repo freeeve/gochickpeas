@@ -5,6 +5,7 @@
 package gql
 
 import (
+	"errors"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -202,6 +203,41 @@ func TestCallSubqueryUncorrelatedCrossJoin(t *testing.T) {
 		"MATCH (c:Company) CALL { MATCH (p:Person {name: 'Zed'}) RETURN p.name AS a } RETURN c.name AS cn")
 	if _, ok := rows.Next(); ok {
 		t.Fatal("empty subquery drops outer rows")
+	}
+}
+
+func TestGroupKeyInsideNestedAggWrapper(t *testing.T) {
+	g := socialGraph(t)
+	// A carried list concatenated with a fresh collect (LDBC Q8's
+	// `interestedPersons + collect(person)`): the grouping key `ps` is a
+	// legal reference inside the wrapper.
+	rows := runBoth(t, g,
+		"MATCH (p:Person) RETURN collect(p.name) AS ps "+
+			"NEXT MATCH (c:Company) RETURN ps, size(ps + collect(c.name)) AS n")
+	r, ok := rows.Next()
+	if !ok {
+		t.Fatal("no row")
+	}
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(6)) {
+		t.Fatalf("concat size = %v, want 6 (4 people + 2 companies)", v)
+	}
+	// A group key projected under a different alias re-points property
+	// access in the wrapper at the output column.
+	rows = runBoth(t, g,
+		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) RETURN c AS firm, c.name + toString(count(*)) AS tag ORDER BY tag")
+	var tags []string
+	for r := range rows.All() {
+		v, _ := r.Get("tag")
+		s, _ := v.AsStr()
+		tags = append(tags, s)
+	}
+	if len(tags) != 2 || tags[0] != "Acme2" || tags[1] != "Globex1" {
+		t.Fatalf("tags = %v", tags)
+	}
+	// A reference that is neither a group key nor inside an aggregate is
+	// still a bind error.
+	if _, err := Run(g, "MATCH (p:Person) RETURN collect(p.name) AS ps NEXT MATCH (c:Company) RETURN size(ps + collect(c.name)) AS n"); !errors.Is(err, ErrBind) {
+		t.Fatalf("unprojected carried var in wrapper: %v", err)
 	}
 }
 

@@ -148,6 +148,21 @@ func TestConversionFunctions(t *testing.T) {
 	wantNull(t, g, "toInteger('abc')")
 }
 
+func TestListConcat(t *testing.T) {
+	g := testGraph(t)
+	// list + list chains, list + element appends, element + list prepends.
+	wantInts(t, g, "[1, 2] + [3]", 1, 2, 3)
+	wantInts(t, g, "[1, 2] + 3", 1, 2, 3)
+	wantInts(t, g, "1 + [2, 3]", 1, 2, 3)
+	wantInts(t, g, "[] + [1] + []", 1)
+	wantInt(t, g, "size([1] + [2, 3])", 3)
+	// A null operand stays null; numeric + is untouched.
+	wantNull(t, g, "[1] + null")
+	wantNull(t, g, "null + [1]")
+	wantInt(t, g, "1 + 2", 3)
+	wantStr(t, g, "'a' + 'b'", "ab")
+}
+
 func TestListAndRangeFunctions(t *testing.T) {
 	g := testGraph(t)
 	wantInt(t, g, "size([1, 2, 3])", 3)

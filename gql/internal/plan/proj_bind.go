@@ -89,6 +89,17 @@ func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error)
 	var aggs []AggCol
 	var post []PostProj
 	nHidden := 0
+	// Grouping items (the non-aggregate projections, which may be listed
+	// after a wrapper that uses them) are legal references inside a
+	// nested-aggregate wrapper -- standard grouping semantics, e.g. the
+	// carried alias in `RETURN xs, xs + collect(q) AS ys` (the Rust
+	// engine's tasks/150).
+	var groupCols []groupCol
+	for i := range returns {
+		if !returns[i].IsAgg {
+			groupCols = append(groupCols, groupCol{idx: i, name: returns[i].Name, expr: returns[i].Expr})
+		}
+	}
 	for i := range returns {
 		r := &returns[i]
 		if !r.IsAgg {
@@ -105,14 +116,21 @@ func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error)
 		}
 		// A nested aggregate: hoist each aggregate into a hidden slot and
 		// project the rewritten wrapper after grouping. The wrapper must
-		// reduce to a scalar over those hidden slots only.
+		// reduce to a scalar over those hidden slots and the grouping keys
+		// -- any other variable reference is rejected.
 		rewritten, err := extractNestedAggs(r.Expr, nCols, &nHidden, &aggs)
 		if err != nil {
 			return ProjPlan{}, err
 		}
-		synth := make(map[string]int, nHidden)
+		rewritten = substGroupKeys(rewritten, groupCols)
+		synth := make(map[string]int, nHidden+len(groupCols))
 		for k := range nHidden {
 			synth[fmt.Sprintf("__agg%d", k)] = nCols + k
+		}
+		for _, g := range groupCols {
+			if _, ok := synth[g.name]; !ok {
+				synth[g.name] = g.idx
+			}
 		}
 		if err := semantics.CheckRefs(rewritten, synth); err != nil {
 			return ProjPlan{}, err
@@ -312,6 +330,104 @@ func extractNestedAggs(expr ast.Expr, nCols int, hidden *int, aggs *[]AggCol) (a
 		return out, nil
 	}
 	return nil, planErrf("an aggregate here is not supported -- it must sit inside scalar arithmetic, a function call, CASE, or a list (Tier 1)")
+}
+
+// groupCol is one grouping item of an aggregating projection: its output
+// column index, name, and source expression.
+type groupCol struct {
+	idx  int
+	name string
+	expr ast.Expr
+}
+
+// substGroupKeys re-points wrapper subexpressions at the grouping columns:
+// a subexpression structurally equal to a grouping item's expression
+// becomes a reference to its output column. Aggregates were already pulled
+// out by extractNestedAggs, so no aggregate call remains in the wrapper.
+// Interiors that bind their own variables (comprehension/quantifier/reduce
+// bodies, correlated subquery filters) are left untouched: a bare-variable
+// key still resolves there by name through the post-projection scope,
+// while a composite key appearing only there stays a bind error rather
+// than risking capture by the local binding.
+func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
+	for _, g := range groups {
+		if exprEqual(g.expr, e) {
+			return &ast.Var{Name: g.name}
+		}
+	}
+	switch n := e.(type) {
+	// `var.key` where `var` is a grouping key projected under a different
+	// name: re-point the property access at the output column
+	// (`RETURN n AS m, n.x + count(*)`).
+	case *ast.Prop:
+		for _, g := range groups {
+			if v, ok := g.expr.(*ast.Var); ok && v.Name == n.Var && g.name != n.Var {
+				return &ast.PropOf{Base: &ast.Var{Name: g.name}, Key: n.Key}
+			}
+		}
+	case *ast.Unary:
+		n.Expr = substGroupKeys(n.Expr, groups)
+	case *ast.IsNull:
+		n.Expr = substGroupKeys(n.Expr, groups)
+	case *ast.PropOf:
+		n.Base = substGroupKeys(n.Base, groups)
+	case *ast.Binary:
+		n.LHS = substGroupKeys(n.LHS, groups)
+		n.RHS = substGroupKeys(n.RHS, groups)
+	case *ast.In:
+		n.Expr = substGroupKeys(n.Expr, groups)
+		n.List = substGroupKeys(n.List, groups)
+	case *ast.Index:
+		n.Base = substGroupKeys(n.Base, groups)
+		n.Idx = substGroupKeys(n.Idx, groups)
+	case *ast.Func:
+		for i := range n.Args {
+			n.Args[i] = substGroupKeys(n.Args[i], groups)
+		}
+	case *ast.ListExpr:
+		for i := range n.Elems {
+			n.Elems[i] = substGroupKeys(n.Elems[i], groups)
+		}
+	case *ast.Case:
+		if n.Operand != nil {
+			n.Operand = substGroupKeys(n.Operand, groups)
+		}
+		for i := range n.Whens {
+			n.Whens[i].Cond = substGroupKeys(n.Whens[i].Cond, groups)
+			n.Whens[i].Result = substGroupKeys(n.Whens[i].Result, groups)
+		}
+		if n.Else != nil {
+			n.Else = substGroupKeys(n.Else, groups)
+		}
+	case *ast.Slice:
+		n.Base = substGroupKeys(n.Base, groups)
+		if n.From != nil {
+			n.From = substGroupKeys(n.From, groups)
+		}
+		if n.To != nil {
+			n.To = substGroupKeys(n.To, groups)
+		}
+	// Sources evaluate in the outer scope; the bodies bind their own
+	// variables (see above).
+	case *ast.ListPred:
+		n.List = substGroupKeys(n.List, groups)
+	case *ast.ListComp:
+		n.List = substGroupKeys(n.List, groups)
+	case *ast.Reduce:
+		n.Init = substGroupKeys(n.Init, groups)
+		n.List = substGroupKeys(n.List, groups)
+	case *ast.MapLit:
+		for i := range n.Fields {
+			n.Fields[i].Val = substGroupKeys(n.Fields[i].Val, groups)
+		}
+	case *ast.MapProj:
+		for i := range n.Entries {
+			if n.Entries[i].Kind == ast.MapProjField {
+				n.Entries[i].Expr = substGroupKeys(n.Entries[i].Expr, groups)
+			}
+		}
+	}
+	return e
 }
 
 // extractAgg compiles a top-level aggregate projection expression.

@@ -243,9 +243,17 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 		a.groups = append(a.groups, freshGroup(proj, nil))
 	}
 	nCols := len(proj.Returns)
-	postSlots := make(map[string]int, proj.NHidden)
+	// Wrappers read the hidden accumulator slots as __agg{k} and the
+	// grouping-key columns by name (the Rust engine's tasks/150); both are
+	// filled before the wrappers run.
+	postSlots := make(map[string]int, proj.NHidden+len(proj.GroupIdx))
 	for k := 0; k < proj.NHidden; k++ {
 		postSlots[hiddenAggName(k)] = nCols + k
+	}
+	for _, gi := range proj.GroupIdx {
+		if _, ok := postSlots[proj.Returns[gi].Name]; !ok {
+			postSlots[proj.Returns[gi].Name] = gi
+		}
 	}
 	postC := make([]RowEval, len(proj.Post))
 	for i, p := range proj.Post {

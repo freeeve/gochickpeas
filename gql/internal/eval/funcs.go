@@ -544,6 +544,28 @@ func Arith(op ast.BinOp, l, r value.Value) value.Value {
 		b, _ := r.AsStr()
 		return value.Str(a + b)
 	}
+	// List concatenation / append (openCypher `+`, mirroring the Rust
+	// engine): list + list chains the elements, list + element appends,
+	// element + list prepends. A null operand stays null via the
+	// fallthrough.
+	if op == ast.OpAdd && !l.IsNull() && !r.IsNull() {
+		la, lok := l.AsList()
+		rb, rok := r.AsList()
+		switch {
+		case lok && rok:
+			out := make([]value.Value, 0, len(la)+len(rb))
+			out = append(out, la...)
+			return value.List(append(out, rb...))
+		case lok:
+			out := make([]value.Value, 0, len(la)+1)
+			out = append(out, la...)
+			return value.List(append(out, r))
+		case rok:
+			out := make([]value.Value, 0, len(rb)+1)
+			out = append(out, l)
+			return value.List(append(out, rb...))
+		}
+	}
 	// Temporal +/- Duration -> Temporal; + is commutative.
 	if (op == ast.OpAdd || op == ast.OpSub) && l.Kind() == value.KindTemporal && r.Kind() == value.KindDuration {
 		return applyDur(l, r, op)
