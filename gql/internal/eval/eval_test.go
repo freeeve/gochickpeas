@@ -124,6 +124,13 @@ func TestStringFunctions(t *testing.T) {
 	wantBool(t, g, "'hello' ENDS WITH 'lo'", true)
 	wantBool(t, g, "'hello' CONTAINS 'ell'", true)
 	wantNull(t, g, "'hello' CONTAINS 3")
+	wantStr(t, g, "lower('FootBALL')", "football")
+	wantStr(t, g, "upper('FootBALL')", "FOOTBALL")
+	wantStr(t, g, "toLower('FootBALL')", "football")
+	wantStr(t, g, "toUpper('FootBALL')", "FOOTBALL")
+	wantBool(t, g, "lower('The Football Cup') CONTAINS 'football'", true)
+	wantNull(t, g, "lower(3)")
+	wantNull(t, g, "upper(null)")
 }
 
 func TestConversionFunctions(t *testing.T) {

@@ -19,12 +19,12 @@ func TestFunctionRecognition(t *testing.T) {
 	if IsAggName("size") || IsAggName("uncount") {
 		t.Fatal("non-aggregates")
 	}
-	for _, name := range []string{"size", "toString", "COALESCE", "startNode", "endNode", "relationships"} {
+	for _, name := range []string{"size", "toString", "COALESCE", "startNode", "endNode", "relationships", "lower", "UPPER", "toLower", "toUpper"} {
 		if !IsKnownFunction(name) {
 			t.Fatalf("%s is a known function", name)
 		}
 	}
-	if IsKnownFunction("toUpper") || IsKnownScalarFunc("count") {
+	if IsKnownFunction("reverse") || IsKnownScalarFunc("count") {
 		t.Fatal("unknown scalar / aggregate misclassified")
 	}
 }

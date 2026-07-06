@@ -44,6 +44,8 @@ const (
 	FuncToString
 	FuncToBoolean
 	FuncCoalesce
+	FuncLower
+	FuncUpper
 )
 
 // ResolveFuncOp resolves a scalar-function name (case-insensitive); ok is
@@ -98,6 +100,10 @@ func ResolveFuncOp(name string) (FuncOp, bool) {
 		return FuncToBoolean, true
 	case "coalesce":
 		return FuncCoalesce, true
+	case "lower", "tolower":
+		return FuncLower, true
+	case "upper", "toupper":
+		return FuncUpper, true
 	}
 	return 0, false
 }
@@ -338,6 +344,15 @@ func ApplyFunc(op FuncOp, argv []value.Value) value.Value {
 			}
 		}
 		return value.Null()
+	case FuncLower, FuncUpper:
+		s, ok := arg(argv, 0).AsStr()
+		if !ok {
+			return value.Null()
+		}
+		if op == FuncLower {
+			return value.Str(strings.ToLower(s))
+		}
+		return value.Str(strings.ToUpper(s))
 	}
 	return value.Null()
 }
