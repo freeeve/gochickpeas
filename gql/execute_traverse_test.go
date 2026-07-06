@@ -257,6 +257,89 @@ func TestAllShortestDiamond(t *testing.T) {
 	}
 }
 
+// weightedTriangle: s -[w=10]-> t direct, s -[w=1]-> m -[w=1]-> t detour
+// -- the cheapest route has more hops than the shortest one.
+func weightedTriangle(t *testing.T) *chickpeas.Snapshot {
+	t.Helper()
+	b := chickpeas.NewBuilder(4, 4)
+	for _, n := range []string{"s", "m", "t"} {
+		id, _ := b.AddNode("N")
+		_ = b.SetProp(id, "name", n)
+	}
+	for _, e := range []struct {
+		u, v chickpeas.NodeID
+		w    float64
+	}{{0, 2, 10}, {0, 1, 1}, {1, 2, 1}} {
+		if _, err := b.AddRel(e.u, e.v, "R"); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetRelProp(e.u, e.v, "R", "w", e.w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return b.Finalize("name")
+}
+
+func TestAnyShortestCost(t *testing.T) {
+	g := weightedTriangle(t)
+	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
+	lengthOf := func(q string) int64 {
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no path: %s", q)
+		}
+		l, _ := func() (int64, bool) { v, _ := r.Get("l"); return v.AsInt() }()
+		if _, more := rows.Next(); more {
+			t.Fatalf("more than one path row: %s", q)
+		}
+		return l
+	}
+	// A property weight prefers the cheap 2-hop detour over the direct edge.
+	if l := lengthOf(ends + "MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN length(p) AS l"); l != 2 {
+		t.Fatalf("property-cost length = %d, want 2", l)
+	}
+	// A constant weight makes every edge equal: hop-minimal, the direct edge.
+	if l := lengthOf(ends + "MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST 1 RETURN length(p) AS l"); l != 1 {
+		t.Fatalf("constant-cost length = %d, want 1", l)
+	}
+	// A per-edge formula scales uniformly: the detour still wins.
+	if l := lengthOf(ends + "MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w * 2 RETURN length(p) AS l"); l != 2 {
+		t.Fatalf("formula-cost length = %d, want 2", l)
+	}
+	// relationships(p) reflects the exact edges the search optimized.
+	rows := runBoth(t, g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN size(rels(p)) AS n")
+	r, _ := rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
+		t.Fatalf("rels(p) size = %v, want 2", v)
+	}
+}
+
+func TestAnyShortestCostErrors(t *testing.T) {
+	g := weightedTriangle(t)
+	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
+	// ALL SHORTEST does not combine with COST.
+	if _, err := Run(g, ends+"MATCH p = ALL SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("ALL SHORTEST + COST: %v", err)
+	}
+	// A weight formula may reference only the pattern's rel variable.
+	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST a.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("foreign-var COST: %v", err)
+	}
+	// An unknown function inside the weight is a bind error, not null.
+	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST nosuchfn(r) RETURN length(p) AS l"); !errors.Is(err, ErrBind) {
+		t.Fatalf("unknown-fn COST: %v", err)
+	}
+	// A per-edge formula needs a named relationship variable.
+	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+		t.Fatalf("unnamed-rel COST: %v", err)
+	}
+	// COST applies only to a path search, not a plain path bind.
+	if _, err := Run(g, "MATCH p = (a:N)-[r:R]->(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrParse) {
+		t.Fatalf("path-bind COST: %v", err)
+	}
+}
+
 func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
 	g := replyForest(t)
 	// Undirected {1,2} from a: root and c at 1 hop; b (via root) and the

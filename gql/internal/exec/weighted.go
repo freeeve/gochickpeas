@@ -1,5 +1,5 @@
-// The weighted shortest-path form of an SpStage (engine-reachable; no GQL
-// surface yet): a Dijkstra over (cost, hops, node) states keyed on
+// The weighted shortest-path form of an SpStage (the ANY SHORTEST ...
+// COST clause): a Dijkstra over (cost, hops, node) states keyed on
 // (node, hops) -- the hop cap makes cost non-monotonic per node -- with
 // the path reconstructed from parent links so relationships(p) scores the
 // exact path the search optimized.

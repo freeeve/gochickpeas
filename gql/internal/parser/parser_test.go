@@ -224,6 +224,36 @@ func TestPathSearchClauses(t *testing.T) {
 	mustErr(t, "MATCH (a), (b) RETURN cost(shortestPath((a)-[:E]->(b)), 'w')", "not in the GQL subset")
 }
 
+func TestPathSearchCost(t *testing.T) {
+	// A numeric literal lowers to a constant weight (int and float).
+	q := mustParse(t, "MATCH (a), (b) MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST 2 RETURN length(p)")
+	sp := q.Parts[0].Clauses[1].(*ast.ShortestPath)
+	if sp.Weight == nil || sp.Weight.Kind != ast.CostConstant || sp.Weight.Const != 2 {
+		t.Fatalf("weight = %+v", sp.Weight)
+	}
+	q = mustParse(t, "MATCH (a), (b) MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST 2.5 RETURN length(p)")
+	if w := q.Parts[0].Clauses[1].(*ast.ShortestPath).Weight; w.Kind != ast.CostConstant || w.Const != 2.5 {
+		t.Fatalf("weight = %+v", w)
+	}
+	// Anything else stays an expression (the planner narrows rel.prop).
+	q = mustParse(t, "MATCH (a), (b) MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN length(p)")
+	w := q.Parts[0].Clauses[1].(*ast.ShortestPath).Weight
+	if w.Kind != ast.CostExpr {
+		t.Fatalf("weight = %+v", w)
+	}
+	if pr, ok := w.Expr.(*ast.Prop); !ok || pr.Var != "r" || pr.Key != "w" {
+		t.Fatalf("weight expr = %#v", w.Expr)
+	}
+	// COST composes with a trailing WHERE.
+	q = mustParse(t, "MATCH (a), (b) MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w WHERE all(x IN rels(p) WHERE x.w > 0) RETURN length(p)")
+	sp = q.Parts[0].Clauses[1].(*ast.ShortestPath)
+	if sp.Weight == nil || sp.Where == nil {
+		t.Fatalf("weight = %+v, where = %v", sp.Weight, sp.Where)
+	}
+	// COST is a path-search clause, not a path-bind one.
+	mustErr(t, "MATCH p = (a)-[r:R]->(b) COST r.w RETURN p", "COST applies only to a path search")
+}
+
 func TestPathBind(t *testing.T) {
 	q := mustParse(t, "MATCH p = (a)-[:KNOWS]->(b) RETURN p")
 	pb, ok := q.Parts[0].Clauses[0].(*ast.PathBind)

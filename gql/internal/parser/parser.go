@@ -290,7 +290,7 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		case p.peekKw("shortest"):
 			return nil, errf(p.peek().Pos, "bare SHORTEST is not supported: use ANY SHORTEST or ALL SHORTEST")
 		case p.peekKw("shortestpath"), p.peekKw("allshortestpaths"), p.peekKw("weightedshortestpath"):
-			return nil, errf(p.peek().Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern>", p.peek().Text)
+			return nil, errf(p.peek().Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern> [COST <expr>]", p.peek().Text)
 		}
 		if acyclic && search {
 			return nil, errf(p.peek().Pos, "a path mode does not combine with ANY/ALL SHORTEST (the search normalizes the mode away)")
@@ -299,12 +299,23 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		if err != nil {
 			return nil, err
 		}
+		var weight *ast.CostSpec
+		if p.peekKw("cost") {
+			if !search {
+				return nil, errf(p.peek().Pos, "COST applies only to a path search: MATCH p = ANY SHORTEST <pattern> COST <expr>")
+			}
+			p.i++
+			weight, err = p.parseCostSpec()
+			if err != nil {
+				return nil, err
+			}
+		}
 		where, werr := p.parseOptionalWhere()
 		if werr != nil {
 			return nil, werr
 		}
 		if search {
-			return &ast.ShortestPath{PathVar: pathVar, Pattern: *pat, Optional: optional, All: all, Where: where}, nil
+			return &ast.ShortestPath{PathVar: pathVar, Pattern: *pat, Optional: optional, All: all, Weight: weight, Where: where}, nil
 		}
 		return &ast.PathBind{PathVar: pathVar, Pattern: *pat, Optional: optional, Where: where, Acyclic: acyclic}, nil
 	}
@@ -328,6 +339,25 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		return nil, werr
 	}
 	return &ast.Match{Patterns: patterns, Where: where, Optional: optional, Acyclic: acyclic}, nil
+}
+
+// parseCostSpec parses the COST <expr> weight of a weighted path search.
+// A numeric literal is a constant per-edge weight; any other expression is
+// a per-edge formula (the planner narrows `rel.prop` to a property read).
+func (p *parser) parseCostSpec() (*ast.CostSpec, error) {
+	e, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if lit, ok := e.(*ast.Lit); ok {
+		switch lit.Value.Kind {
+		case ast.LitInt:
+			return &ast.CostSpec{Kind: ast.CostConstant, Const: float64(lit.Value.I)}, nil
+		case ast.LitFloat:
+			return &ast.CostSpec{Kind: ast.CostConstant, Const: lit.Value.F}, nil
+		}
+	}
+	return &ast.CostSpec{Kind: ast.CostExpr, Expr: e}, nil
 }
 
 // parsePathMode consumes an optional path-mode prefix. TRAIL is accepted

@@ -1,7 +1,7 @@
-// Weighted shortest-path tests: the weighted form has no GQL surface, so
-// the SpStage is built directly -- the cheapest route must win over the
-// fewest-hop route, per-edge exclusions apply, and each CostSpec kind
-// compiles.
+// Weighted shortest-path kernel tests, building the SpStage directly
+// (the COST clause's e2e coverage lives in the gql package) -- the
+// cheapest route must win over the fewest-hop route, per-edge exclusions
+// apply, and each CostSpec kind compiles.
 package exec
 
 import (

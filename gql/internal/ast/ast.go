@@ -71,9 +71,8 @@ type With struct {
 }
 
 // ShortestPath is a path-search binding: GQL `MATCH p = ANY SHORTEST pat`
-// (All false) / `ALL SHORTEST pat` (All true), optionally weighted (no
-// surface syntax yet; reachable for the engine). Binds PathVar between
-// already-bound endpoints.
+// (All false) / `ALL SHORTEST pat` (All true), optionally weighted via
+// the COST clause. Binds PathVar between already-bound endpoints.
 type ShortestPath struct {
 	PathVar  string
 	Pattern  Pattern

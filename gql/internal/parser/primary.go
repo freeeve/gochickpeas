@@ -86,10 +86,10 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 	case "reduce":
 		return nil, errf(t.Pos, "reduce(...) is not in the GQL subset")
 	case "shortestpath", "allshortestpaths", "weightedshortestpath":
-		return nil, errf(t.Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern>", t.Text)
+		return nil, errf(t.Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern> [COST <expr>]", t.Text)
 	case "cost":
 		if p.peekAt(1).Kind == TokLParen {
-			return nil, errf(t.Pos, "cost(shortestPath(...)) is not in the GQL subset")
+			return nil, errf(t.Pos, "cost(shortestPath(...)) is not in the GQL subset: write MATCH p = ANY SHORTEST <pattern> COST <expr>")
 		}
 	}
 	if reserved[kw] {
@@ -113,13 +113,20 @@ func (p *parser) parseListLit() (ast.Expr, error) {
 		return p.parseListComp()
 	}
 	list := &ast.ListExpr{}
+	// A '(' opening the list is how a pattern comprehension presents when
+	// its pattern cannot parse as an expression (e.g. [(a)-[:R]-(b) | x]),
+	// so an element parse failure there gets the targeted rejection.
+	patternish := p.peek().Kind == TokLParen
 	for p.peek().Kind != TokRBracket {
 		e, err := p.parseExpr()
 		if err != nil {
+			if patternish {
+				return nil, patternCompErr(p.peek().Pos)
+			}
 			return nil, err
 		}
 		if p.peekKw("where") || p.peek().Kind == TokPipe {
-			return nil, errf(p.peek().Pos, "pattern comprehensions are not in the GQL subset")
+			return nil, patternCompErr(p.peek().Pos)
 		}
 		list.Elems = append(list.Elems, e)
 		if !p.acceptTok(TokComma) {
@@ -130,6 +137,12 @@ func (p *parser) parseListLit() (ast.Expr, error) {
 		return nil, err
 	}
 	return list, nil
+}
+
+// patternCompErr is the targeted pattern-comprehension rejection with its
+// GQL-conformant rewrites.
+func patternCompErr(pos int) *Error {
+	return errf(pos, "pattern comprehensions are not in the GQL subset: rewrite size([pat | x]) as COUNT { MATCH pat } and value collection as MATCH pat + collect(...)")
 }
 
 // parseListComp parses the comprehension body after '[': var IN list

@@ -60,6 +60,11 @@ func desugarClause(c ast.Clause, ctr *int) error {
 		if err := lowerPatternProps(&n.Pattern, &n.Where, ctr); err != nil {
 			return err
 		}
+		if n.Weight != nil && n.Weight.Kind == ast.CostExpr {
+			if err := desugarExpr(n.Weight.Expr, ctr); err != nil {
+				return err
+			}
+		}
 		return desugarExpr(n.Where, ctr)
 	case *ast.PathBind:
 		if err := lowerPatternProps(&n.Pattern, &n.Where, ctr); err != nil {

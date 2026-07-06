@@ -2,8 +2,8 @@
 // parent links, a single-source tree memo for sources shared by many rows,
 // and the all-shortest backward enumeration over the distance map. Every
 // form runs on the one spWalk frontier core, so the hop-filter and
-// depth-bound semantics live in a single place. The weighted form has no
-// GQL surface yet and is gated until the CALL-proc milestone.
+// depth-bound semantics live in a single place. The weighted form is the
+// COST clause: MATCH p = ANY SHORTEST <pattern> COST <expr>.
 package exec
 
 import (

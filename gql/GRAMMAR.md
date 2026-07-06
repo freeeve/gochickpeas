@@ -83,7 +83,7 @@ for          = 'FOR' ident 'IN' expr        -- list to rows (Cypher UNWIND [cyph
 match        = ['OPTIONAL'] 'MATCH' body ['WHERE' expr]
 body         = pathsearch | pathbind | [mode] pattern (',' pattern)*
 pathbind     = ident '=' [mode] pattern
-pathsearch   = ident '=' ('ANY' | 'ALL') 'SHORTEST' pattern
+pathsearch   = ident '=' ('ANY' | 'ALL') 'SHORTEST' pattern ['COST' expr]
 mode         = 'TRAIL' | 'ACYCLIC'
 ```
 
@@ -98,8 +98,16 @@ mode         = 'TRAIL' | 'ACYCLIC'
   (ISO's repeats-allowed default) and `SIMPLE` are rejected with targeted
   errors **[restriction]**; a path mode does not combine with ANY/ALL
   SHORTEST (the search normalizes the mode away).
-- `weightedShortestPath` / `cost(shortestPath(...))` have no surface: the
-  weighted kernels will be CALL procedures **[cypher]**.
+- `COST expr` on `ANY SHORTEST` selects the minimum total-cost path
+  instead of the hop-minimal one **[extension]** (ISO GQL has no weighted
+  search; this drives the engine's Dijkstra kernel). A numeric literal is
+  a constant per-edge weight; `r.prop` (the pattern's relationship
+  variable) reads the property per edge; any other expression is a
+  per-edge formula over that variable -- an edge whose weight is
+  non-numeric, negative, or non-finite is excluded from the search.
+  `ALL SHORTEST` does not combine with COST; the Cypher spellings
+  `weightedShortestPath(...)` / `cost(shortestPath(...))` stay rejected
+  with pointers here **[cypher]**.
 
 ## Patterns
 

@@ -6,6 +6,7 @@ package plan
 
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 )
 
 func buildSpStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nextSlot *int) (*SpStage, error) {
@@ -38,14 +39,26 @@ func buildSpStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nex
 	if err != nil {
 		return nil, err
 	}
+	// A bare `rel.prop` weight narrows to the property-reader form -- the
+	// same per-edge value without per-edge expression evaluation. A fresh
+	// CostSpec keeps the AST (shared with the plan cache) unmutated.
+	weight := spec.weight
+	if weight != nil && weight.Kind == ast.CostExpr {
+		if pr, ok := weight.Expr.(*ast.Prop); ok && rel.Var != "" && pr.Var == rel.Var {
+			weight = &ast.CostSpec{Kind: ast.CostProperty, Prop: pr.Key}
+		}
+	}
 	// A per-edge weight expression evaluates in the edge scope: it may
 	// reference only the path's relationship variable (bound per hop).
 	weightVar := ""
-	if spec.weight != nil && spec.weight.Kind == ast.CostExpr {
+	if weight != nil && weight.Kind == ast.CostExpr {
 		if rel.Var == "" {
 			return nil, planErrf("a weighted path-search weight expression requires a named relationship variable")
 		}
-		if err := validateWeightExpr(spec.weight.Expr, []string{rel.Var}); err != nil {
+		if err := validateWeightExpr(weight.Expr, []string{rel.Var}); err != nil {
+			return nil, err
+		}
+		if err := semantics.CheckRefs(weight.Expr, map[string]int{rel.Var: 0}); err != nil {
 			return nil, err
 		}
 		weightVar = rel.Var
@@ -63,7 +76,7 @@ func buildSpStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nex
 		Max:       maxHops,
 		Optional:  spec.optional,
 		All:       spec.all,
-		Weight:    spec.weight,
+		Weight:    weight,
 		WeightVar: weightVar,
 		RelPred:   relPred,
 	}, nil
