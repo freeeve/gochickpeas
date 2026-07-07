@@ -92,6 +92,9 @@ type BindOp struct {
 	// Acyclic forbids repeated nodes within the expansion (the ACYCLIC
 	// path mode); the default trail semantics forbids repeated rels only.
 	Acyclic bool
+	// Uniq is the op's MATCH-scope relationship-uniqueness participation
+	// (nil = untracked); OpExpand and OpVarExpand only.
+	Uniq *RelUniq
 }
 
 // RelHopPred is a per-hop relationship predicate lifted from
@@ -150,6 +153,27 @@ type MatchStage struct {
 	// PathBind is set for MATCH p = (a)-[...]->(b): assemble the named
 	// path after the pattern binds.
 	PathBind *PathBindSpec
+	// Scope identifies the source MATCH clause: the relationship-
+	// uniqueness scope spanning its comma patterns and any planner splits
+	// (ISO GQL's DIFFERENT EDGES default / openCypher rel isomorphism).
+	Scope uint32
+}
+
+// RelUniq is a rel-binding op's MATCH-scope relationship-uniqueness
+// participation, set by markRelUniqueness only when the op's types can
+// intersect another rel-binding op's in the same MATCH clause (Scope) --
+// everything else stays untracked and zero-cost. Check means an
+// intersecting op binds EARLIER in execution order, so this op's
+// candidate rel must not reuse a pair already on the scope's used stack;
+// Contribute means an intersecting op binds LATER, so this op pushes its
+// bound rel pair(s) for those to check against. The used-rel identity is
+// the canonical endpoint pair (see exec's uniqPair) -- collapsing
+// parallel rels between one node pair, the documented multigraph
+// deviation, matching the trail walk's key.
+type RelUniq struct {
+	Scope      uint32
+	Check      bool
+	Contribute bool
 }
 
 // PathBindSpec says how to assemble a named path: the start node lives in

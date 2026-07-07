@@ -61,12 +61,50 @@ func nodeAnchorCostNamed(n *ast.NodePat, where ast.Expr, bound map[string]bool, 
 	return uint64(g.NodeCount())
 }
 
-// patternStartCostNamed is the cost of starting a pattern given the bound
-// names: the most selective of its two endpoints.
-func patternStartCostNamed(p *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph) uint64 {
-	s := nodeAnchorCostNamed(&p.Start, where, bound, g)
-	e := nodeAnchorCostNamed(p.EndNode(), where, bound, g)
-	return min(s, e)
+// patternAnchorCostNamed is the cost of the pattern's best anchor given
+// the bound names: the most selective of ALL its nodes. Interior nodes
+// count because a bound/selective interior re-roots the pattern (the
+// bound-aware split pass after reordering), so it is a real start.
+// Returns the cost and the winning node position (0 = start).
+func patternAnchorCostNamed(p *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph) (uint64, int) {
+	best := nodeAnchorCostNamed(&p.Start, where, bound, g)
+	pos := 0
+	for i := range p.Hops {
+		if c := nodeAnchorCostNamed(&p.Hops[i].Node, where, bound, g); c < best {
+			best, pos = c, i+1
+		}
+	}
+	return best, pos
+}
+
+// patternFanoutFrom estimates the expansion fan-out of matching p rooted
+// at node position k: the product of each hop's average degree walking
+// left of k (flipped) and right of k (forward) -- the anchored analogue
+// of pathCost, used to break anchor-cost ties (two patterns may both
+// start at a bound node yet differ by orders of magnitude in the rows
+// they produce). Unknown/any-type hops count as a neutral 1.
+func patternFanoutFrom(p *ast.Pattern, k int, g graph.Graph) float64 {
+	hopDeg := func(rel *ast.RelPat, dir graph.Direction) float64 {
+		if len(rel.Types) == 0 {
+			return 1.0
+		}
+		deg := 0.0
+		for _, t := range rel.Types {
+			deg += g.AvgDegree(t, dir)
+		}
+		if deg <= 0 {
+			return 1.0
+		}
+		return deg
+	}
+	cost := 1.0
+	for j := k - 1; j >= 0; j-- {
+		cost *= hopDeg(&p.Hops[j].Rel, revDir(mapDir(p.Hops[j].Rel.Dir)))
+	}
+	for j := k; j < len(p.Hops); j++ {
+		cost *= hopDeg(&p.Hops[j].Rel, mapDir(p.Hops[j].Rel.Dir))
+	}
+	return cost
 }
 
 // whereSatisfiable reports whether a WHERE is applicable once this pattern
@@ -165,6 +203,7 @@ func reorderJoins(specs []stageSpec, inCols []string, g graph.Graph) []stageSpec
 			type key struct {
 				disconnected uint8
 				cost         uint64
+				fanout       float64
 				idx          int
 			}
 			best := -1
@@ -181,11 +220,12 @@ func reorderJoins(specs []stageSpec, inCols []string, g graph.Graph) []stageSpec
 						break
 					}
 				}
-				k := key{cost: patternStartCostNamed(sp.pattern, sp.where, bound, g), idx: idx}
+				cost, pos := patternAnchorCostNamed(sp.pattern, sp.where, bound, g)
+				k := key{cost: cost, fanout: patternFanoutFrom(sp.pattern, pos, g), idx: idx}
 				if !connected {
 					k.disconnected = 1
 				}
-				if best < 0 || less3(k.disconnected, k.cost, k.idx, bestKey.disconnected, bestKey.cost, bestKey.idx) {
+				if best < 0 || less4(k.disconnected, k.cost, k.fanout, k.idx, bestKey.disconnected, bestKey.cost, bestKey.fanout, bestKey.idx) {
 					best = idx
 					bestKey = k
 				}
@@ -206,13 +246,19 @@ func reorderJoins(specs []stageSpec, inCols []string, g graph.Graph) []stageSpec
 	return out
 }
 
-// less3 compares (disconnected, cost, idx) triples lexicographically.
-func less3(d1 uint8, c1 uint64, i1 int, d2 uint8, c2 uint64, i2 int) bool {
+// less4 compares (disconnected, cost, fanout, idx) lexicographically:
+// startable-and-connected first, then the most selective anchor, then the
+// smallest expansion fan-out, with the written order as the final
+// deterministic tie-break.
+func less4(d1 uint8, c1 uint64, f1 float64, i1 int, d2 uint8, c2 uint64, f2 float64, i2 int) bool {
 	if d1 != d2 {
 		return d1 < d2
 	}
 	if c1 != c2 {
 		return c1 < c2
+	}
+	if f1 != f2 {
+		return f1 < f2
 	}
 	return i1 < i2
 }
@@ -223,7 +269,7 @@ func less3(d1 uint8, c1 uint64, i1 int, d2 uint8, c2 uint64, i2 int) bool {
 // The shared anchor is scanned in the first arm and bound-referenced in
 // the second; the WHERE rides the second arm so it applies once everything
 // binds. Result-identical: identical nodes/rels, re-rooted.
-func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph) (*stageSpec, *stageSpec, bool) {
+func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph, prefix string, scope uint32) (*stageSpec, *stageSpec, bool) {
 	n := len(pattern.Hops)
 	nodeAt := func(i int) *ast.NodePat {
 		if i == 0 {
@@ -249,10 +295,11 @@ func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[st
 	}
 	// The anchor must carry a variable so the second arm can reference it;
 	// synthesize one for an anonymous interior node (safe: the caller
-	// skips this pass under star projections).
+	// skips this pass under star projections). The prefix keeps the two
+	// split passes' synthetic names from colliding.
 	anchor := *nodeAt(k)
 	if anchor.Var == "" {
-		anchor.Var = fmt.Sprintf("__ia_%d_%d", si, k)
+		anchor.Var = fmt.Sprintf("%s_%d_%d", prefix, si, k)
 	}
 	left := ast.Pattern{Start: anchor}
 	for j := k - 1; j >= 0; j-- {
@@ -262,8 +309,8 @@ func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[st
 	}
 	right := ast.Pattern{Start: anchor}
 	right.Hops = append(right.Hops, pattern.Hops[k:]...)
-	return &stageSpec{kind: specMatch, pattern: &left},
-		&stageSpec{kind: specMatch, pattern: &right, where: where},
+	return &stageSpec{kind: specMatch, pattern: &left, scope: scope},
+		&stageSpec{kind: specMatch, pattern: &right, where: where, scope: scope},
 		true
 }
 
@@ -271,6 +318,23 @@ func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[st
 // spec (non-OPTIONAL, non-path, all-simple-hop, >=2 hops), threading the
 // bound-name set. Composes with reorderJoins (split first, then reorder).
 func splitInteriorAnchors(specs []stageSpec, inCols []string, g graph.Graph) []stageSpec {
+	return splitAnchors(specs, inCols, g, false, "__ia")
+}
+
+// splitBoundAnchors is the bound-aware split pass AFTER join reordering:
+// by then earlier patterns have bound variables that can make a pattern's
+// INTERIOR its most selective node, which endpoint-only anchoring cannot
+// exploit -- the stage would expand from a huge endpoint and semijoin
+// back instead of growing outward from the bound interior. Var-length
+// hops are allowed (flipping a quantified hop's direction preserves its
+// reachable pairs); ACYCLIC patterns are excluded (the per-segment
+// node-uniqueness scope must not be re-rooted).
+func splitBoundAnchors(specs []stageSpec, inCols []string, g graph.Graph) []stageSpec {
+	return splitAnchors(specs, inCols, g, true, "__ba")
+}
+
+// splitAnchors is the shared body of the two split passes.
+func splitAnchors(specs []stageSpec, inCols []string, g graph.Graph, allowVarLen bool, prefix string) []stageSpec {
 	bound := make(map[string]bool, len(inCols)+8)
 	for _, c := range inCols {
 		bound[c] = true
@@ -279,7 +343,7 @@ func splitInteriorAnchors(specs []stageSpec, inCols []string, g graph.Graph) []s
 	for si := range specs {
 		spec := &specs[si]
 		eligible := spec.kind == specMatch && !spec.optional && spec.pathVar == "" && len(spec.pattern.Hops) >= 2
-		if eligible {
+		if eligible && !allowVarLen {
 			for i := range spec.pattern.Hops {
 				if spec.pattern.Hops[i].Rel.Length != nil {
 					eligible = false
@@ -287,8 +351,11 @@ func splitInteriorAnchors(specs []stageSpec, inCols []string, g graph.Graph) []s
 				}
 			}
 		}
+		if eligible && allowVarLen && spec.acyclic {
+			eligible = false
+		}
 		if eligible {
-			if a, b, ok := trySplitInterior(si, spec.pattern, spec.where, bound, g); ok {
+			if a, b, ok := trySplitInterior(si, spec.pattern, spec.where, bound, g, prefix, spec.scope); ok {
 				specBinds(a, bound)
 				specBinds(b, bound)
 				out = append(out, *a, *b)

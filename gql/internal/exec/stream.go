@@ -72,6 +72,10 @@ type matchSink struct {
 	opRows      []uint64
 	fired       bool
 	pathFilters []RowEval
+	// uniq is the segment chain's shared used-relationship env: chained
+	// MATCH stages from one clause (comma patterns, planner splits) see
+	// one stack per in-flight row.
+	uniq *uniqEnv
 	// emitFn is the emit method bound once, so genMatches gets the same
 	// closure every push instead of a fresh method value.
 	emitFn func([]value.Value)
@@ -82,7 +86,7 @@ func (m *matchSink) push(row []value.Value) {
 	if m.stage.Optional {
 		copy(m.orig, row)
 		m.fired = false
-		genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.emitFn, &m.scratch, m.opRows)
+		genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
 		if !m.fired {
 			// The re-emitted row takes the path assembly and post-path
 			// WHERE too, exactly like the former batch bindPaths pass.
@@ -90,7 +94,7 @@ func (m *matchSink) push(row []value.Value) {
 		}
 		return
 	}
-	genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.emitFn, &m.scratch, m.opRows)
+	genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
 }
 
 // emit forwards one bound match. The OPTIONAL no-match probe counts every

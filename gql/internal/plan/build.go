@@ -10,14 +10,17 @@ import (
 )
 
 func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr, inCols []string, g graph.Graph) (*Segment, error) {
-	// Cost pre-passes, before slot assignment, both result-identical:
-	// split a linear pattern at its selective INTERIOR node, then reorder
-	// the join to start from the most selective pattern. Skipped under
-	// RETURN */WITH * (and thus under FILTER/LET boundaries), whose column
-	// order follows slot order -- reordering would change it visibly.
+	// Cost pre-passes, before slot assignment, all result-identical:
+	// split a linear pattern at its selective INTERIOR node, reorder the
+	// join to start from the most selective pattern, then split again
+	// bound-aware -- reordering binds variables that can turn a pattern's
+	// interior into its cheapest anchor. Skipped under RETURN */WITH *
+	// (and thus under FILTER/LET boundaries), whose column order follows
+	// slot order -- reordering would change it visibly.
 	if !projAST.Star {
 		specs = splitInteriorAnchors(specs, inCols, g)
 		specs = reorderJoins(specs, inCols, g)
+		specs = splitBoundAnchors(specs, inCols, g)
 	}
 
 	inWidth := len(inCols)
@@ -121,6 +124,9 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 	if proj.Distinct && !proj.Aggregated {
 		flagDedupEndpoints(stages, &proj, slots)
 	}
+	// After flagDedupEndpoints: a contributing var-expand must keep its
+	// trails distinct, so the marking pass clears that flag where set.
+	markRelUniqueness(stages)
 
 	if postWhere != nil {
 		if semantics.ExprHasAgg(postWhere) {
@@ -332,7 +338,7 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 	if stageWhere != nil {
 		*matchWheres = append(*matchWheres, stageWhere)
 	}
-	return &MatchStage{Ops: ops, Where: stageWhere, Optional: spec.optional, PathBind: pathBind}, nil
+	return &MatchStage{Ops: ops, Where: stageWhere, Optional: spec.optional, PathBind: pathBind, Scope: spec.scope}, nil
 }
 
 // startScanSource picks the anchor's scan source: an id seek from a WHERE

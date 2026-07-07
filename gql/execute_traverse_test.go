@@ -349,6 +349,63 @@ func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
 		"b", "c", "root")
 }
 
+// memberGraph is one forum with two member edges (f->p0, f->p1) plus a
+// second rel type for the untracked-control case.
+func memberGraph(t *testing.T) *chickpeas.Snapshot {
+	t.Helper()
+	b := chickpeas.NewBuilder(4, 4)
+	f, _ := b.AddNode("Forum")
+	for i := 0; i < 2; i++ {
+		p, _ := b.AddNode("Person")
+		if _, err := b.AddRel(f, p, "M"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.AddRel(f, 1, "OTHER"); err != nil {
+		t.Fatal(err)
+	}
+	return b.Finalize()
+}
+
+func TestMatchScopeRelUniqueness(t *testing.T) {
+	g := memberGraph(t)
+	// Comma patterns in ONE MATCH bind pairwise-distinct relationships
+	// (ISO GQL DIFFERENT EDGES): with two M edges only the 2 permutations
+	// survive -- p2 == p3 would reuse one edge.
+	rows := runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
+	r, _ := rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
+		t.Fatalf("same-clause count = %v, want 2", v)
+	}
+	// Separate MATCH clauses are separate scopes: reuse is allowed, all
+	// 4 combinations match.
+	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2) MATCH (f)-[:M]->(p3) RETURN count(*) AS n")
+	r, _ = rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(4)) {
+		t.Fatalf("cross-clause count = %v, want 4", v)
+	}
+	// Disjoint rel types never conflict (untracked, zero-cost).
+	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:OTHER]->(p3) RETURN count(*) AS n")
+	r, _ = rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
+		t.Fatalf("disjoint-type count = %v, want 2", v)
+	}
+	// A var-length pattern shares the scope with a fixed hop of the same
+	// type: the fixed hop cannot reuse an edge the trail bound.
+	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->{1,1}(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
+	r, _ = rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
+		t.Fatalf("varlen+fixed count = %v, want 2", v)
+	}
+	// Within one pattern too: an undirected 2-hop cannot walk the same
+	// edge there and back.
+	rows = runBoth(t, g, "MATCH (p:Person)-[:M]-(f)-[:M]-(q:Person) RETURN count(*) AS n")
+	r, _ = rows.Next()
+	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
+		t.Fatalf("within-pattern count = %v, want 2 (p0-f-p1 both ways)", v)
+	}
+}
+
 // pingPong is two nodes with one R edge each way -- a 2-hop trail
 // a->b->a exists (two distinct rels) but revisits a, so ACYCLIC prunes
 // it while TRAIL keeps it.

@@ -56,12 +56,17 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 	}
 	var sink rowSink = term
 	profCells := make([]stageProfCell, len(seg.Stages))
+	// One used-relationship env per chain: a MATCH clause's uniqueness
+	// scope spans its chained stages (comma patterns, planner splits), so
+	// every matchSink of this segment shares the stack; the DFS push/pop
+	// discipline empties it between rows.
+	uniq := &uniqEnv{}
 	for i := len(seg.Stages) - 1; i >= 0; i-- {
 		var cell *stageProfCell
 		if prof != nil {
 			cell = &profCells[i]
 		}
-		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, sample, cell)
+		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, sample, cell, uniq)
 	}
 
 	buf := make([]value.Value, seg.RowWidth)
@@ -93,7 +98,7 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 
 // buildStageSink wires one stage into the chain as a row sink feeding
 // next, registering its PROFILE counter when cell is non-nil.
-func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSink, constIn func(int) bool, sample []value.Value, cell *stageProfCell) rowSink {
+func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSink, constIn func(int) bool, sample []value.Value, cell *stageProfCell, uniq *uniqEnv) rowSink {
 	single := func() *uint64 {
 		if cell == nil {
 			return nil
@@ -105,7 +110,7 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 	case *plan.MatchStage:
 		ms := &matchSink{
 			ctx: ctx, stage: s, comp: compileStage(ctx, s, seg.Slots, constIn, sample),
-			slots: seg.Slots, buf: make([]value.Value, seg.RowWidth), next: next,
+			slots: seg.Slots, buf: make([]value.Value, seg.RowWidth), next: next, uniq: uniq,
 		}
 		ms.emitFn = ms.emit
 		if s.Optional {

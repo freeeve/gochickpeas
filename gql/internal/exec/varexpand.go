@@ -117,7 +117,7 @@ func buildHopGates(ctx *eval.Ctx, ops []plan.BindOp) []hopGate {
 // per-candidate (start, len) ranges. The walk state and dedup set live on
 // the stage's genScratch, reused across the row loop (the walk runs to
 // completion per call and is never nested, same as reachScratch).
-func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, row []value.Value, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, scratch *genScratch) {
+func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, row []value.Value, uniq *uniqEnv, cand *[]graph.NodeID, relData *[]uint32, relRanges *[][2]int, pairData *[][2]graph.NodeID, pairRanges *[][2]int, scratch *genScratch) {
 	start, ok := row[op.From].AsNode()
 	if !ok {
 		return
@@ -130,12 +130,26 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 			return
 		}
 	}
+	// A tracked op with LATER intersecting ops must expose each
+	// candidate's trail pairs so they can be pushed for those ops to check
+	// -- which forces the reach-shaped walk below into per-trail
+	// enumeration.
+	collectPairs := op.Uniq != nil && op.Uniq.Contribute
 	// Zero-length / unbounded quantifiers resolve the distinct reachable
 	// set via dedup'd BFS, so an unbounded or cyclic walk can't explode
-	// into per-path enumeration.
-	if op.Min == 0 || op.Max == nil {
-		varReach(ctx, start, op, m, rm, gate, bound, haveBound, cand, &scratch.reach)
+	// into per-path enumeration. Excluding the scope's used pairs during
+	// the BFS keeps the endpoint SET exact: any walk in the pair-filtered
+	// graph reduces to a trail avoiding those rels and vice versa.
+	if (op.Min == 0 || op.Max == nil) && !collectPairs {
+		varReach(ctx, start, op, m, rm, gate, bound, haveBound, uniq, cand, &scratch.reach)
 		return
+	}
+	// Contributing reach-shaped walks enumerate trails instead (finite:
+	// a trail never repeats an edge pair). Min 0 also emits the
+	// zero-length walk -- the start node itself, using no relationships.
+	maxHops := unboundedHops
+	if op.Max != nil {
+		maxHops = *op.Max
 	}
 	// Reset the persistent walk in place: the buffer fields keep their
 	// backing arrays across rows.
@@ -143,14 +157,26 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	*w = varWalk{
 		ctx: ctx, op: op, m: m, rm: rm, gate: gate,
 		bound: bound, haveBound: haveBound,
-		collectRels: op.RelSlot != plan.NoSlot,
-		max:         *op.Max,
-		cand:        cand, relData: relData, relRanges: relRanges,
-		pathRels: w.pathRels[:0], used: w.used[:0], visited: w.visited[:0],
+		collectRels:  op.RelSlot != plan.NoSlot,
+		collectPairs: collectPairs,
+		uniq:         uniq,
+		max:          maxHops,
+		cand:         cand, relData: relData, relRanges: relRanges,
+		pairData: pairData, pairRanges: pairRanges,
+		pathRels: w.pathRels[:0], pathPairs: w.pathPairs[:0], used: w.used[:0], visited: w.visited[:0],
 		scratch: w.scratch, nbufN: w.nbufN[:0], nbufP: w.nbufP[:0],
 	}
 	if op.Acyclic {
 		w.visited = append(w.visited, start)
+	}
+	if op.Min == 0 && (!haveBound || bound == start) && ctx.G.NodeMatcherAccepts(m, start) {
+		*cand = append(*cand, start)
+		if w.collectRels {
+			*relRanges = append(*relRanges, [2]int{len(*relData), 0})
+		}
+		if collectPairs {
+			*pairRanges = append(*pairRanges, [2]int{len(*pairData), 0})
+		}
 	}
 	w.dfs(start, 0, carryState{})
 	// Without a named rel variable the trail's positions are not bound;
@@ -183,13 +209,22 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 // separately so a node re-reached via a cycle at depth >= min -- e.g. the
 // start when min >= 1 -- still emits once. The gate's stateless predicate
 // prunes edges here too; its carry never applies (see hopCarry).
-func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, bound graph.NodeID, haveBound bool, out *[]graph.NodeID, rs *reachScratch) {
+func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, bound graph.NodeID, haveBound bool, uniq *uniqEnv, out *[]graph.NodeID, rs *reachScratch) {
 	cap := uint64(1<<63 - 1)
 	if op.Max != nil {
 		cap = *op.Max
 	}
 	keep := func(nb graph.NodeID) bool {
 		return (!haveBound || bound == nb) && ctx.G.NodeMatcherAccepts(m, nb)
+	}
+	// A checking op excludes edges whose canonical pair the scope already
+	// used (see varExpandCandidates).
+	edgeOK := func(u, nb graph.NodeID) bool {
+		if op.Uniq == nil || !op.Uniq.Check {
+			return true
+		}
+		a, b := uniqPair(op.Dir, u, nb)
+		return !uniq.used(op.Uniq.Scope, a, b)
 	}
 	// Reuse the stage's working sets: clear the dedup maps and reset the
 	// frontier/neighbor buffers rather than allocating them per row.
@@ -217,13 +252,22 @@ func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeM
 				rs.nbuf, rs.pbuf = ctx.G.AppendRelationshipsMatched(rs.nbuf[:0], rs.pbuf[:0], u, op.Dir, rm)
 				kept := rs.nbuf[:0]
 				for i, nb := range rs.nbuf {
-					if gate.pred.keep(ctx, rs.pbuf[i]) {
+					if gate.pred.keep(ctx, rs.pbuf[i]) && edgeOK(u, nb) {
 						kept = append(kept, nb)
 					}
 				}
 				rs.nbuf = kept
 			} else {
 				rs.nbuf = ctx.G.AppendNeighborsMatched(rs.nbuf[:0], u, op.Dir, rm)
+				if op.Uniq != nil && op.Uniq.Check {
+					kept := rs.nbuf[:0]
+					for _, nb := range rs.nbuf {
+						if edgeOK(u, nb) {
+							kept = append(kept, nb)
+						}
+					}
+					rs.nbuf = kept
+				}
 			}
 			for _, nb := range rs.nbuf {
 				if d >= op.Min && keep(nb) {
@@ -245,6 +289,10 @@ func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeM
 	rs.frontier, rs.next = frontier, next
 }
 
+// unboundedHops is the trail walk's cap for an unbounded quantifier under
+// pair collection (the walk stays finite: a trail never repeats a pair).
+const unboundedHops = ^uint64(0)
+
 // varWalk is the bounded trail enumeration's state: emitted endpoints (one
 // per qualifying trail), the named-rel arena, the relationship-uniqueness
 // edge stack, and per-depth candidate buffers reused across siblings.
@@ -258,17 +306,25 @@ type varWalk struct {
 	haveBound   bool
 	collectRels bool
 	max         uint64
+	// MATCH-scope uniqueness: a checking op skips edges whose canonical
+	// pair is on the scope's used stack; a contributing op collects each
+	// trail's pairs (collectPairs) for the DFS to push while bound.
+	uniq         *uniqEnv
+	collectPairs bool
 
-	pathRels []uint32
-	used     [][2]graph.NodeID
+	pathRels  []uint32
+	pathPairs [][2]graph.NodeID
+	used      [][2]graph.NodeID
 	// visited is the ACYCLIC mode's node stack (seeded with the start
 	// node); empty means trail semantics (rel uniqueness only).
 	visited []graph.NodeID
 	scratch [][]nodePos
 
-	cand      *[]graph.NodeID
-	relData   *[]uint32
-	relRanges *[][2]int
+	cand       *[]graph.NodeID
+	relData    *[]uint32
+	relRanges  *[][2]int
+	pairData   *[][2]graph.NodeID
+	pairRanges *[][2]int
 
 	// nbufN/nbufP are the per-hop batch buffers (parallel neighbor/pos),
 	// reused across dfs levels: each level copies them into its own
@@ -323,6 +379,15 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, st carryState) {
 		if containsEdge(w.used, edge) {
 			continue
 		}
+		// MATCH-scope uniqueness: a checking op also skips edges whose
+		// canonical pair an earlier op in the clause already bound.
+		var pair [2]graph.NodeID
+		if w.uniq != nil && w.op.Uniq != nil {
+			pair[0], pair[1] = uniqPair(w.op.Dir, cur, nb)
+			if w.op.Uniq.Check && w.uniq.used(w.op.Uniq.Scope, pair[0], pair[1]) {
+				continue
+			}
+		}
 		// ACYCLIC additionally rejects a hop that revisits any node on
 		// this path (the start included).
 		if w.op.Acyclic && containsNode(w.visited, nb) {
@@ -345,6 +410,9 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, st carryState) {
 		if w.collectRels {
 			w.pathRels = append(w.pathRels, pos)
 		}
+		if w.collectPairs {
+			w.pathPairs = append(w.pathPairs, pair)
+		}
 		nd := depth + 1
 		if nd >= w.op.Min && (!w.haveBound || w.bound == nb) && w.ctx.G.NodeMatcherAccepts(w.m, nb) {
 			*w.cand = append(*w.cand, nb)
@@ -352,10 +420,17 @@ func (w *varWalk) dfs(cur graph.NodeID, depth uint64, st carryState) {
 				*w.relRanges = append(*w.relRanges, [2]int{len(*w.relData), len(w.pathRels)})
 				*w.relData = append(*w.relData, w.pathRels...)
 			}
+			if w.collectPairs {
+				*w.pairRanges = append(*w.pairRanges, [2]int{len(*w.pairData), len(w.pathPairs)})
+				*w.pairData = append(*w.pairData, w.pathPairs...)
+			}
 		}
 		w.dfs(nb, nd, next)
 		if w.collectRels {
 			w.pathRels = w.pathRels[:len(w.pathRels)-1]
+		}
+		if w.collectPairs {
+			w.pathPairs = w.pathPairs[:len(w.pathPairs)-1]
 		}
 		if w.op.Acyclic {
 			w.visited = w.visited[:len(w.visited)-1]

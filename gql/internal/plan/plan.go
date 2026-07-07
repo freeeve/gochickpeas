@@ -52,22 +52,28 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 	var segments []*Segment
 	var cur []stageSpec
 	inCols := initInCols
+	// Each MATCH clause is one relationship-uniqueness scope: its comma
+	// patterns (and any planner splits of them) must bind pairwise
+	// distinct relationships (ISO GQL's DIFFERENT EDGES default).
+	scope := uint32(0)
 
 	for _, clause := range fuseProjectionBeforeAggregate(part.Clauses) {
 		switch c := clause.(type) {
 		case *ast.Match:
 			// Comma-separated patterns bind sequentially; the clause WHERE
 			// applies once, after all of them (attached to the last).
+			scope++
 			last := len(c.Patterns) - 1
 			for i := range c.Patterns {
 				var w ast.Expr
 				if i == last {
 					w = c.Where
 				}
-				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional, acyclic: c.Acyclic})
+				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional, acyclic: c.Acyclic, scope: scope})
 			}
 		case *ast.PathBind:
-			cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar, acyclic: c.Acyclic})
+			scope++
+			cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar, acyclic: c.Acyclic, scope: scope})
 		case *ast.ShortestPath:
 			cur = append(cur, stageSpec{kind: specShortest, pattern: &c.Pattern, where: c.Where, optional: c.Optional, pathVar: c.PathVar, all: c.All, weight: c.Weight})
 		case *ast.CallProc:

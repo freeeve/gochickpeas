@@ -20,11 +20,20 @@ type genScratch struct {
 	candRel   [][]uint32
 	candData  [][]uint32
 	candRange [][][2]int
-	pos       []int
-	reach     reachScratch
-	walk      varWalk
-	dedup     map[graph.NodeID]struct{}
-	semiBuf   []graph.NodeID
+	// candPairData/candPairRange carry a CONTRIBUTING var-expand's
+	// per-trail uniqueness pairs (flat arena + (start, len) per
+	// candidate), pushed onto the row's used stack while the candidate is
+	// bound.
+	candPairData  [][][2]graph.NodeID
+	candPairRange [][][2]int
+	// uniqPushed counts each level's live pair pushes, retired on the
+	// level's next bind, exhaustion, or row end.
+	uniqPushed []int
+	pos        []int
+	reach      reachScratch
+	walk       varWalk
+	dedup      map[graph.NodeID]struct{}
+	semiBuf    []graph.NodeID
 }
 
 // reachScratch holds varReach's dedup'd-BFS working sets, reused across a
@@ -45,7 +54,7 @@ type reachScratch struct {
 // completed match row to the sink by reference (the sink copies). opRows
 // is PROFILE's counter slice (one slot per op for bindings produced, plus
 // a final slot for rows passing the stage WHERE); nil when not profiling.
-func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, sink func([]value.Value), scratch *genScratch, opRows []uint64) {
+func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, uniq *uniqEnv, sink func([]value.Value), scratch *genScratch, opRows []uint64) {
 	// New match-call epoch: a loop-invariant carried IN list hashes once
 	// for this call and reuses it across the call's candidates.
 	ctx.MatchEpoch++
@@ -62,11 +71,21 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 		scratch.candRel = append(scratch.candRel, nil)
 		scratch.candData = append(scratch.candData, nil)
 		scratch.candRange = append(scratch.candRange, nil)
+		scratch.candPairData = append(scratch.candPairData, nil)
+		scratch.candPairRange = append(scratch.candPairRange, nil)
 	}
 	scratch.pos = append(scratch.pos[:0], make([]int, n)...)
+	scratch.uniqPushed = append(scratch.uniqPushed[:0], make([]int, n)...)
+	// retire pops a level's live pair pushes off the used stack.
+	retire := func(cur int) {
+		if scratch.uniqPushed[cur] > 0 {
+			uniq.stack = uniq.stack[:len(uniq.stack)-scratch.uniqPushed[cur]]
+			scratch.uniqPushed[cur] = 0
+		}
+	}
 	row := base
 
-	levelCandidates(ctx, &ops[0], sc, 0, row, scratch)
+	levelCandidates(ctx, &ops[0], sc, 0, row, uniq, scratch)
 	cur := 0
 	for {
 		switch {
@@ -74,6 +93,36 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			p := scratch.pos[cur]
 			node := scratch.cand[cur][p]
 			scratch.pos[cur]++
+			// MATCH-scope rel uniqueness: retire the PREVIOUS candidate's
+			// pair pushes at this level, then check/push this candidate's.
+			// An Expand keys the single hop (from, node); a tracked
+			// var-length op's per-trail pairs were collected at gather time
+			// (with the scope's used pairs already excluded during the
+			// walk, so only the push remains).
+			retire(cur)
+			if ru := ops[cur].Uniq; ru != nil {
+				switch ops[cur].Kind {
+				case plan.OpExpand:
+					if f, ok := row[ops[cur].From].AsNode(); ok {
+						a, b := uniqPair(ops[cur].Dir, f, node)
+						if ru.Check && uniq.used(ru.Scope, a, b) {
+							continue
+						}
+						if ru.Contribute {
+							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: a, b: b})
+							scratch.uniqPushed[cur] = 1
+						}
+					}
+				case plan.OpVarExpand:
+					if ru.Contribute {
+						rng := scratch.candPairRange[cur][p]
+						for _, pr := range scratch.candPairData[cur][rng[0] : rng[0]+rng[1]] {
+							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: pr[0], b: pr[1]})
+						}
+						scratch.uniqPushed[cur] = rng[1]
+					}
+				}
+			}
 			row[slotOf(&ops[cur])] = value.Node(node)
 			// A named fixed-hop relationship binds its position; a named
 			// variable-length relationship binds the trail's rel list.
@@ -112,12 +161,16 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 				}
 			} else {
 				cur++
-				levelCandidates(ctx, &ops[cur], sc, cur, row, scratch)
+				levelCandidates(ctx, &ops[cur], sc, cur, row, uniq, scratch)
 				scratch.pos[cur] = 0
 			}
 		case cur == 0:
+			// Retire the last candidate's pair pushes so the env is empty
+			// for the next row.
+			retire(0)
 			return
 		default:
+			retire(cur)
 			cur--
 		}
 	}
@@ -142,13 +195,15 @@ func relSlotOf(op *plan.BindOp) int {
 
 // levelCandidates fills the pooled candidate buffers for binding an op's
 // node slot (and, for named relationships, its rel position buffers).
-func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row []value.Value, scratch *genScratch) {
+func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row []value.Value, uniq *uniqEnv, scratch *genScratch) {
 	m := sc.matchers[i]
 	cand := &scratch.cand[i]
 	*cand = (*cand)[:0]
 	scratch.candRel[i] = scratch.candRel[i][:0]
 	scratch.candData[i] = scratch.candData[i][:0]
 	scratch.candRange[i] = scratch.candRange[i][:0]
+	scratch.candPairData[i] = scratch.candPairData[i][:0]
+	scratch.candPairRange[i] = scratch.candPairRange[i][:0]
 	switch op.Kind {
 	case plan.OpExpand:
 		if sc.semijoins[i] != nil {
@@ -158,7 +213,7 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 		expandCandidates(ctx, op, m, sc.relMatchers[i], row, cand, &scratch.candRel[i])
 		return
 	case plan.OpVarExpand:
-		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopGates[i], row, cand, &scratch.candData[i], &scratch.candRange[i], scratch)
+		varExpandCandidates(ctx, op, m, sc.relMatchers[i], sc.hopGates[i], row, uniq, cand, &scratch.candData[i], &scratch.candRange[i], &scratch.candPairData[i], &scratch.candPairRange[i], scratch)
 		return
 	}
 	switch op.Source.Kind {
