@@ -33,6 +33,7 @@ The test: if a change would help an unseen query with the same shape, it is
 general. If it only helps because the engine "knows" this is query X, it is
 overfitting -- do not land it.
 
-Every optimization round ends with the parity gate green (currently 76/76
-gql MATCH, 89/89 native) -- the gate is what proves a fast path never
-diverges from the general path.
+Every optimization round ends with the parity gate green (currently 78/78
+gql MATCH, 89/89 native; the manifest grows as the ldbc session authors
+queries) -- the gate is what proves a fast path never diverges from the
+general path.
