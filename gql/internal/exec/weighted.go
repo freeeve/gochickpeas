@@ -139,34 +139,45 @@ type wpParent struct {
 }
 
 // weightedShortestPath is the min-cost path a..b honoring the hop cap
-// (default: the node count) and the per-hop predicate.
+// (default: the node count) and the per-hop predicate. A hop cap makes
+// cost non-monotonic per node, so a bounded search keys its state on
+// (node, hops); an unbounded one keys the node alone -- plain Dijkstra --
+// so an unreachable target costs one component sweep instead of a
+// (node, hops) state explosion.
 func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight) *nodesRels {
 	if a == b {
 		return &nodesRels{nodes: []graph.NodeID{a}}
 	}
+	unbounded := sp.Max == nil
 	cap := uint64(ctx.G.NodeCount())
 	if sp.Max != nil {
 		cap = *sp.Max
+	}
+	key := func(n graph.NodeID, hops uint64) nodeHops {
+		if unbounded {
+			return nodeHops{n, 0}
+		}
+		return nodeHops{n, hops}
 	}
 	dist := map[nodeHops]float64{{a, 0}: 0}
 	parent := map[nodeHops]wpParent{}
 	h := &wpHeap{{cost: 0, node: a, hops: 0}}
 	for h.Len() > 0 {
 		st := heap.Pop(h).(wpState)
-		key := nodeHops{st.node, st.hops}
-		if d, ok := dist[key]; ok && st.cost > d {
+		k := key(st.node, st.hops)
+		if d, ok := dist[k]; ok && st.cost > d {
 			continue
 		}
 		if st.node == b {
 			var nodes []graph.NodeID
 			var rels []uint32
 			nodes = append(nodes, st.node)
-			cur := key
+			cur := k
 			for cur.node != a || cur.hops != 0 {
 				p := parent[cur]
 				rels = append(rels, p.rel)
 				nodes = append(nodes, p.prev)
-				cur = nodeHops{p.prev, p.hops}
+				cur = key(p.prev, p.hops)
 			}
 			reverseNodes(nodes)
 			for i, j := 0, len(rels)-1; i < j; i, j = i+1, j-1 {
@@ -185,7 +196,7 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 			if !ok {
 				continue
 			}
-			next := nodeHops{nb, st.hops + 1}
+			next := key(nb, st.hops+1)
 			nextCost := st.cost + edge
 			if d, seen := dist[next]; !seen || nextCost < d {
 				dist[next] = nextCost
