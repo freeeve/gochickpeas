@@ -181,6 +181,11 @@ func TestUnionAllBranchesAndOrderByScope(t *testing.T) {
 	mustPlan(t, g, "MATCH (m:Message) RETURN m.len AS l ORDER BY m.pid")
 	// ...but must reference a projection column when aggregating.
 	planErr(t, g, "MATCH (m:Message) RETURN count(*) AS n ORDER BY m.len", "must reference a projection column")
+	// ...and under DISTINCT, where a discarded variable is ambiguous per
+	// surviving row.
+	planErr(t, g, "MATCH (m:Message)-[:HAS_TAG]->(tg:Tag) RETURN DISTINCT tg.name AS n ORDER BY m.len", "must reference a projection column")
+	// A key over the projected variables stays legal with DISTINCT.
+	mustPlan(t, g, "MATCH (m:Message)-[:HAS_TAG]->(tg:Tag) RETURN DISTINCT tg ORDER BY tg.name")
 	// RETURN * with nothing in scope errors.
 	planErr(t, g, "RETURN *", "at least one variable in scope")
 	if strings.Contains(mustPlanColumns(t, g, "MATCH (a:Person) MATCH (b:Message) RETURN *"), "b, a") {

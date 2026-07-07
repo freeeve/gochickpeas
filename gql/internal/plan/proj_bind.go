@@ -58,11 +58,14 @@ func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error)
 		columns[i] = returns[i].Name
 	}
 	// ORDER BY resolves against the output columns -- by alias or by a key
-	// expression equal to a projected one. A non-aggregating projection
-	// additionally keeps the incoming variables in scope; after aggregation
-	// only the output columns survive.
+	// expression equal to a projected one. A plain projection additionally
+	// keeps the incoming variables in scope; after aggregation or DISTINCT
+	// only the output columns survive -- a key over a discarded variable
+	// would be ambiguous per surviving row (both ISO GQL and openCypher
+	// reject it), and the executor would silently evaluate it against the
+	// first-encountered duplicate's bindings.
 	orderScope := map[string]int{}
-	if !aggregated {
+	if !aggregated && !proj.Distinct {
 		for k, v := range scope {
 			orderScope[k] = v
 		}
@@ -79,6 +82,9 @@ func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error)
 		if err := semantics.CheckRefs(s.Expr, orderScope); err != nil {
 			if aggregated {
 				return ProjPlan{}, bindErrf("ORDER BY must reference a projection column when aggregating")
+			}
+			if proj.Distinct {
+				return ProjPlan{}, bindErrf("ORDER BY under DISTINCT must reference a projection column")
 			}
 			return ProjPlan{}, err
 		}

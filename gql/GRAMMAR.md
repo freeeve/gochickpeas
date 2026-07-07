@@ -62,6 +62,12 @@ sort         = expr ['ASC' | 'DESC']
 - `RETURN ... NEXT` composes multi-part queries (GQL linear composition);
   it is exactly Cypher's `WITH`. `WITH` itself is rejected **[cypher]**.
 - `OFFSET` is the GQL keyword; `SKIP` is accepted as a synonym.
+- `ORDER BY` keys on a plain `RETURN` may reference the incoming
+  variables; under `DISTINCT` or aggregation they must reference the
+  projected columns (a key over a variable the projection discards is
+  ambiguous per surviving row -- bind error, per ISO GQL/openCypher).
+  To order by a discarded column, sort first and project in the next
+  statement: `RETURN a, b ORDER BY b NEXT RETURN DISTINCT a LIMIT n`.
 - The standalone `ORDER BY [OFFSET] [LIMIT]` statement sorts (and cuts)
   the binding table mid-pipeline -- it lowers to a star projection
   carrying only the ordering, the analogue of Cypher's
