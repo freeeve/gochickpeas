@@ -148,6 +148,27 @@ func TestConversionFunctions(t *testing.T) {
 	wantNull(t, g, "toInteger('abc')")
 }
 
+func TestDurationArithmetic(t *testing.T) {
+	g := testGraph(t)
+	// Int +/- Duration reads the Int as epoch millis and shifts it,
+	// staying an Int (BI Q17's creationDate + duration(...)).
+	wantInt(t, g, "1000 + duration({seconds: 4})", 5000)
+	wantInt(t, g, "duration({seconds: 4}) + 1000", 5000)
+	wantInt(t, g, "10000 - duration({seconds: 4})", 6000)
+	wantBool(t, g, "5000 > 1000 + duration({seconds: 1})", true)
+	// Temporal - Temporal -> exact millisecond duration.
+	wantBool(t, g, "zoned_datetime('2011-07-20') - zoned_datetime('2011-07-19') = duration({hours: 24})", true)
+	// Duration +/- Duration, componentwise.
+	wantBool(t, g, "duration({hours: 1}) + duration({minutes: 30}) = duration({minutes: 90})", true)
+	wantBool(t, g, "duration({hours: 2}) - duration({minutes: 30}) = duration({minutes: 90})", true)
+	// Duration scaling by an integral factor (commutative *, exact /).
+	wantBool(t, g, "duration({hours: 2}) * 3 = duration({hours: 6})", true)
+	wantBool(t, g, "3 * duration({hours: 2}) = duration({hours: 6})", true)
+	wantBool(t, g, "duration({hours: 4}) / 2 = duration({hours: 2})", true)
+	wantNull(t, g, "duration({hours: 4}) / 0")
+	wantNull(t, g, "duration({hours: 4}) * 1.5")
+}
+
 func TestListConcat(t *testing.T) {
 	g := testGraph(t)
 	// list + list chains, list + element appends, element + list prepends.
