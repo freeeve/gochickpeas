@@ -82,10 +82,18 @@ type subqueryShape struct {
 	frontier []graph.NodeID
 	next     []graph.NodeID
 	reach    []graph.NodeID
+	// rev is the reversed-pattern shape, built when BOTH endpoints anchor
+	// to outer variables: the probe then starts per row from whichever
+	// bound endpoint has the smaller first-hop fan-out (a hot hub on one
+	// side -- e.g. a popular tag -- otherwise costs its whole neighbor
+	// list on every row).
+	rev *subqueryShape
 }
 
 // subqueryShapeFor returns the pattern's cached shape with its row buffer
 // refreshed from the outer row, building (and caching) it on first use.
+// With both endpoints anchored, the forward or reversed shape is chosen
+// per row by the bound endpoints' actual first-hop degree (O(1) reads).
 func subqueryShapeFor(ctx *Ctx, outer map[string]int, outerRow []value.Value, pattern *ast.Pattern) *subqueryShape {
 	if ctx.subqShapes == nil {
 		ctx.subqShapes = map[*ast.Pattern]*subqueryShape{}
@@ -94,6 +102,17 @@ func subqueryShapeFor(ctx *Ctx, outer map[string]int, outerRow []value.Value, pa
 	if s == nil || !s.validFor(outer, outerRow) {
 		s = buildSubqueryShape(outer, outerRow, pattern)
 		ctx.subqShapes[pattern] = s
+	}
+	if s.rev != nil {
+		if a, ok := outerRow[s.nodeSlots[0]].AsNode(); ok {
+			if b, ok2 := outerRow[s.rev.nodeSlots[0]].AsNode(); ok2 {
+				da := ctx.G.Degree(a, engineDir(s.pattern.Hops[0].Rel.Dir))
+				db := ctx.G.Degree(b, engineDir(s.rev.pattern.Hops[0].Rel.Dir))
+				if db < da {
+					s = s.rev
+				}
+			}
+		}
 	}
 	copy(s.row, outerRow)
 	for i := s.outerRowW; i < len(s.row); i++ {
@@ -111,8 +130,10 @@ func (s *subqueryShape) validFor(outer map[string]int, outerRow []value.Value) b
 // buildSubqueryShape anchors the DFS on a bound endpoint: if the start
 // node isn't an outer variable but the end node is, the pattern reverses
 // so expansion starts from the (few) bound node's neighbors rather than a
-// label scan. Outer variables keep their slots; inner-only pattern
-// variables extend the row.
+// label scan. When BOTH endpoints are anchored, a reversed twin shape is
+// attached and subqueryShapeFor picks a side per row by actual degree.
+// Outer variables keep their slots; inner-only pattern variables extend
+// the row.
 func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *ast.Pattern) *subqueryShape {
 	isAnchored := func(n *ast.NodePat) bool {
 		if n.Var == "" {
@@ -121,10 +142,22 @@ func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *a
 		_, ok := outer[n.Var]
 		return ok
 	}
-	if !isAnchored(&pattern.Start) && isAnchored(pattern.EndNode()) {
+	startAnchored := isAnchored(&pattern.Start)
+	endAnchored := isAnchored(pattern.EndNode())
+	if !startAnchored && endAnchored {
 		rev := pattern.Reversed()
 		pattern = &rev
 	}
+	s := buildOneSubqueryShape(outer, outerRow, pattern)
+	if startAnchored && endAnchored && len(pattern.Hops) > 0 {
+		rev := pattern.Reversed()
+		s.rev = buildOneSubqueryShape(outer, outerRow, &rev)
+	}
+	return s
+}
+
+// buildOneSubqueryShape builds a single direction's shape.
+func buildOneSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *ast.Pattern) *subqueryShape {
 	s := &subqueryShape{
 		pattern:   pattern,
 		outer:     outer,

@@ -37,6 +37,11 @@ func (s *SnapshotGraph) AvgDegree(relType string, dir chickpeas.Direction) float
 	return s.g.AvgDegree(relType, dir)
 }
 
+// Degree forwards the O(1) untyped incident-relationship count.
+func (s *SnapshotGraph) Degree(node chickpeas.NodeID, dir chickpeas.Direction) int {
+	return s.g.Degree(node, dir)
+}
+
 // HasLabel reports whether node carries label.
 func (s *SnapshotGraph) HasLabel(node chickpeas.NodeID, label string) bool {
 	return s.g.HasLabel(node, label)

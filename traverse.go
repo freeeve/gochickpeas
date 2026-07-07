@@ -105,6 +105,23 @@ func relRange(offsets []uint32, node NodeID) (int, int) {
 	return int(offsets[i]), int(offsets[i+1])
 }
 
+// Degree is the number of relationships incident to node in direction,
+// any type -- an O(1) offset difference per side (Both sums the two).
+// A runtime fan-out signal for adaptive anchor decisions; for a
+// type-restricted count, count Neighbors instead.
+func (g *Snapshot) Degree(node NodeID, dir Direction) int {
+	n := 0
+	if dir == Outgoing || dir == Both {
+		lo, hi := relRange(g.outOffsets, node)
+		n += hi - lo
+	}
+	if dir == Incoming || dir == Both {
+		lo, hi := relRange(g.inOffsets, node)
+		n += hi - lo
+	}
+	return n
+}
+
 // Neighbors iterates the neighbors of node in direction, restricted to the
 // given relationship types (zero types match all). Direction Both yields
 // matching outgoing neighbors then matching incoming ones; duplicate rels

@@ -32,6 +32,10 @@ type Graph interface {
 	// AvgDegree is the average degree over relType in dir -- a planner
 	// statistic used to break anchor ties; 0 when the type is unknown.
 	AvgDegree(relType string, dir chickpeas.Direction) float64
+	// Degree is node's untyped incident-relationship count in dir, O(1)
+	// per side -- a runtime fan-out signal for adaptive anchor decisions
+	// (which of two bound endpoints a probe should expand from).
+	Degree(node chickpeas.NodeID, dir chickpeas.Direction) int
 
 	// HasLabel reports whether node carries label.
 	HasLabel(node chickpeas.NodeID, label string) bool
