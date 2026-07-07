@@ -5,8 +5,6 @@
 package ldbc
 
 import (
-	"fmt"
-
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
@@ -346,53 +344,9 @@ func biQ20(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	cyCol, ok := g.RelCol("classYear")
-	if !ok {
-		return nil, fmt.Errorf("rel column classYear missing")
-	}
-	cy := cyCol.I64()
-	studyat := map[chickpeas.NodeID][]studyRecord{}
-	if persons, ok := g.NodesWithLabel("Person"); ok {
-		for p := range persons.Iter() {
-			var recs []studyRecord
-			for r := range g.Rels(p, chickpeas.Outgoing, "STUDY_AT") {
-				year, _ := cy.Get(r.Pos)
-				recs = append(recs, studyRecord{r.Neighbor, year})
-			}
-			if len(recs) > 0 {
-				studyat[p] = recs
-			}
-		}
-	}
-	wm := map[interactionKey]float64{}
-	for a, sa := range studyat {
-		for b := range g.Neighbors(a, chickpeas.Both, "KNOWS") {
-			if b <= a {
-				continue
-			}
-			sb, ok := studyat[b]
-			if !ok {
-				continue
-			}
-			best := int64(-1)
-			for _, ra := range sa {
-				for _, rb := range sb {
-					if ra.uni != rb.uni {
-						continue
-					}
-					d := ra.year - rb.year
-					if d < 0 {
-						d = -d
-					}
-					if best < 0 || d < best {
-						best = d
-					}
-				}
-			}
-			if best >= 0 {
-				wm[interactionKey{a, b}] = float64(best + 1)
-			}
-		}
+	wm, err := cohortWeightMap(g)
+	if err != nil {
+		return nil, err
 	}
 	return func() ([][]any, error) {
 		company, ok1 := nodeByName(g, "Company", "Falcon_Air")

@@ -7,7 +7,6 @@ package ldbc
 
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
-	"github.com/freeeve/gochickpeas/internal/parallel"
 )
 
 func init() {
@@ -225,52 +224,9 @@ func biQ15(g *chickpeas.Snapshot) ([][]any, error) {
 	if !ok1 || !ok2 {
 		return [][]any{{-1.0}}, nil
 	}
-	startDay, endDay := dayFromCivil(2010, 11, 1), dayFromCivil(2010, 12, 1)
-	fdayCol, err := nodeI64Col(g, "fday")
+	w, err := q15WeightMap(g)
 	if err != nil {
 		return nil, err
-	}
-	posts, _ := g.NodesWithLabel("Post")
-	comments, ok := g.NodesWithLabel("Comment")
-	replyOf, okRt := g.RelType("REPLY_OF")
-	w := map[interactionKey]float64{}
-	if ok && okRt {
-		roots := g.RootsVia(replyOf, chickpeas.Outgoing)
-		ids := comments.ToSlice()
-		w = parallel.Fold(len(ids),
-			func() map[interactionKey]float64 { return map[interactionKey]float64{} },
-			func(acc map[interactionKey]float64, i int) map[interactionKey]float64 {
-				c := ids[i]
-				parent, ok := g.FirstNeighbor(c, chickpeas.Outgoing, "REPLY_OF")
-				if !ok {
-					return acc
-				}
-				cc, ok1 := creatorOf(g, c)
-				pc, ok2 := creatorOf(g, parent)
-				if !ok1 || !ok2 || cc == pc {
-					return acc
-				}
-				root := roots[c]
-				forum, ok := g.FirstNeighbor(root, chickpeas.Incoming, "CONTAINER_OF")
-				if !ok {
-					return acc
-				}
-				fday := i64At(fdayCol, forum)
-				if fday >= startDay && fday <= endDay {
-					contrib := 0.5
-					if posts != nil && posts.Contains(parent) {
-						contrib = 1.0
-					}
-					acc[pairKey(cc, pc)] += contrib
-				}
-				return acc
-			},
-			func(a, b map[interactionKey]float64) map[interactionKey]float64 {
-				for k, v := range b {
-					a[k] += v
-				}
-				return a
-			})
 	}
 	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
 		return 1.0 / (w[pairKey(from, rel.Neighbor)] + 1.0)
