@@ -37,3 +37,42 @@ the substring form's 393. No index setup is needed -- the engine builds the (lab
 full-text index lazily on the first fts.search call (~0.2s on SPB, cached on the snapshot afterwards),
 using the same tokenizer the rust reference used. The YIELD binds nodes, so further MATCH/FILTER clauses
 compose for the a21-a23 join shapes. No engine change required; rewrite a20-a23 to the CALL form.
+
+## Update (gochickpeas session, 2026-07-06): all four shapes verified against the rust refs
+
+The disposition above only ran a20's flat shape. Now verified end-to-end on spb_canonical.rcpg -- the
+CALL-form rewrite of each blocked query matches its `python/refs/spb/*.rust.json` result multiset exactly:
+
+| query | shape after the YIELD | rows (= ref) |
+|---|---|---|
+| a20 | FILTER on property | 351 |
+| a21 | FILTER with EXISTS{} subqueries (incl. OR of two) | 227 |
+| a22 | date window + IS NOT NULL + four EXISTS{} | 108 |
+| a23 | FILTER + MATCH join + count(DISTINCT substring) + NEXT | 2597 |
+
+Drop-in texts (replace the `MATCH (w:CreativeWork) FILTER lower(w.title) CONTAINS 'football'` head with
+the CALL, keep everything else; a20-a22 shown head-only, a23 in full since its tail follows the CALL too):
+
+```
+CALL fts.search('CreativeWork', 'title', 'football') YIELD node AS w
+FILTER <rest of the existing FILTER, minus the lower()/CONTAINS conjunct>
+RETURN w.uri AS uri
+```
+
+a23 in full:
+
+```
+CALL fts.search('CreativeWork', 'title', 'football') YIELD node AS w
+FILTER EXISTS { MATCH (w)-[:category]->({uri:'http://www.bbc.co.uk/category/Event'}) }
+  AND w.dateCreated IS NOT NULL AND w.description IS NOT NULL AND w.liveCoverage IS NOT NULL
+  AND EXISTS { MATCH (w)-[:audience]->() } AND EXISTS { MATCH (w)-[:primaryFormat]->() }
+MATCH (w)-[:tag]->(topic)
+RETURN topic, count(DISTINCT substring(w.dateCreated, 0, 10)) AS days
+NEXT
+RETURN topic.uri AS k, days
+```
+
+Note for the baseline's portability goal (their tasks/295): `CALL procname(...)` is standard GQL syntax
+and fts.search is the procedure the original SPB reference itself calls, so the CALL form is the faithful
+translation, not an engine-specific workaround. Ping appended to rustychickpeas-ldbc tasks/295
+(uncommitted).
