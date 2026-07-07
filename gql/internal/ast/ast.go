@@ -84,10 +84,11 @@ type ShortestPath struct {
 
 // CallProc is CALL proc(args...) YIELD field [AS alias], ... -- runs an
 // analytic procedure and produces one row per result with the yielded
-// columns bound.
+// columns bound. Args are general expressions: constant ones resolve at
+// plan time, others evaluate per input row (a correlated call).
 type CallProc struct {
 	Proc   string
-	Args   []Literal
+	Args   []Expr
 	Yields []YieldItem
 }
 

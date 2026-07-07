@@ -96,7 +96,7 @@ type stageSpec struct {
 
 	// specCall
 	proc   string
-	args   []ast.Literal
+	args   []ast.Expr
 	yields []ast.YieldItem
 
 	// specUnwind

@@ -111,3 +111,40 @@ func callSearchHits(proc *plan.CallProc, g *chickpeas.Snapshot) *nodeset.Set {
 		return g.GeoWithinBBox(proc.Label, proc.LatField, proc.LonField, proc.MinLat, proc.MinLon, proc.MaxLat, proc.MaxLon)
 	}
 }
+
+// callResults computes a resolved procedure's result set in the shape its
+// kind emits: propagation rows, a per-node scalar vector, or a search
+// hit-set iteration.
+func callResults(proc *plan.CallProc, g *chickpeas.Snapshot) ([]value.Value, func(func(graph.NodeID) bool), []chickpeas.PropagateResult) {
+	if proc.Kind == plan.ProcPropagate {
+		return nil, nil, callPropagateRows(proc, g)
+	}
+	if values, ok := perNodeValues(proc, g); ok {
+		return values, nil, nil
+	}
+	if hits := callSearchHits(proc, g); hits != nil {
+		return nil, hits.Iter(), nil
+	}
+	return nil, nil, nil
+}
+
+// callPropagateRows runs first-claim value propagation for a resolved
+// algo.propagate call; one output row per reached node.
+func callPropagateRows(proc *plan.CallProc, g *chickpeas.Snapshot) []chickpeas.PropagateResult {
+	seeds := make([]chickpeas.PropagateSeed, len(proc.Seeds))
+	for i, n := range proc.Seeds {
+		seeds[i] = chickpeas.PropagateSeed{Node: n, Value: proc.SeedVals[i]}
+	}
+	return g.PropagateBFS(seeds, chickpeas.PropagateOpts{
+		RelTypes:   proc.RelTypes,
+		Direction:  proc.Direction,
+		MaxDepth:   proc.MaxDepth,
+		ValueProp:  proc.ValueProp,
+		Desc:       proc.Desc,
+		TruncLimit: proc.TruncLimit,
+		MinValue:   proc.MinValue,
+		FilterProp: proc.FilterProp,
+		FilterMin:  proc.FilterMin,
+		FilterMax:  proc.FilterMax,
+	})
+}

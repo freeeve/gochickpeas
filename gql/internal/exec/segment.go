@@ -134,11 +134,15 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 		cs := &callSink{ctx: ctx, cs: s, buf: make([]value.Value, seg.RowWidth), next: next, count: single()}
 		if native, ok := ctx.G.(graph.Native); ok {
 			cs.native = true
-			g := native.Snapshot()
-			if values, ok := perNodeValues(&s.Proc, g); ok {
-				cs.values = values
-			} else if hits := callSearchHits(&s.Proc, g); hits != nil {
-				cs.hits = hits.Iter()
+			cs.g = native.Snapshot()
+			if len(s.ArgExprs) > 0 {
+				cs.argEvals = make([]RowEval, len(s.ArgExprs))
+				for i, a := range s.ArgExprs {
+					cs.argEvals[i] = compileEval(ctx, a, seg.Slots)
+				}
+				cs.slots = seg.Slots
+			} else {
+				cs.values, cs.hits, cs.prop = callResults(&s.Proc, cs.g)
 			}
 		}
 		return cs

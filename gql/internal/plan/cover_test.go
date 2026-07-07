@@ -131,9 +131,10 @@ func TestValueFieldNamesAndLitValue(t *testing.T) {
 	for kind, want := range map[ProcKind]string{
 		ProcWcc: "component", ProcBfs: "value", ProcPageRank: "value",
 		ProcWccAll: "value", ProcCdlp: "value", ProcLcc: "value",
-		ProcSssp: "value", ProcFtsSearch: "", ProcGeoWithinRadius: "", ProcGeoWithinBBox: "",
+		ProcSssp: "value", ProcPropagate: "value",
+		ProcFtsSearch: "", ProcGeoWithinRadius: "", ProcGeoWithinBBox: "",
 	} {
-		if got := valueFieldName(&CallProc{Kind: kind}); got != want {
+		if got := valueFieldName(kind); got != want {
 			t.Fatalf("valueFieldName(%d) = %q, want %q", kind, got, want)
 		}
 	}

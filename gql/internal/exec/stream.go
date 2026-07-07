@@ -8,6 +8,7 @@
 package exec
 
 import (
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -166,20 +167,28 @@ func (u *unwindSink) bump() {
 
 func (u *unwindSink) close() { u.next.close() }
 
-// callSink crosses each pushed row with a procedure's results, computed
-// once at build (per-node scalar vector or index search hit-set). A
-// backend without the native capability passes rows through unchanged.
+// callSink crosses each pushed row with a procedure's results -- computed
+// once at build for a constant-argument call (per-node scalar vector,
+// index search hit-set, or propagation rows), or per pushed row for a
+// correlated call (argEvals non-nil), where a row whose evaluated
+// arguments fail validation yields no rows. A backend without the native
+// capability passes rows through unchanged.
 type callSink struct {
 	ctx    *eval.Ctx
 	cs     *plan.CallStage
 	values []value.Value
 	// hits is the search hit-set's ascending-id iteration (nil = no hits);
 	// unnamed so the nodeset iterator assigns directly.
-	hits   func(yield func(graph.NodeID) bool)
-	native bool
-	buf    []value.Value
-	next   rowSink
-	count  *uint64
+	hits func(yield func(graph.NodeID) bool)
+	// prop is the resolved algo.propagate result set.
+	prop     []chickpeas.PropagateResult
+	argEvals []RowEval
+	slots    map[string]int
+	g        *chickpeas.Snapshot
+	native   bool
+	buf      []value.Value
+	next     rowSink
+	count    *uint64
 }
 
 func (c *callSink) push(row []value.Value) {
@@ -188,8 +197,37 @@ func (c *callSink) push(row []value.Value) {
 		c.next.push(row)
 		return
 	}
-	if c.values != nil {
-		for i, v := range c.values {
+	values, hits, prop := c.values, c.hits, c.prop
+	if c.argEvals != nil {
+		args := make([]value.Value, len(c.argEvals))
+		for i, ev := range c.argEvals {
+			args[i] = ev.Eval(c.ctx, row, c.slots)
+		}
+		proc, err := plan.ResolveCallProc(c.cs.ProcName, args)
+		if err != nil {
+			return
+		}
+		values, hits, prop = callResults(&proc, c.g)
+	}
+	if c.cs.Proc.Kind == plan.ProcPropagate {
+		for _, r := range prop {
+			copy(c.buf, row)
+			if c.cs.NodeSlot != plan.NoSlot {
+				c.buf[c.cs.NodeSlot] = value.Node(r.Node)
+			}
+			if c.cs.ValueSlot != plan.NoSlot {
+				c.buf[c.cs.ValueSlot] = value.Float(r.Value)
+			}
+			if c.cs.DepthSlot != plan.NoSlot {
+				c.buf[c.cs.DepthSlot] = value.Int(int64(r.Depth))
+			}
+			c.bump()
+			c.next.push(c.buf)
+		}
+		return
+	}
+	if values != nil {
+		for i, v := range values {
 			copy(c.buf, row)
 			if c.cs.NodeSlot != plan.NoSlot {
 				c.buf[c.cs.NodeSlot] = value.Node(graph.NodeID(i))
@@ -202,10 +240,10 @@ func (c *callSink) push(row []value.Value) {
 		}
 		return
 	}
-	if c.hits == nil {
+	if hits == nil {
 		return
 	}
-	c.hits(func(nid graph.NodeID) bool {
+	hits(func(nid graph.NodeID) bool {
 		copy(c.buf, row)
 		if c.cs.NodeSlot != plan.NoSlot {
 			c.buf[c.cs.NodeSlot] = value.Node(nid)

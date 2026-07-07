@@ -134,7 +134,11 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			label := fmt.Sprintf("%s (%s)-[*]-(%s)", kind, nameOf(s.From, names), nameOf(s.To, names))
 			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
 		case *plan.CallStage:
-			line(out, ind, "Call "+callLabel(&s.Proc), singleEst(se, ti), singleCount(sp, ti))
+			label := callLabel(&s.Proc)
+			if s.ProcName != "" {
+				label = fmt.Sprintf("%s(…) [correlated, %d args]", s.ProcName, len(s.ArgExprs))
+			}
+			line(out, ind, "Call "+label, singleEst(se, ti), singleCount(sp, ti))
 		case *plan.UnwindStage:
 			label := fmt.Sprintf("Unwind (%s AS %s)", fmtExpr(s.List), nameOf(s.OutSlot, names))
 			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
@@ -345,6 +349,8 @@ func callLabel(p *plan.CallProc) string {
 		return "algo.cdlp(…)"
 	case plan.ProcLcc:
 		return "algo.lcc(…)"
+	case plan.ProcPropagate:
+		return fmt.Sprintf("algo.propagate(%d seeds, %s, depth %d, …)", len(p.Seeds), strings.Join(p.RelTypes, "|"), p.MaxDepth)
 	default:
 		return fmt.Sprintf("algo.sssp(%d, …)", p.Source)
 	}

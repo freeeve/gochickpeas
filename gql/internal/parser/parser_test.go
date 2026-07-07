@@ -376,17 +376,28 @@ func TestUnionParsesIntoBranches(t *testing.T) {
 func TestCallProcYield(t *testing.T) {
 	q := mustParse(t, "CALL wcc('replyOf') YIELD node, component AS c RETURN c")
 	call, ok := q.Parts[0].Clauses[0].(*ast.CallProc)
-	if !ok || call.Proc != "wcc" || len(call.Args) != 1 || call.Args[0] != ast.StrLit("replyOf") {
-		t.Fatalf("call = %#v", q.Parts[0].Clauses[0])
+	lit0, ok0 := (ast.Expr)(nil), false
+	if ok && len(call.Args) == 1 {
+		var l *ast.Lit
+		if l, ok0 = call.Args[0].(*ast.Lit); ok0 {
+			lit0 = l
+			ok0 = l.Value == ast.StrLit("replyOf")
+		}
+	}
+	if !ok || call.Proc != "wcc" || !ok0 {
+		t.Fatalf("call = %#v lit = %#v", q.Parts[0].Clauses[0], lit0)
 	}
 	if len(call.Yields) != 2 || call.Yields[0] != (ast.YieldItem{Field: "node"}) ||
 		call.Yields[1] != (ast.YieldItem{Field: "component", Alias: "c"}) {
 		t.Fatalf("yields = %+v", call.Yields)
 	}
-	// Dotted names and negative numeric args.
+	// Dotted names; a negative numeric arg parses as a unary negation the
+	// planner folds back to a constant.
 	q2 := mustParse(t, "CALL geo.withinRadius('Place', 48.8, -2.35, 5.0) YIELD node RETURN node")
 	call2 := q2.Parts[0].Clauses[0].(*ast.CallProc)
-	if call2.Proc != "geo.withinRadius" || call2.Args[2] != ast.FloatLit(-2.35) {
+	neg, okNeg := call2.Args[2].(*ast.Unary)
+	if call2.Proc != "geo.withinRadius" || !okNeg || neg.Op != ast.Neg ||
+		neg.Expr.(*ast.Lit).Value != ast.FloatLit(2.35) {
 		t.Fatalf("call2 = %+v", call2)
 	}
 }

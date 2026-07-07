@@ -72,7 +72,11 @@ func desugarClause(c ast.Clause, ctr *int) error {
 		}
 		return desugarExpr(n.Where, ctr)
 	case *ast.CallProc:
-		// Proc args are literals; no pattern or expression to desugar.
+		for _, a := range n.Args {
+			if err := desugarExpr(a, ctr); err != nil {
+				return err
+			}
+		}
 		return nil
 	case *ast.Unwind:
 		return desugarExpr(n.Expr, ctr)

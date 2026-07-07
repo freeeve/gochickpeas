@@ -150,6 +150,147 @@ func TestCallGeoProcedures(t *testing.T) {
 		"Lyon")
 }
 
+// flowGraph is the little money-flow fixture: s pays a (5) and b (3);
+// a pays c (7), b pays c (2). Node ids follow insertion: s=0 a=1 b=2 c=3.
+func flowGraph(t *testing.T) *chickpeas.Snapshot {
+	t.Helper()
+	b := chickpeas.NewBuilder(8, 8)
+	names := []string{"s", "a", "b", "c"}
+	ids := make([]chickpeas.NodeID, len(names))
+	for i, n := range names {
+		id, err := b.AddNode("Acct")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+		_ = b.SetProp(id, "name", n)
+	}
+	rel := func(u, v int, amt float64) {
+		t.Helper()
+		pos, err := b.AddRel(ids[u], ids[v], "flow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = b.SetRelPropAt(pos, "amt", amt)
+	}
+	rel(0, 1, 5)
+	rel(0, 2, 3)
+	rel(1, 3, 7)
+	rel(2, 3, 2)
+	return b.Finalize("name")
+}
+
+// propagateRows drains node-name/value/depth triples keyed by name.
+func propagateRows(t *testing.T, rows *Rows) map[string][2]int64 {
+	t.Helper()
+	names := []string{"s", "a", "b", "c"}
+	out := map[string][2]int64{}
+	for r := range rows.All() {
+		nv, _ := r.Get("n")
+		id, _ := nv.AsNode()
+		vv, _ := r.Get("v")
+		f, _ := vv.AsFloat()
+		dv, _ := r.Get("dp")
+		d, _ := dv.AsInt()
+		out[names[id]] = [2]int64{int64(f), d}
+	}
+	return out
+}
+
+func TestCallPropagateStatic(t *testing.T) {
+	g := flowGraph(t)
+	// Seeds a(5) and b(3) at depth 1; each seed's run claims c through its
+	// own edge (7 and 2), so c accumulates 9 at depth 2.
+	rows := runBoth(t, g,
+		"CALL algo.propagate([1, 2], [5.0, 3.0], 'flow', 'out', 2, 'amt', 'asc', 0) YIELD node AS n, value AS v, depth AS dp RETURN n, v, dp")
+	got := propagateRows(t, rows)
+	want := map[string][2]int64{"a": {5, 1}, "b": {3, 1}, "c": {9, 2}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Fatalf("%s: got %v want %v", k, got[k], w)
+		}
+	}
+}
+
+func TestCallPropagateCorrelated(t *testing.T) {
+	g := flowGraph(t)
+	// The CR8 shape: bind the seed rels upstream, feed the collected nodes
+	// and amounts through the correlated call, and keep an incoming column
+	// (k) alive across the cross-join.
+	rows := runBoth(t, g, `MATCH (root:Acct {name: 's'})-[d:flow]->(x)
+RETURN collect(x) AS seeds, collect(d.amt) AS vals, 100 AS k
+NEXT
+CALL algo.propagate(seeds, vals, 'flow', 'out', 2, 'amt', 'asc', 0) YIELD node AS n, value AS v, depth AS dp
+RETURN n, v, dp, k`)
+	got := map[string][3]int64{}
+	names := []string{"s", "a", "b", "c"}
+	for r := range rows.All() {
+		nv, _ := r.Get("n")
+		id, _ := nv.AsNode()
+		vv, _ := r.Get("v")
+		f, _ := vv.AsFloat()
+		dv, _ := r.Get("dp")
+		d, _ := dv.AsInt()
+		kv, _ := r.Get("k")
+		k, _ := kv.AsInt()
+		got[names[id]] = [3]int64{int64(f), d, k}
+	}
+	want := map[string][3]int64{"a": {5, 1, 100}, "b": {3, 1, 100}, "c": {9, 2, 100}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Fatalf("%s: got %v want %v", k, got[k], w)
+		}
+	}
+}
+
+func TestCallCorrelatedBfsAndRuntimeMismatch(t *testing.T) {
+	g := flowGraph(t)
+	// A bound node as a procedure argument (previously only literal ids).
+	rows := runBoth(t, g,
+		"MATCH (p:Acct {name: 's'}) CALL algo.bfs(p, true) YIELD node, value RETURN node, value")
+	dist := map[uint32]int64{}
+	for r := range rows.All() {
+		nv, _ := r.Get("node")
+		id, _ := nv.AsNode()
+		vv, _ := r.Get("value")
+		d, _ := vv.AsInt()
+		dist[uint32(id)] = d
+	}
+	want := map[uint32]int64{0: 0, 1: 1, 2: 1, 3: 2}
+	for id, w := range want {
+		if dist[id] != w {
+			t.Fatalf("dist[%d] = %d, want %d (all: %v)", id, dist[id], w, dist)
+		}
+	}
+	// A row whose evaluated arguments fail validation yields no rows
+	// (total-eval semantics), not an error.
+	rows = runBoth(t, g, `MATCH (p:Acct {name: 's'}) LET bad = p.name
+CALL algo.propagate(bad, 1.0, 'flow', 'out', 2, 'amt', 'asc', 0) YIELD node RETURN node`)
+	if _, ok := rows.Next(); ok {
+		t.Fatal("invalid runtime args should yield no rows")
+	}
+}
+
+func TestCallPropagateYieldAndArgErrors(t *testing.T) {
+	g := flowGraph(t)
+	for _, q := range []string{
+		"CALL wcc('flow') YIELD node, depth RETURN node",
+		"CALL algo.propagate([1], [1.0], 'flow', 'out', 2, 'amt', 'sideways', 0) YIELD node RETURN node",
+		"CALL algo.propagate([1], [1.0, 2.0], 'flow', 'out', 2, 'amt', 'asc', 0) YIELD node RETURN node",
+		"MATCH (p:Acct) CALL algo.propagate(p, count(p), 'flow', 'out', 2, 'amt', 'asc', 0) YIELD node RETURN node",
+	} {
+		if _, err := Run(g, q); err == nil {
+			t.Fatalf("expected plan error: %s", q)
+		}
+	}
+}
+
 func TestCallCdlpAndLcc(t *testing.T) {
 	g := socialGraph(t)
 	// CDLP labels agree with the kernel seeded by dense ids.

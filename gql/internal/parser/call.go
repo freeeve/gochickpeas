@@ -1,5 +1,5 @@
 // CALL statement parsing: braced subqueries with the GQL variable-scope
-// clause, and procedure calls with literal arguments and YIELD.
+// clause, and procedure calls with expression arguments and YIELD.
 package parser
 
 import (
@@ -79,8 +79,9 @@ func (p *parser) parseCallSubquery(imports []string) (ast.Clause, error) {
 	return &ast.CallSubquery{Query: q, Imports: imports}, nil
 }
 
-// parseCallProc is: CALL name[.name]*(literal args) YIELD field [AS
-// alias][, ...]. Args are literals, allowing a leading minus on numbers.
+// parseCallProc is: CALL name[.name]*(args) YIELD field [AS alias][, ...].
+// Args are general expressions; constant ones resolve at plan time and the
+// rest evaluate per input row (a correlated call).
 func (p *parser) parseCallProc() (ast.Clause, error) {
 	name, err := p.identName("a procedure name")
 	if err != nil {
@@ -98,13 +99,13 @@ func (p *parser) parseCallProc() (ast.Clause, error) {
 	if _, err := p.expect(TokLParen, "'('"); err != nil {
 		return nil, err
 	}
-	var args []ast.Literal
+	var args []ast.Expr
 	for p.peek().Kind != TokRParen {
-		lit, lerr := p.parseCallArg()
-		if lerr != nil {
-			return nil, lerr
+		arg, aerr := p.parseExpr()
+		if aerr != nil {
+			return nil, aerr
 		}
-		args = append(args, lit)
+		args = append(args, arg)
 		if !p.acceptTok(TokComma) {
 			break
 		}
@@ -135,27 +136,6 @@ func (p *parser) parseCallProc() (ast.Clause, error) {
 		}
 	}
 	return &ast.CallProc{Proc: proc, Args: args, Yields: yields}, nil
-}
-
-// parseCallArg reads one literal procedure argument (a leading minus on a
-// number is folded, matching the Rust grammar's neg_number).
-func (p *parser) parseCallArg() (ast.Literal, *Error) {
-	if p.acceptTok(TokMinus) {
-		lit, err := p.parseLiteralTok()
-		if err != nil {
-			return ast.Literal{}, err
-		}
-		switch lit.Kind {
-		case ast.LitInt:
-			lit.I = -lit.I
-		case ast.LitFloat:
-			lit.F = -lit.F
-		default:
-			return ast.Literal{}, errf(p.peek().Pos, "'-' applies only to numeric procedure arguments")
-		}
-		return lit, nil
-	}
-	return p.parseLiteralTok()
 }
 
 // parseLiteralTok reads one literal token (int, float, string, true,

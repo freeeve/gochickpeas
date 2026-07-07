@@ -74,7 +74,7 @@ func fpClause(b *strings.Builder, c Clause) {
 		b.WriteString(";C")
 		b.WriteString(strconv.Quote(n.Proc))
 		for i := range n.Args {
-			fpLiteral(b, &n.Args[i])
+			fpExpr(b, n.Args[i])
 		}
 		for _, y := range n.Yields {
 			b.WriteString("y")

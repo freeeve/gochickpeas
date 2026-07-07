@@ -150,16 +150,39 @@ quantifier   = '{' [integer] [',' [integer]] '}' | '*' | '+'
 ```
 call         = 'CALL' '{' part ('UNION' ['ALL'] part)* '}'
              | 'CALL' '(' [ident (',' ident)*] ')' '{' ... '}'
-             | 'CALL' procname '(' [litarg (',' litarg)*] ')'
+             | 'CALL' procname '(' [expr (',' expr)*] ')'
                'YIELD' ident ['AS' ident] (',' ident ['AS' ident])*
 procname     = ident ('.' ident)*
-litarg       = ['-'] literal                 -- minus folds into numbers only
 ```
 
 The `CALL (vars) { ... }` variable-scope clause is the GQL correlated
 form (Cypher's leading `WITH vars` import **[cypher]**); the parser
 records the imports AND synthesizes the importing projection into every
 UNION branch of the body, which is the clause shape the binder consumes.
+
+Procedure arguments are general expressions. Constant arguments (literals,
+negated numbers, lists of constants) validate at plan time; any other
+argument makes the call **correlated**: its arguments are checked against
+the in-scope variables, evaluated per input row, and the procedure's rows
+cross-join with that row. A row whose evaluated arguments fail the
+procedure's validation yields no rows (total-eval semantics, like null
+propagation); static mistakes -- unknown procedure, bad yield field, wrong
+constant type -- are still plan errors. Node arguments accept a bound node
+or an integer node id.
+
+Procedures: `wcc`, `algo.bfs`, `algo.pagerank`, `algo.wcc`, `algo.cdlp`,
+`algo.lcc`, `algo.sssp`, `fts.search`, `geo.withinRadius`,
+`geo.withinBBox`, and `algo.propagate(seeds, values, relTypes, direction,
+maxDepth, valueProp, order, truncLimit[, minValue[, filterProp, filterMin,
+filterMax]]) YIELD node, value, depth` -- first-claim value propagation: a
+depth-bounded BFS per seed where each expansion's rels (the relTypes
+union, optionally range-filtered on an integer rel property) order by the
+valueProp rel property ('asc'/'desc'), truncate to truncLimit (0 = none),
+and the first rel to reach a node claims it, carrying that rel's value if
+it exceeds minValue (default 0); across seeds a node sums its claimed
+values and keeps its minimum depth (seeds are depth 1). This is the
+stateful money-flow/taint-trace shape that pattern matching plus
+aggregation cannot express.
 
 ## Expressions
 

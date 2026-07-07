@@ -1,7 +1,8 @@
 # 051 -- core+gql: first-claim value-propagating BFS (unblocks FinBench CR8)
 
-**Scoped 2026-07-07 from the ldbc side's pure-GQL baseline (their tasks/295); awaiting Eve's
-sign-off before implementation.** Last remaining engine blocker in the 89-query baseline
+**Scoped 2026-07-07 from the ldbc side's pure-GQL baseline (their tasks/295); Eve approved both
+design questions same day (core PropagateBFS + correlated CALL args; name algo.propagate) and the
+implementation landed -- see the Shipped section at the end.** Last remaining engine blocker in the 89-query baseline
 (their `gql/finbench/cr8.gql` carries the `-- blocked:` header; the rcp engine gates CR8 on the
 same missing primitive -- their tasks/075 scoped it as "first-claim monotonic BFS, needs
 sign-off" and shipped everything else, so no cross-engine spelling exists yet to align with.
@@ -104,7 +105,43 @@ Everything stateful is in the primitive; selection, arithmetic, and ordering sta
 
 ## Sign-off questions (Eve)
 
-1. Core gets the PropagateBFS analytics kernel (public API, version bump)?
-2. Correlated (expression) args for procedure CALL -- approve the general grammar change?
-3. The primitive's semantics knobs as above -- general enough under the no-overfitting rule?
-4. Name: `algo.propagate` (proposed) vs `algo.traceFlow` / `algo.claimBFS`.
+1. Core gets the PropagateBFS analytics kernel (public API, version bump)? -- **approved**
+2. Correlated (expression) args for procedure CALL -- approve the general grammar change? -- **approved**
+3. The primitive's semantics knobs as above -- general enough under the no-overfitting rule? -- **approved**
+4. Name: `algo.propagate` (proposed) vs `algo.traceFlow` / `algo.claimBFS`. -- **algo.propagate**
+
+## Shipped (2026-07-07)
+
+- Core: `propagate.go` -- PropagateSeed/PropagateOpts/PropagateResult + Snapshot.PropagateBFS,
+  deterministic (stable fan-out sort, id-ascending results); truncation cuts BEFORE the value gate
+  (the FinBench truncation-strategy order). 100% statement coverage via propagate_test.go
+  (claim-order asc/desc, truncation-changes-claims, multi-seed sum/min merge incl. duplicate
+  seeds, depth caps, MinValue gate, rel-prop window filter, cycles, missing columns, Incoming).
+- gql: procedure CALL args are now expressions (ast/parser/fingerprint/desugar); constants fold
+  and validate at bind exactly as before (ResolveCallProc over value.Value, shared bind/exec);
+  a non-constant arg makes the call correlated -- args CheckRefs'd at bind, evaluated per input
+  row, yields cross-joined with the row, and a row whose args fail validation yields no rows
+  (total-eval; execution stays infallible once a plan builds). Node args accept bound nodes, so
+  `algo.bfs(p, true)` with a matched `p` now works. `algo.propagate` yields node, value, depth;
+  EXPLAIN renders both the resolved and correlated forms. GRAMMAR.md documents all of it.
+- CR8 verified: the pure-GQL text (below) MATCHES `python/refs/finbench/cr8.rust.json` on
+  finbench_sf10_canonical.rcpg -- 124/124 rows exact (round3 norm), ~3s warm. Ping with the text
+  appended to their tasks/295.
+
+```
+MATCH (loan:Loan {id: 279505201629616671})-[d:deposit]->(acct:Account)
+RETURN collect(acct) AS seeds, collect(d.amount) AS vals, loan.loanAmount AS loanAmount
+NEXT
+CALL algo.propagate(seeds, vals, ['transfer', 'withdraw'], 'out', 3, 'amount', 'asc', 10000) YIELD node AS dst, value AS inflow, depth AS dist
+RETURN dst.id AS dstId, inflow / loanAmount AS ratio, dist AS distanceFromLoan
+ORDER BY distanceFromLoan DESC, ratio DESC, dstId ASC
+```
+
+(The `'asc'` argument encodes the pinned refs' truncation-order quirk -- the rust reference's
+case-sensitive "DESC" comparison falls through to ascending. If they fix it and regen the refs,
+the query text flips that one argument; the engine does not change. The unbounded pinned time
+window means the optional filterProp args are simply omitted.)
+
+Verification: gofmt -s clean, full go test ./... green, FuzzQuery 45s (1.81M execs) clean,
+parity gate 88/88 MATCH 0 DIFF 0 SKIP, public-level correlated/static/error-path tests in
+gql/execute_call_test.go. Tagged v0.8.0 (public core API grew).

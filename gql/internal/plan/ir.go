@@ -230,6 +230,12 @@ const (
 	ProcLcc
 	// ProcSssp is algo.sssp(source[, directed][, weighted]).
 	ProcSssp
+	// ProcPropagate is algo.propagate(seeds, values, relTypes, direction,
+	// maxDepth, valueProp, order, truncLimit[, minValue[, filterProp,
+	// filterMin, filterMax]]) -- first-claim value propagation
+	// (Snapshot.PropagateBFS), yielding node, value, depth per reached
+	// node.
+	ProcPropagate
 )
 
 // CallProc is a CALL procedure with validated, concrete arguments.
@@ -254,16 +260,41 @@ type CallProc struct {
 	Damping   float64
 	Iters     uint32
 	SeedProp  string // "" absent
+
+	// ProcPropagate (Snapshot.PropagateBFS parameters).
+	Seeds      []graph.NodeID
+	SeedVals   []float64
+	RelTypes   []string
+	MaxDepth   uint32
+	ValueProp  string
+	Desc       bool
+	TruncLimit int
+	MinValue   float64
+	FilterProp string // "" absent
+	FilterMin  int64
+	FilterMax  int64
 }
 
 // CallStage runs a procedure, binding the yielded columns.
 type CallStage struct {
+	// Proc is the resolved procedure. For a correlated call only its Kind
+	// is set at plan time; the full CallProc resolves per input row from
+	// ArgExprs.
 	Proc CallProc
+	// ProcName is the procedure name of a correlated call ("" when the
+	// arguments were constant and Proc is fully resolved).
+	ProcName string
+	// ArgExprs are the correlated call's argument expressions, evaluated
+	// against each input row.
+	ArgExprs []ast.Expr
 	// NodeSlot is the yielded node column's slot (NoSlot if not yielded).
 	NodeSlot int
 	// ValueSlot is the yielded per-node scalar's slot (NoSlot if not
 	// yielded; the search procedures have no scalar column).
 	ValueSlot int
+	// DepthSlot is algo.propagate's yielded depth slot (NoSlot if not
+	// yielded).
+	DepthSlot int
 }
 
 // UnwindStage is FOR x IN list: each input row evaluates List; a list
