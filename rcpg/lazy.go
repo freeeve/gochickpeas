@@ -1,9 +1,10 @@
 // Lazy, range-fetched RCPG loading: parse the small front matter (header +
 // directory), plan the byte ranges a given ParseOptions needs, and fetch only
 // those — so a topology-only load over a range-capable transport never
-// transfers the property columns. The CSR-skeleton/working-set machinery the
-// Rust codec layers on top of this is deliberately deferred; SectionFetch and
-// the directory planner lock the interface it will build on.
+// transfers the property columns. Most of the CSR-skeleton/working-set
+// machinery the Rust codec layers on top of this is deliberately deferred;
+// SectionFetch and the directory planner lock the interface it builds on,
+// and atoms_lazy.go's block-lazy AtomReader is its first landed slice.
 
 package rcpg
 

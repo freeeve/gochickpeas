@@ -64,6 +64,11 @@ func TopologyOnlyWriteOptions() WriteOptions {
 type ParseOptions struct {
 	NodeColumns bool
 	RelColumns  bool
+	// SkipAtoms leaves the atom table out of the parse: GraphSection.Atoms
+	// stays nil and ParseLazy never fetches the atoms section. Labels, rel
+	// types, and property keys remain raw atom ids; resolve them on demand
+	// through an AtomReader over the same SectionFetch.
+	SkipAtoms bool
 }
 
 // DefaultParseOptions materializes every section.
@@ -75,6 +80,13 @@ func DefaultParseOptions() ParseOptions {
 // present.
 func TopologyOnlyParseOptions() ParseOptions {
 	return ParseOptions{}
+}
+
+// SkeletonParseOptions materializes the CSR skeleton only: no property
+// columns and no atom table. The lightest resident load for traversal-first
+// consumers that resolve atom ids lazily via AtomReader.
+func SkeletonParseOptions() ParseOptions {
+	return ParseOptions{SkipAtoms: true}
 }
 
 // Write serializes a graph to RCPG bytes, including all sections.
@@ -183,7 +195,7 @@ func ParseWith(b []byte, opts ParseOptions) (*GraphSection, error) {
 func decodeSection(id uint32, body []byte, opts ParseOptions, g *GraphSection) error {
 	var err error
 	switch {
-	case id == sectionAtoms:
+	case id == sectionAtoms && !opts.SkipAtoms:
 		g.Atoms, err = decodeAtoms(body)
 	case id == sectionMeta:
 		err = decodeMeta(body, g)
@@ -203,11 +215,13 @@ func decodeSection(id uint32, body []byte, opts ParseOptions, g *GraphSection) e
 }
 
 // sectionWanted reports whether a section is needed under opts: topology
-// (atoms/meta/nodes/relationships) always, the property columns only when
-// their option is set. Unknown sections are never fetched.
+// (meta/nodes/relationships) always, atoms unless skipped, the property
+// columns only when their option is set. Unknown sections are never fetched.
 func sectionWanted(id uint32, opts ParseOptions) bool {
 	switch id {
-	case sectionAtoms, sectionMeta, sectionNodes, sectionRels:
+	case sectionAtoms:
+		return !opts.SkipAtoms
+	case sectionMeta, sectionNodes, sectionRels:
 		return true
 	case sectionNodeCols:
 		return opts.NodeColumns
