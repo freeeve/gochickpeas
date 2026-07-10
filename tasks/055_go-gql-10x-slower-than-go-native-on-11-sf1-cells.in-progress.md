@@ -61,6 +61,31 @@ eval), Q18/IC-subquery probe costs, the fixed per-query setup on the
 sub-3ms cells (IC8, Q13), and the same-commit go-native re-sweep for the
 denominator (emitting alongside this round).
 
+### Same-commit table (both sides at 77473b8, emitted to bench-out)
+
+The apples-to-apples re-measure the filing asked for; every cell improved
+against the mixed-commit table (rounds 6/6a/6b of tasks/028 + this
+round's top-k all landed between the two measurements):
+
+| cell | gql ms | native ms | ratio | was |
+| --- | ---: | ---: | ---: | ---: |
+| BI/Q1 | 543.3 | 7.7 | 70.7x | 75.0x |
+| BI/Q12 | 1572.2 | 33.4 | 47.1x | 88.7x |
+| BI/Q18 | 1778.3 | 44.4 | 40.1x | 143.6x |
+| IC/IC10 | 143.9 | 7.4 | 19.4x | 40.5x |
+| BI/Q11 | 135.9 | 8.3 | 16.3x | 18.5x |
+| BI/Q6 | 665.4 | 52.6 | 12.7x | 21.1x |
+| IC/IC2 | 67.9 | 5.7 | 12.0x | 58.3x |
+| IC/IC9 | 519.4 | 64.1 | 8.1x | 82.5x |
+| BI/Q2 | 76.6 | 10.3 | 7.5x | 14.3x |
+| IC/IC8 | 0.7 | 0.2 | 4.4x | 23.2x |
+| BI/Q13 | 2.1 | 0.5 | 4.3x | 17.8x |
+
+Four cells now clear the sub-10x bar (IC9, Q2, IC8, Q13). Q1 at 70.7x
+barely moved and is nearly alloc-free (~1.2k allocs, 543ms pure CPU) --
+the clearest remaining engine-overhead cell; profile it first next
+round, then Q12/Q18 (subquery probes).
+
 ## Caveat on the denominator -- please re-measure before trusting the exact ratios
 
 **The two sides were measured at different gochickpeas commits.** `go-gql` is stamped `56ce1a9`;
