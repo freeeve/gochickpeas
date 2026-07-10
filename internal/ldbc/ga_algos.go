@@ -246,10 +246,18 @@ func GALCC(g *chickpeas.Snapshot, directed bool) []float64 {
 		// Per-chunk scratch: the N(v) membership bitset and neighbour
 		// buffer, reused across the chunk's nodes.
 		mark := make([]uint64, nWords)
-		var nbrs []uint32
+		var nbrs, raw []uint32
+		all := chickpeas.MatchAll()
+		// A membership probe against mark is one load and mask on a
+		// sequential scan; each binary-search level in the gallop pays a
+		// random cache miss. Scanning u's adjacency therefore wins until
+		// it is far larger than the probe set -- gallop only past this
+		// ratio.
+		const gallopRatio = 32
 		for v := lo; v < hi; v++ {
+			raw = g.AppendNeighborsEach(raw[:0], uint32(v), chickpeas.Both, all)
 			nbrs = nbrs[:0]
-			for u := range g.Neighbors(uint32(v), chickpeas.Both) {
+			for _, u := range raw {
 				marked := mark[u>>6]>>(u&63)&1 != 0
 				if u != uint32(v) && !marked {
 					mark[u>>6] |= 1 << (u & 63)
@@ -260,7 +268,7 @@ func GALCC(g *chickpeas.Snapshot, directed bool) []float64 {
 			if k >= 2 {
 				needSort := false
 				for _, u := range nbrs {
-					if int(off[u+1]-off[u]) > k {
+					if int(off[u+1]-off[u]) > gallopRatio*k {
 						needSort = true
 						break
 					}
@@ -271,7 +279,7 @@ func GALCC(g *chickpeas.Snapshot, directed bool) []float64 {
 				var rels uint64
 				for _, u := range nbrs {
 					uo := adj[off[u]:off[u+1]]
-					if len(uo) <= k {
+					if len(uo) <= gallopRatio*k {
 						for _, w := range uo {
 							if w != u && mark[w>>6]>>(w&63)&1 != 0 {
 								rels++
