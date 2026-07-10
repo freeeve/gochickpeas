@@ -33,6 +33,34 @@ a separate view and is not what is measured here.
 
 At SF10 the FinBench CR1 cell also clears the bar (171.44 ms vs 3.36 ms, ~51x).
 
+## Progress (2026-07-10, round 1)
+
+CPU-profiled IC9+Q18 (the two largest absolute costs): 44% of samples sat
+in `sort.symMerge` under `sort.SliceStable` -- stable-sorting ~500k
+materialized rows to keep LIMIT 20 -- plus ~15% reflection swap overhead
+(`reflectlite.Swapper`). Landed in sortRowsByOrder (shared by the
+projection and aggregate finalize paths), commit 796cf58:
+
+- the comparator is now a TOTAL order (unique row-index tiebreak), so a
+  plain generic `slices.SortFunc` reproduces stable-sort output with no
+  reflection;
+- under ORDER BY + LIMIT, a bounded max-heap selects the skip+limit
+  survivors (one comparison per rejected row) before the small final
+  sort -- the round-4 deferred "bounded top-k" item, at the sort layer.
+
+Within-run: IC9 3818 -> 1854 ms (~2.1x), IC2 348 -> 123 ms (~2.8x).
+Q1/Q12/Q18 cross-pair deltas were chased down as machine drift: two
+stash-interleaved A/B pairs disagreed with each other by 2x on absolute
+numbers, and Q18's CPU profile shows zero sort machinery in its top 40
+nodes with the change in place -- its cost is subquery probes, untouched
+here. Gate 89/89 MATCH.
+
+Still open: streaming sink-level top-k (reject rows at push time --
+avoids materializing the 500k-row arena at all and cuts the residual key
+eval), Q18/IC-subquery probe costs, the fixed per-query setup on the
+sub-3ms cells (IC8, Q13), and the same-commit go-native re-sweep for the
+denominator (emitting alongside this round).
+
 ## Caveat on the denominator -- please re-measure before trusting the exact ratios
 
 **The two sides were measured at different gochickpeas commits.** `go-gql` is stamped `56ce1a9`;
