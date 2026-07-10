@@ -443,3 +443,33 @@ a candidate if a profile ever ranks it). Gate 89/89 MATCH. Suite now
   on -- Len()==0 with a fully working cache. Reproduced deterministically
   at -count=300 -race on a loaded box; incref-before-deref fixes it;
   1000x -race clean after.
+
+## Final outcome (2026-07-10, closing)
+
+Filed 2026-07-03; six-plus rounds over a week. Where it landed, against
+the same-commit dc7de70 sweep:
+
+- **Native**: 85,342,501 -> 2,267,750 allocs (97.3%). The remainder is
+  measured and characterized: SPB output materialization at 2-4
+  allocs/row (the same cost the Rust counting allocator reports) plus
+  two kernels' local scratch maps -- split out as tasks/060 (low
+  priority, by this task's own only-general-mechanisms rule).
+- **gql**: 87,056,543 at the round-3 baseline -> low single-digit
+  millions across the grown 89-query manifest, via streaming push
+  pipelines, subquery shape caches, byte-string key scratch, entity-id
+  distinct/memo/group fast paths, chunked flat aggregator slabs,
+  compile-time const folding, fused comparisons, scratch-reused
+  shortest paths, streaming top-k, and segment-boundary streaming (the
+  later rounds under tasks/055/056, this task's step-3/4 continuation).
+- **Step 3's CPU pass** became tasks/055 (ratio table published:
+  worst cell 143.6x -> 42.2x, four cells under 10x) -- profile-first
+  throughout, every change shape-keyed, parity gate green at every
+  round (49/49 grown to 89/89).
+- Side finds fixed along the way: the PlanCache refcount flake, the
+  dense-0-vs-sparse-null wart (041), the mono-pushdown correction
+  (033), the typedPairFor mutex regression (caught by sweep-validation
+  discipline before publication).
+
+Remaining ideas all have homes: tasks/060 (native residue), the
+scan-level batch filter (noted in 055's close), rustychickpeas 250/255
+(cross-repo divergences). Closing.
