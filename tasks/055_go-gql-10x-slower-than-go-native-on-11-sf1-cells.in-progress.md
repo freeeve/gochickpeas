@@ -139,6 +139,24 @@ evidence order:
    identical load: 6064 vs 7901 ms (-23%). Gate 89/89 MATCH. Absolute
    table numbers still owed a quiet machine (load 12-16 all round).
 
+## Progress (2026-07-10, round 6) -- streaming sink-level top-k
+
+The round-4 (tasks/028) deferred item, done at the sink: under ORDER BY
++ LIMIT the projection sink keeps a bounded max-heap (topKRows) of at
+most skip+limit rows under the sort's exact total order (keys evaluated
+at push against the live matched row, arrival-sequence tiebreak), so a
+rejected row costs one comparison, rolls its arena slot back, and the
+matched row never needs retaining at all on this path -- the needM
+arena disappears for these queries. LIMIT without ORDER BY caps
+retention at skip+limit outright (arrival order IS output order).
+finalize sorts only the survivors and skips sortRowsByOrder.
+
+Allocs (the load-immune metric): Q2 12,305 -> 4,234; IC9 9,228 ->
+1,034; IC2/IS5 down. 4/4 MATCH on the touched cells, full suite green,
+gate 89/89 MATCH. IC9's remaining bytes live at the segment boundary
+(NEXT materializes between segments) -- a future streaming-across-
+segments item, noted, not started.
+
 Sweep attempt (2026-07-10 ~05:40): a same-commit pair at 27cdb3f ran in
 the night's quietest window (load 4.8, falling) -- but an external job
 spiked the box to load 58 mid-sweep, contaminating different queries on

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -36,13 +37,28 @@ type projSink struct {
 	seenOne *distinctSet
 	seen    map[string]struct{}
 	key     []byte
+	// topk is the streaming bounded accumulator under ORDER BY + LIMIT:
+	// at most skip+limit rows are retained, ordered by the sort's exact
+	// total order (keys, then arrival), so a rejected row costs one
+	// comparison and leaves nothing in the arenas. limitCap is the
+	// LIMIT-without-ORDER-BY retention cap (arrival order IS the output
+	// order, so rows past skip+limit can never surface).
+	topk     *topKRows
+	limitCap int
+	// topk key evaluation state (mirrors sortRowsByOrder's scope).
+	kColIdx []int
+	kScope  map[string]int
+	kBase   int
+	kRowbuf []value.Value
+	kBuf    []value.Value
 }
 
 func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
 	p := &projSink{
 		ctx: ctx, proj: proj, slots: slots,
-		returns: make([]RowEval, len(proj.Returns)),
-		oArena:  rowArena{width: len(proj.Returns)},
+		returns:  make([]RowEval, len(proj.Returns)),
+		oArena:   rowArena{width: len(proj.Returns)},
+		limitCap: -1,
 	}
 	for i, r := range proj.Returns {
 		p.returns[i] = compileEval(ctx, r.Expr, slots)
@@ -61,10 +77,55 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 			p.seen = map[string]struct{}{}
 		}
 	}
+	if bound := orderBound(proj); bound >= 0 {
+		if nk := len(proj.OrderBy); nk > 0 {
+			p.topk = newTopKRows(bound, nk, proj.OrderBy)
+			p.kColIdx = make([]int, nk)
+			for k := range proj.OrderBy {
+				p.kColIdx[k] = plan.OrderColIndex(proj.OrderBy[k].Expr, proj.Columns, proj.Returns)
+			}
+			p.kScope = make(map[string]int, len(slots)+len(proj.Columns))
+			maps.Copy(p.kScope, slots)
+			p.kBase = 0
+			if p.needM {
+				p.kBase = width
+			}
+			for i, c := range proj.Columns {
+				p.kScope[c] = p.kBase + i
+			}
+			p.kBuf = make([]value.Value, nk)
+		} else {
+			// No ORDER BY: arrival order is output order, so retention
+			// past skip+limit can never surface.
+			p.limitCap = bound
+		}
+	}
 	return p
 }
 
+// pushKeys evaluates the ORDER BY key vector for a just-projected row
+// into p.kBuf (out is the projected row, row the matched row).
+func (p *projSink) pushKeys(out, row []value.Value) []value.Value {
+	built := false
+	for k := range p.proj.OrderBy {
+		if idx := p.kColIdx[k]; idx >= 0 {
+			p.kBuf[k] = out[idx]
+			continue
+		}
+		if !built {
+			p.kRowbuf = append(p.kRowbuf[:0], row...)
+			p.kRowbuf = append(p.kRowbuf, out...)
+			built = true
+		}
+		p.kBuf[k] = eval.Eval(p.ctx, p.proj.OrderBy[k].Expr, p.kRowbuf, p.kScope)
+	}
+	return p.kBuf
+}
+
 func (p *projSink) push(row []value.Value) {
+	if p.limitCap >= 0 && len(p.outs) >= p.limitCap {
+		return
+	}
 	out := p.oArena.alloc()
 	for i, c := range p.returns {
 		out[i] = c.Eval(p.ctx, row, p.slots)
@@ -85,6 +146,14 @@ func (p *projSink) push(row []value.Value) {
 		}
 		p.seen[string(p.key)] = struct{}{}
 	}
+	if p.topk != nil {
+		// Keys evaluate here, against the live matched row -- so the
+		// matched row never needs retaining at all on this path.
+		if !p.topk.offer(p.pushKeys(out, row), out) {
+			p.oArena.rollback()
+		}
+		return
+	}
 	p.outs = append(p.outs, out)
 	if p.needM {
 		p.ms = append(p.ms, p.mArena.copyRow(row))
@@ -93,7 +162,132 @@ func (p *projSink) push(row []value.Value) {
 
 func (p *projSink) close() {}
 
+// topKRows is the sink's bounded ORDER BY + LIMIT accumulator: at most
+// bound rows survive, under the same total order finalize's sort applies
+// (ORDER BY keys, then arrival sequence), so streaming selection equals
+// materialize-sort-truncate exactly. A max-heap over parallel arrays;
+// the worst survivor sits at the root and each rejected offer costs one
+// comparison.
+type topKRows struct {
+	bound int
+	nk    int
+	desc  []bool
+	keys  []value.Value // n*nk, admitted key vectors
+	outs  [][]value.Value
+	seqs  []int
+	n     int
+	seq   int
+}
+
+func newTopKRows(bound, nk int, order []ast.SortItem) *topKRows {
+	t := &topKRows{bound: bound, nk: nk, desc: make([]bool, nk)}
+	for i := range order {
+		t.desc[i] = order[i].Desc
+	}
+	return t
+}
+
+// cmpTo compares candidate (keys, seq) against admitted entry i.
+func (t *topKRows) cmpTo(keys []value.Value, seq, i int) int {
+	for k := 0; k < t.nk; k++ {
+		ord := value.OrderCmp(keys[k], t.keys[i*t.nk+k])
+		if t.desc[k] {
+			ord = -ord
+		}
+		if ord != 0 {
+			return ord
+		}
+	}
+	return seq - t.seqs[i]
+}
+
+// cmpEntries compares admitted entries a and b.
+func (t *topKRows) cmpEntries(a, b int) int {
+	return t.cmpTo(t.keys[a*t.nk:(a+1)*t.nk], t.seqs[a], b)
+}
+
+// offer admits the row when it belongs in the current top bound, copying
+// its keys (the caller's buffer is reused). Reports whether the row was
+// retained.
+func (t *topKRows) offer(keys []value.Value, out []value.Value) bool {
+	seq := t.seq
+	t.seq++
+	if t.bound == 0 {
+		return false
+	}
+	if t.n == t.bound && t.cmpTo(keys, seq, 0) >= 0 {
+		return false
+	}
+	if t.n < t.bound {
+		t.keys = append(t.keys, keys...)
+		t.outs = append(t.outs, out)
+		t.seqs = append(t.seqs, seq)
+		t.n++
+		t.siftUp(t.n - 1)
+		return true
+	}
+	copy(t.keys[:t.nk], keys)
+	t.outs[0], t.seqs[0] = out, seq
+	t.siftDown(0)
+	return true
+}
+
+func (t *topKRows) swap(a, b int) {
+	for k := 0; k < t.nk; k++ {
+		t.keys[a*t.nk+k], t.keys[b*t.nk+k] = t.keys[b*t.nk+k], t.keys[a*t.nk+k]
+	}
+	t.outs[a], t.outs[b] = t.outs[b], t.outs[a]
+	t.seqs[a], t.seqs[b] = t.seqs[b], t.seqs[a]
+}
+
+func (t *topKRows) siftUp(i int) {
+	for i > 0 {
+		parent := (i - 1) / 2
+		if t.cmpEntries(i, parent) <= 0 {
+			return
+		}
+		t.swap(i, parent)
+		i = parent
+	}
+}
+
+func (t *topKRows) siftDown(i int) {
+	for {
+		l := 2*i + 1
+		if l >= t.n {
+			return
+		}
+		big := l
+		if r := l + 1; r < t.n && t.cmpEntries(r, l) > 0 {
+			big = r
+		}
+		if t.cmpEntries(big, i) <= 0 {
+			return
+		}
+		t.swap(i, big)
+		i = big
+	}
+}
+
+// sorted returns the survivors in final order (ascending under the total
+// order).
+func (t *topKRows) sorted() [][]value.Value {
+	idx := make([]int, t.n)
+	for i := range idx {
+		idx[i] = i
+	}
+	slices.SortFunc(idx, t.cmpEntries)
+	outs := make([][]value.Value, t.n)
+	for i, j := range idx {
+		outs[i] = t.outs[j]
+	}
+	return outs
+}
+
 func (p *projSink) finalize() [][]value.Value {
+	if p.topk != nil {
+		return paginate(p.topk.sorted(), p.proj.Skip, p.proj.Limit)
+	}
 	outs := p.outs
 	if len(p.proj.OrderBy) > 0 {
 		matchedAt := func(int) []value.Value { return nil }
