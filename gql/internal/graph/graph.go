@@ -97,6 +97,11 @@ type Graph interface {
 	// pre-resolved matcher (same devirtualization rationale as
 	// AppendNeighborsMatched).
 	AppendRelationshipsMatched(nodes []chickpeas.NodeID, poss []uint32, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) ([]chickpeas.NodeID, []uint32)
+	// CountNeighborsMatched counts the m-matched dir relationships from u
+	// to v -- the bound-both-endpoints probe, so an existence or
+	// multiplicity test never enumerates a candidate set. Equal to the
+	// number of times v appears in the matched dir expansion of u.
+	CountNeighborsMatched(u, v chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) int
 
 	// CompileNodeMatcher pre-resolves a node pattern's labels and inline
 	// {key: value} properties (params already resolved to values by the

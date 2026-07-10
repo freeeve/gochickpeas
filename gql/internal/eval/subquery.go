@@ -76,6 +76,9 @@ type subqueryShape struct {
 	// labels and literal props only); scan0Done marks it filled.
 	scan0     []graph.NodeID
 	scan0Done bool
+	// matchers lazily holds each hop's pre-resolved rel matcher, so the
+	// per-candidate seam calls skip name resolution.
+	matchers []*graph.RelMatcher
 	// BFS scratch for quantified hops.
 	expanded map[graph.NodeID]struct{}
 	emitted  map[graph.NodeID]struct{}
@@ -262,20 +265,34 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 			}
 			bound, isBound = b, true
 		}
-		if rel.Length != nil {
-			candidates = s.existsReach(ctx, fromID, rel, candidates)
-		} else {
-			candidates = ctx.G.AppendNeighborsByType(candidates, fromID, engineDir(rel.Dir), rel.Types)
-		}
-		// Filter the appended tail in place: endpoint binding and the
-		// pattern node's own constraints.
-		kept := candidates[:0]
-		for _, nid := range candidates {
-			if (!isBound || bound == nid) && NodeMatches(ctx, nid, node.Labels, node.Props) {
-				kept = append(kept, nid)
+		switch {
+		case rel.Length == nil && isBound:
+			// Both endpoints bound: count the matching relationships
+			// directly instead of enumerating a candidate set, appending
+			// the bound node once per relationship so match multiplicity
+			// (COUNT forms) is preserved exactly.
+			if NodeMatches(ctx, bound, node.Labels, node.Props) {
+				n := ctx.G.CountNeighborsMatched(fromID, bound, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
+				for range n {
+					candidates = append(candidates, bound)
+				}
 			}
+		default:
+			if rel.Length != nil {
+				candidates = s.existsReach(ctx, fromID, rel, level-1, candidates)
+			} else {
+				candidates = ctx.G.AppendNeighborsMatched(candidates, fromID, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
+			}
+			// Filter the appended tail in place: endpoint binding and the
+			// pattern node's own constraints.
+			kept := candidates[:0]
+			for _, nid := range candidates {
+				if (!isBound || bound == nid) && NodeMatches(ctx, nid, node.Labels, node.Props) {
+					kept = append(kept, nid)
+				}
+			}
+			candidates = kept
 		}
-		candidates = kept
 	}
 	s.cand[level] = candidates
 	for _, c := range candidates {
@@ -320,7 +337,19 @@ func (s *subqueryShape) existsScan(ctx *Ctx, node *ast.NodePat) []graph.NodeID {
 // needs the reachable set, not per-path enumeration -- the same collapse
 // varReach applies in the main pipeline. BFS state reuses the shape's
 // scratch.
-func (s *subqueryShape) existsReach(ctx *Ctx, from graph.NodeID, rel *ast.RelPat, dst []graph.NodeID) []graph.NodeID {
+// matcherFor lazily resolves (once per shape) hop i's rel matcher; the
+// shape is Ctx-cached and single-threaded, so plain lazy fill is safe.
+func (s *subqueryShape) matcherFor(ctx *Ctx, hop int) *graph.RelMatcher {
+	if s.matchers == nil {
+		s.matchers = make([]*graph.RelMatcher, len(s.pattern.Hops))
+	}
+	if s.matchers[hop] == nil {
+		s.matchers[hop] = ctx.G.CompileRelMatcher(s.pattern.Hops[hop].Rel.Types)
+	}
+	return s.matchers[hop]
+}
+
+func (s *subqueryShape) existsReach(ctx *Ctx, from graph.NodeID, rel *ast.RelPat, hop int, dst []graph.NodeID) []graph.NodeID {
 	var minHops uint64
 	if rel.Length.Min != nil {
 		minHops = *rel.Length.Min
@@ -348,7 +377,7 @@ func (s *subqueryShape) existsReach(ctx *Ctx, from graph.NodeID, rel *ast.RelPat
 		d := depth + 1
 		next = next[:0]
 		for _, u := range frontier {
-			s.reach = ctx.G.AppendNeighborsByType(s.reach[:0], u, dir, rel.Types)
+			s.reach = ctx.G.AppendNeighborsMatched(s.reach[:0], u, dir, s.matcherFor(ctx, hop))
 			for _, nb := range s.reach {
 				if d >= minHops {
 					if _, dup := s.emitted[nb]; !dup {

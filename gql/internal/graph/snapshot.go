@@ -183,6 +183,12 @@ func (s *SnapshotGraph) AppendRelationshipsMatched(nodes []chickpeas.NodeID, pos
 	return nodes, poss
 }
 
+// CountNeighborsMatched counts u's m-matched dir relationships to v via
+// the core degree-adaptive probe.
+func (s *SnapshotGraph) CountNeighborsMatched(u, v chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) int {
+	return s.g.CountNeighborsMatch(u, v, dir, m.m)
+}
+
 // SubstringCandidates: the native backend keeps its scan-filter (no
 // trigram index), matching the Rust native default.
 func (s *SnapshotGraph) SubstringCandidates(label, field, needle string) (*nodeset.Set, bool) {

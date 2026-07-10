@@ -127,6 +127,17 @@ evidence order:
    29.0x), Q1 543 -> 361 ms (47.0x, compounding with round 2's fused
    comparison), IC2 10.3x. Gate 89/89 MATCH.
 3. genMatches / subquery probes for Q18/Q12 (72% cum across the mix).
+   ROUND 5 (partial): Q18's post-typed-adjacency profile still showed
+   54% flat in the traversal scan under subqueryShape.dfs -- a bound
+   endpoint enumerated every neighbor then filtered to one id. Landed:
+   (a) CountNeighborsMatch, a core degree-adaptive bound-both-endpoints
+   probe (scans the smaller endpoint's typed run; multiplicity-exact for
+   COUNT forms), surfaced through the seam and used by the subquery DFS
+   when the next level's variable is already bound; (b) per-shape lazy
+   rel matchers, ending the per-candidate Match name-resolution + typed-
+   holder lock in the DFS and existsReach. Stash-interleaved Q18 under
+   identical load: 6064 vs 7901 ms (-23%). Gate 89/89 MATCH. Absolute
+   table numbers still owed a quiet machine (load 12-16 all round).
 
 ### Same-commit table (both sides at 77473b8, emitted to bench-out)
 

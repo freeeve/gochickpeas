@@ -79,6 +79,61 @@ func (g *Snapshot) typedPairFor(t RelType) *typedPair {
 	return p
 }
 
+// CountNeighborsMatch counts the m-matched dir relationships from u to v
+// -- the bound-both-endpoints existence/multiplicity probe. Each
+// direction scans the lower-degree endpoint's run (v's reverse run lists
+// the same relationships), through the typed view when one exists;
+// result multiset cardinality is identical to filtering an enumeration.
+func (g *Snapshot) CountNeighborsMatch(u, v NodeID, dir Direction, m RelMatch) int {
+	n := 0
+	if dir == Outgoing || dir == Both {
+		n += g.countDirMatch(u, v, true, m)
+	}
+	if dir == Incoming || dir == Both {
+		n += g.countDirMatch(u, v, false, m)
+	}
+	return n
+}
+
+// countDirMatch counts one direction's u->v matches, side-picked by run
+// length.
+func (g *Snapshot) countDirMatch(u, v NodeID, out bool, m RelMatch) int {
+	if tcU := m.tp.view(out); tcU != nil {
+		tcV := m.tp.view(!out)
+		loU, hiU := relRange(tcU.offsets, u)
+		if tcV != nil {
+			if loV, hiV := relRange(tcV.offsets, v); hiV-loV < hiU-loU {
+				return countHits(tcV.nbrs[loV:hiV], u)
+			}
+		}
+		return countHits(tcU.nbrs[loU:hiU], v)
+	}
+	// Scan fallback: u's primary run with per-rel type tests.
+	offsets, nbrs, types := g.outOffsets, g.outNbrs, g.outTypes
+	if !out {
+		offsets, nbrs, types = g.inOffsets, g.inNbrs, g.inTypes
+	}
+	lo, hi := relRange(offsets, u)
+	n := 0
+	for k := lo; k < hi; k++ {
+		if nbrs[k] == v && m.matches(types[k]) {
+			n++
+		}
+	}
+	return n
+}
+
+// countHits counts occurrences of target in run.
+func countHits(run []NodeID, target NodeID) int {
+	n := 0
+	for _, x := range run {
+		if x == target {
+			n++
+		}
+	}
+	return n
+}
+
 // buildTypedCSR restricts one direction's CSR to a single type in one
 // linear pass, preserving per-node relative order. poss carries each kept
 // relationship's property-read position: the raw index, or posMap[index]
