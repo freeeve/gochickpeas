@@ -205,7 +205,7 @@ func (a *Aggregation) Run() (*AggResult, error) {
 
 	type agg struct {
 		count uint64
-		sum   int64
+		sum   acc128
 	}
 	type partial struct {
 		groups map[groupKey]*agg
@@ -296,7 +296,7 @@ func (a *Aggregation) Run() (*AggResult, error) {
 					e.count++
 					if a.hasSum {
 						if v, ok := sumCol.Get(node); ok {
-							e.sum += v
+							e.sum.add(v)
 						}
 					}
 				}
@@ -321,7 +321,7 @@ func (a *Aggregation) Run() (*AggResult, error) {
 				for k, e := range y.groups {
 					if cur, ok := x.groups[k]; ok {
 						cur.count += e.count
-						cur.sum += e.sum
+						cur.sum.merge(e.sum)
 					} else {
 						x.groups[k] = e
 					}
@@ -332,7 +332,7 @@ func (a *Aggregation) Run() (*AggResult, error) {
 		for k, e := range part.groups {
 			if cur, ok := groups[k]; ok {
 				cur.count += e.count
-				cur.sum += e.sum
+				cur.sum.merge(e.sum)
 			} else {
 				groups[k] = e
 			}
@@ -345,7 +345,11 @@ func (a *Aggregation) Run() (*AggResult, error) {
 
 	rows := make([]AggRow, 0, len(groups))
 	for k, e := range groups {
-		rows = append(rows, AggRow{Key: k.toSlice(), Count: e.count, Sum: e.sum})
+		row := AggRow{Key: k.toSlice(), Count: e.count}
+		if s, ok := e.sum.int64(); ok {
+			row.Sum = &s
+		}
+		rows = append(rows, row)
 	}
 	fields := make([]string, 0, len(a.group)+2)
 	if a.byLabel {

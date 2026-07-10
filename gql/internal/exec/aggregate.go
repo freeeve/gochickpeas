@@ -18,7 +18,7 @@ import (
 type aggState struct {
 	kind    plan.AggKind
 	count   int64
-	sumI    int64
+	sumI    acc128
 	sumF    float64
 	isFloat bool
 	any     bool
@@ -38,7 +38,7 @@ func (s *aggState) update(arg value.Value, present bool) {
 		}
 	case plan.AggSum:
 		if i, ok := arg.AsInt(); ok {
-			s.sumI += i
+			s.sumI.add(i)
 			s.any = true
 		} else if arg.Kind() == value.KindFloat {
 			f, _ := arg.AsFloat()
@@ -80,9 +80,15 @@ func (s *aggState) finalize() value.Value {
 		case !s.any:
 			return value.Int(0)
 		case s.isFloat:
-			return value.Float(s.sumF + float64(s.sumI))
+			return value.Float(s.sumF + s.sumI.float64())
 		}
-		return value.Int(s.sumI)
+		// A true total outside int64 range is Null, matching the engine's
+		// overflow policy (no per-row error channel) and the core
+		// aggregate's nil Sum.
+		if v, ok := s.sumI.int64(); ok {
+			return value.Int(v)
+		}
+		return value.Null()
 	case plan.AggAvg:
 		if s.avgN == 0 {
 			return value.Null()

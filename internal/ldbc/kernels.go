@@ -183,11 +183,12 @@ func commonNeighborRows(g *chickpeas.Snapshot) ([][]int64, error) {
 }
 
 // aggRows renders an AggResult's single-key groups as [key, count, sum]
-// sorted by key ascending.
+// sorted by key ascending. LDBC-scale totals cannot leave int64 range; a
+// nil Sum here is an engine defect, and the panic is the loudest signal.
 func aggRows(res *chickpeas.AggResult) [][]int64 {
 	rows := make([][]int64, len(res.Rows))
 	for i, r := range res.Rows {
-		rows[i] = []int64{r.Key[0], int64(r.Count), r.Sum}
+		rows[i] = []int64{r.Key[0], int64(r.Count), *r.Sum}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
 	return rows

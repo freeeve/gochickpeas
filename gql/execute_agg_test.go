@@ -260,3 +260,54 @@ func TestDistinctCollectAndMinMaxStrings(t *testing.T) {
 		t.Fatalf("max name = %v", v)
 	}
 }
+
+// TestSumInt64Overflow ports the rustychickpeas tasks/236 sum-overflow
+// semantics: a true total outside int64 range is Null (the engine's
+// overflow policy -- no per-row error channel), decided by the total
+// alone; a transient excursion that nets back into range stays exact; a
+// sum over no rows is 0, never Null.
+func TestSumInt64Overflow(t *testing.T) {
+	build := func(vals ...int64) *chickpeas.Snapshot {
+		b := chickpeas.NewBuilder(len(vals)+1, 1)
+		for _, v := range vals {
+			id, _ := b.AddNode("N")
+			_ = b.SetProp(id, "v", v)
+		}
+		return b.Finalize()
+	}
+	const q = "MATCH (n:N) RETURN sum(n.v) AS s"
+	sumOf := func(g *chickpeas.Snapshot) value.Value {
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatal("no row")
+		}
+		v, _ := r.Get("s")
+		return v
+	}
+
+	// Exact at both boundaries.
+	if v := sumOf(build(9223372036854775807)); func() int64 { i, _ := v.AsInt(); return i }() != 9223372036854775807 {
+		t.Fatalf("sum at MaxInt64 = %v", v)
+	}
+	if v := sumOf(build(-9223372036854775808)); func() int64 { i, _ := v.AsInt(); return i }() != -9223372036854775808 {
+		t.Fatalf("sum at MinInt64 = %v", v)
+	}
+	// One past either boundary: Null.
+	if v := sumOf(build(9223372036854775807, 1)); !v.IsNull() {
+		t.Fatalf("Max+1 = %v, want null", v)
+	}
+	if v := sumOf(build(-9223372036854775808, -1)); !v.IsNull() {
+		t.Fatalf("Min-1 = %v, want null", v)
+	}
+	// Transient excursion netting back to zero stays exact.
+	if v := sumOf(build(9223372036854775807, 9223372036854775807,
+		-9223372036854775807, -9223372036854775807)); func() int64 { i, ok := v.AsInt(); _ = ok; return i }() != 0 || v.IsNull() {
+		t.Fatalf("net-zero excursion = %v, want 0", v)
+	}
+	// Sum over no rows is 0, never Null.
+	empty := chickpeas.NewBuilder(1, 1).Finalize()
+	if v := sumOf(empty); v.IsNull() {
+		t.Fatalf("empty sum = %v, want 0", v)
+	}
+}

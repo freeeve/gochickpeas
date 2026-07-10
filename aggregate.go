@@ -194,11 +194,14 @@ type aggFilter struct {
 
 // AggRow is one output group: the key values in field order (the source
 // label as its index when grouping by label), the row count, and the
-// summed value (0 without a Sum column).
+// summed value. Sum is nil exactly when the group's true total lies
+// outside int64 range (the accumulator is 128-bit, so the verdict depends
+// on the total alone, never on how work was partitioned); a query without
+// a Sum column reports 0, not nil.
 type AggRow struct {
 	Key   []int64
 	Count uint64
-	Sum   int64
+	Sum   *int64
 }
 
 // AggResult is the outcome of Run.

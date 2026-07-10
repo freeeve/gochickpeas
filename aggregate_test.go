@@ -37,6 +37,15 @@ func aggFixture(t *testing.T) *chickpeas.Snapshot {
 	return b.Finalize()
 }
 
+// sumOf unwraps a row's Sum, with a sentinel for the nil (overflow) case
+// so mismatch failures print recognizably.
+func sumOf(r chickpeas.AggRow) int64 {
+	if r.Sum == nil {
+		return -1 << 62
+	}
+	return *r.Sum
+}
+
 func rowsByKey(res *chickpeas.AggResult) map[int64]chickpeas.AggRow {
 	out := map[int64]chickpeas.AggRow{}
 	for _, r := range res.Rows {
@@ -67,13 +76,13 @@ func TestAggregateFilterGroupSum(t *testing.T) {
 	}
 	rows := rowsByKey(res)
 	// bins: <35 -> 0 {30}, [35,45) -> 1 {35,40}, >=45 -> 2 {45,50}
-	if rows[0].Count != 1 || rows[0].Sum != 2 {
+	if rows[0].Count != 1 || sumOf(rows[0]) != 2 {
 		t.Fatalf("bin 0: %+v", rows[0])
 	}
-	if rows[1].Count != 2 || rows[1].Sum != 3+4 {
+	if rows[1].Count != 2 || sumOf(rows[1]) != 3+4 {
 		t.Fatalf("bin 1: %+v", rows[1])
 	}
-	if rows[2].Count != 2 || rows[2].Sum != 5+6 {
+	if rows[2].Count != 2 || sumOf(rows[2]) != 5+6 {
 		t.Fatalf("bin 2: %+v", rows[2])
 	}
 }
