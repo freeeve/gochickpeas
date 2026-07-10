@@ -5,6 +5,7 @@ package chickpeas
 
 import (
 	"fmt"
+	"slices"
 	"sync/atomic"
 
 	"github.com/freeeve/gochickpeas/nodeset"
@@ -210,6 +211,9 @@ func (a *Aggregation) Run() (*AggResult, error) {
 	type partial struct {
 		groups map[groupKey]*agg
 		total  uint64
+		// nbScratch collects one source's matched neighbors for the
+		// through+sum dedup (sorted + compacted per node, reused).
+		nbScratch []NodeID
 	}
 	var bailed atomic.Bool
 	groups := map[groupKey]*agg{}
@@ -301,16 +305,45 @@ func (a *Aggregation) Run() (*AggResult, error) {
 					}
 				}
 				if a.hasThrough {
-					for nb := range g.NeighborsMatch(node, a.throughDir, throughMatch) {
+					// Count and sum answer different questions on the
+					// through path (rustychickpeas 240): count stays per
+					// RELATIONSHIP, while a source's sum value contributes
+					// once per DISTINCT neighbor -- deduped across parallel
+					// same-type rels, so the Both-direction / undirected-
+					// stored-both-ways case no longer inflates sums by the
+					// source's degree. RelsMatch keeps per-rel multiplicity
+					// independent of the neighbor-id surfaces' set contract.
+					keyOf := func(nb NodeID) groupKey {
+						nkb := kb
+						nkb.rest = append([]int64(nil), kb.rest...)
+						nkb.push(int64(nb))
+						return nkb.key()
+					}
+					acc.nbScratch = acc.nbScratch[:0]
+					for r := range g.RelsMatch(node, a.throughDir, throughMatch) {
+						nb := r.Neighbor
 						if a.neighborFilter != nil {
 							if _, ok := a.neighborFilter[nb]; !ok {
 								continue
 							}
 						}
-						nkb := kb
-						nkb.rest = append([]int64(nil), kb.rest...)
-						nkb.push(int64(nb))
-						bump(nkb.key())
+						k := keyOf(nb)
+						e, ok := acc.groups[k]
+						if !ok {
+							e = &agg{}
+							acc.groups[k] = e
+						}
+						e.count++
+						acc.nbScratch = append(acc.nbScratch, nb)
+					}
+					if a.hasSum && len(acc.nbScratch) > 0 {
+						if v, ok := sumCol.Get(node); ok {
+							slices.Sort(acc.nbScratch)
+							acc.nbScratch = slices.Compact(acc.nbScratch)
+							for _, nb := range acc.nbScratch {
+								acc.groups[keyOf(nb)].sum.add(v)
+							}
+						}
 					}
 				} else {
 					bump(kb.key())

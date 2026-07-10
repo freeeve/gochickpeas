@@ -6,6 +6,45 @@ package chickpeas
 
 import "testing"
 
+// TestAggregateThroughSumPerSourceCountPerRel pins the through-path split
+// (mirror of rustychickpeas 240's
+// aggregate_through_sum_is_per_source_count_is_per_rel): Post0 (w=10)
+// reaches Tag2 via TWO parallel hasTag rels plus Tag3; Post1 (w=100)
+// reaches Tag2. count(Tag2) stays per-rel at 3; sum(Tag2) counts each
+// source once -- 110, not the degree-inflated 120.
+func TestAggregateThroughSumPerSourceCountPerRel(t *testing.T) {
+	b := NewBuilder(8, 8)
+	post0, _ := b.AddNode("Post")
+	post1, _ := b.AddNode("Post")
+	tag2, _ := b.AddNode("Tag")
+	tag3, _ := b.AddNode("Tag")
+	_ = b.SetProp(post0, "w", int64(10))
+	_ = b.SetProp(post1, "w", int64(100))
+	for _, r := range [][2]NodeID{{post0, tag2}, {post0, tag2}, {post0, tag3}, {post1, tag2}} {
+		if _, err := b.AddRel(r[0], r[1], "hasTag"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+	res, err := g.Aggregate("Post").Through("hasTag", Outgoing).Sum("w").Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[NodeID][2]int64{}
+	for _, r := range res.Rows {
+		if r.Sum == nil {
+			t.Fatalf("nil sum for %v", r.Key)
+		}
+		got[NodeID(r.Key[len(r.Key)-1])] = [2]int64{int64(r.Count), *r.Sum}
+	}
+	if got[tag2] != [2]int64{3, 110} {
+		t.Fatalf("tag2 = %v, want count 3 / sum 110", got[tag2])
+	}
+	if got[tag3] != [2]int64{1, 10} {
+		t.Fatalf("tag3 = %v, want count 1 / sum 10", got[tag3])
+	}
+}
+
 // TestStrDenseGateCountsDistinctPositions re-sets a string property nine
 // times on each of 100 nodes in a 1000-node span: 900 staged writes clear
 // the 0.8*span write gate, but only 100 distinct positions are filled, so
