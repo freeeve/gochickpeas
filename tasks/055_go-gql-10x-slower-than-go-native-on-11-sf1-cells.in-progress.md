@@ -87,6 +87,26 @@ CASE dispatch -- candidates: fused CASE-over-int-thresholds, or the
 scan-level batch filter which subsumes all of these), Q12/Q18 subquery
 probes, streaming sink-level top-k.
 
+## Progress (2026-07-10, round 2 close-out)
+
+Partial re-measure at load ~5-13 (still not reference-quiet): the
+fusion-sensitive cells dropped DESPITE residual load -- Q1 543 -> 451 ms,
+Q2 77 -> 71 ms -- while filter-light cells drifted up with load; treat
+only the direction as signal, defer table updates to a quiet box.
+
+Nine-query combined CPU profile (r9) scopes the next levers, in
+evidence order:
+
+1. Sparse-column position lookups: mapaccess2_fast32 (~5% flat) under
+   propReader.read -- the core colPosIndex is a map probed per read; a
+   rank/select layout (column_rank.go machinery exists) would make
+   sparse random reads branchless. Core-level, fully general.
+2. AppendNeighborsMatch inner loop (18% cum, biggest single site):
+   RelMatch.matches per rel + roaring binarySearch under the type
+   probes -- hoisting type containment to range/bitmap intersection is
+   the candidate. Core-level.
+3. genMatches / subquery probes for Q18/Q12 (72% cum across the mix).
+
 ### Same-commit table (both sides at 77473b8, emitted to bench-out)
 
 The apples-to-apples re-measure the filing asked for; every cell improved
