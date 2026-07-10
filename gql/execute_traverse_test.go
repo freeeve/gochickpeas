@@ -481,3 +481,61 @@ func TestAcyclicPathMode(t *testing.T) {
 		t.Fatalf("unbounded ACYCLIC: %v", err)
 	}
 }
+
+// TestChainCollapseVarExpand pins the *0.. chain collapse (061 lever 1b)
+// and its structural guards: a functional rel type whose target label
+// only terminals carry resolves to the chain root; a label carried by an
+// interior node, or a non-functional type, keeps the full reachable
+// walk. The dual-path harness checks both executions agree throughout.
+func TestChainCollapseVarExpand(t *testing.T) {
+	// Collapsible: c2 -R-> c1 -R-> root; Root only on the terminal.
+	b := chickpeas.NewBuilder(8, 8)
+	root, _ := b.AddNode("Root", "N")
+	c1, _ := b.AddNode("N")
+	c2, _ := b.AddNode("N")
+	_ = b.SetProp(root, "name", "root")
+	_ = b.SetProp(c1, "name", "c1")
+	_ = b.SetProp(c2, "name", "c2")
+	b.AddRel(c1, root, "R")
+	b.AddRel(c2, c1, "R")
+	g := b.Finalize()
+	wantStrs(t, strCol(t, g,
+		"MATCH (m:N {name: 'c2'})-[:R]->{0,}(r:Root) RETURN r.name AS name", "name"),
+		"root")
+	// Zero-length arm: the start itself carries the label.
+	wantStrs(t, strCol(t, g,
+		"MATCH (m:N {name: 'root'})-[:R]->{0,}(r:Root) RETURN r.name AS name", "name"),
+		"root")
+
+	// Interior label: Root also on the middle node -- the collapse must
+	// NOT fire, and the walk emits both labeled reachables.
+	b2 := chickpeas.NewBuilder(8, 8)
+	root2, _ := b2.AddNode("Root", "N")
+	mid2, _ := b2.AddNode("Root", "N")
+	leaf2, _ := b2.AddNode("N")
+	_ = b2.SetProp(root2, "name", "root")
+	_ = b2.SetProp(mid2, "name", "mid")
+	_ = b2.SetProp(leaf2, "name", "leaf")
+	b2.AddRel(mid2, root2, "R")
+	b2.AddRel(leaf2, mid2, "R")
+	g2 := b2.Finalize()
+	wantStrs(t, strColOrdered(t, g2,
+		"MATCH (m:N {name: 'leaf'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
+		"mid", "root")
+
+	// Non-functional type: a node with two outgoing R rels -- both roots
+	// reachable, collapse must not fire.
+	b3 := chickpeas.NewBuilder(8, 8)
+	rootA, _ := b3.AddNode("Root", "N")
+	rootB, _ := b3.AddNode("Root", "N")
+	fork, _ := b3.AddNode("N")
+	_ = b3.SetProp(rootA, "name", "ra")
+	_ = b3.SetProp(rootB, "name", "rb")
+	_ = b3.SetProp(fork, "name", "fork")
+	b3.AddRel(fork, rootA, "R")
+	b3.AddRel(fork, rootB, "R")
+	g3 := b3.Finalize()
+	wantStrs(t, strColOrdered(t, g3,
+		"MATCH (m:N {name: 'fork'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
+		"ra", "rb")
+}

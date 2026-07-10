@@ -5,6 +5,7 @@
 package exec
 
 import (
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -34,6 +35,40 @@ type genScratch struct {
 	walk       varWalk
 	dedup      map[graph.NodeID]struct{}
 	semiBuf    []graph.NodeID
+	// chainRoots / chainFunc cache each var-expand op's chain-collapse
+	// and functionality resolutions for this execution (presence =
+	// checked). Plan ops are shared across cached executions, so the
+	// resolutions cannot live on the op itself.
+	chainRoots map[*plan.BindOp]chickpeas.RootsVia
+	chainFunc  map[*plan.BindOp]bool
+}
+
+// chainRootsFor resolves (once per op per execution) whether op's
+// reachable walk collapses to a root-array lookup.
+func (s *genScratch) chainRootsFor(ctx *eval.Ctx, op *plan.BindOp) (chickpeas.RootsVia, bool) {
+	if s.chainRoots == nil {
+		s.chainRoots = map[*plan.BindOp]chickpeas.RootsVia{}
+	}
+	roots, seen := s.chainRoots[op]
+	if !seen {
+		roots, _ = ctx.G.ChainRootsVia(op.Types, op.Dir, op.Labels)
+		s.chainRoots[op] = roots
+	}
+	return roots, roots != nil
+}
+
+// chainFuncFor resolves (once per op per execution) whether op's rel
+// type is functional in its direction.
+func (s *genScratch) chainFuncFor(ctx *eval.Ctx, op *plan.BindOp) bool {
+	if s.chainFunc == nil {
+		s.chainFunc = map[*plan.BindOp]bool{}
+	}
+	ok, seen := s.chainFunc[op]
+	if !seen {
+		ok = op.Dir != chickpeas.Both && ctx.G.FunctionalVia(op.Types, op.Dir)
+		s.chainFunc[op] = ok
+	}
+	return ok
 }
 
 // reachScratch holds varReach's dedup'd-BFS working sets, reused across a

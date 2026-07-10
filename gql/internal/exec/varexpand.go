@@ -141,6 +141,36 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 	// the BFS keeps the endpoint SET exact: any walk in the pair-filtered
 	// graph reduces to a trail avoiding those rels and vice versa.
 	if (op.Min == 0 || op.Max == nil) && !collectPairs {
+		// Chain collapse: a zero-minimum unbounded reach over a
+		// functional rel type whose target label only chain terminals
+		// carry is ONE root-array lookup -- the structural facts are
+		// verified against the data and cached by the engine
+		// (ChainCollapseVia), and the per-op resolution is cached per
+		// execution. Per-hop predicates and rel-uniqueness checks keep
+		// the general walk.
+		if op.Min == 0 && op.Max == nil && gate.pred == nil &&
+			(op.Uniq == nil || !op.Uniq.Check) && len(op.Labels) > 0 {
+			if roots, ok := scratch.chainRootsFor(ctx, op); ok {
+				root := start
+				if int(start) < len(roots) {
+					root = roots[start]
+				}
+				if (!haveBound || bound == root) && ctx.G.NodeMatcherAccepts(m, root) {
+					*cand = append(*cand, root)
+				}
+				return
+			}
+		}
+		// Functional chain walk: a functional type's reachable set is its
+		// ancestor chain, so the general BFS's frontier and dedup maps
+		// reduce to following the single rel -- honoring the same per-hop
+		// predicate and rel-uniqueness checks per step. Falls back to the
+		// BFS past chainWalkMax steps (a cycle in a functional type, or a
+		// pathological chain).
+		if scratch.chainFuncFor(ctx, op) &&
+			chainReach(ctx, start, op, m, rm, gate, bound, haveBound, uniq, cand, &scratch.reach) {
+			return
+		}
 		varReach(ctx, start, op, m, rm, gate, bound, haveBound, uniq, cand, &scratch.reach)
 		return
 	}
@@ -209,6 +239,68 @@ func varExpandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, r
 // separately so a node re-reached via a cycle at depth >= min -- e.g. the
 // start when min >= 1 -- still emits once. The gate's stateless predicate
 // prunes edges here too; its carry never applies (see hopCarry).
+// chainWalkMax bounds the functional chain walk; a longer chain (or a
+// cycle, which a functional type can still form) falls back to the
+// dedup'd BFS. Real forest chains -- reply threads, org hierarchies --
+// sit far below it.
+const chainWalkMax = 64
+
+// chainReach is varReach for a FUNCTIONAL rel type: the reachable set is
+// the ancestor chain, so it follows the single rel per node with no
+// frontier or dedup state, applying the same bound/matcher acceptance,
+// hop-gate predicate, and rel-uniqueness exclusion per step. Reports
+// false (leaving out untouched) when the chain exceeds chainWalkMax --
+// the caller then runs the general walk.
+func chainReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, bound graph.NodeID, haveBound bool, uniq *uniqEnv, out *[]graph.NodeID, rs *reachScratch) bool {
+	cap := uint64(1<<63 - 1)
+	if op.Max != nil {
+		cap = *op.Max
+	}
+	keep := func(nb graph.NodeID) bool {
+		return (!haveBound || bound == nb) && ctx.G.NodeMatcherAccepts(m, nb)
+	}
+	edgeOK := func(u, nb graph.NodeID) bool {
+		if op.Uniq == nil || !op.Uniq.Check {
+			return true
+		}
+		a, b := uniqPair(op.Dir, u, nb)
+		return !uniq.used(op.Uniq.Scope, a, b)
+	}
+	mark := len(*out)
+	if op.Min == 0 && keep(start) {
+		*out = append(*out, start)
+	}
+	cur := start
+	for depth := uint64(0); depth < cap; {
+		if depth >= chainWalkMax {
+			*out = (*out)[:mark]
+			return false
+		}
+		rs.nbuf, rs.pbuf = ctx.G.AppendRelationshipsMatched(rs.nbuf[:0], rs.pbuf[:0], cur, op.Dir, rm)
+		if len(rs.nbuf) == 0 {
+			return true
+		}
+		nb := rs.nbuf[0]
+		if gate.pred != nil && !gate.pred.keep(ctx, rs.pbuf[0]) {
+			return true
+		}
+		if !edgeOK(cur, nb) {
+			return true
+		}
+		depth++
+		// A functional chain revisiting the start has cycled; every
+		// reachable node is already emitted.
+		if nb == start {
+			return true
+		}
+		if depth >= op.Min && keep(nb) {
+			*out = append(*out, nb)
+		}
+		cur = nb
+	}
+	return true
+}
+
 func varReach(ctx *eval.Ctx, start graph.NodeID, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, gate hopGate, bound graph.NodeID, haveBound bool, uniq *uniqEnv, out *[]graph.NodeID, rs *reachScratch) {
 	cap := uint64(1<<63 - 1)
 	if op.Max != nil {

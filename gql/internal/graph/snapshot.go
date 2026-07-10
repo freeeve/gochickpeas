@@ -193,6 +193,25 @@ func (s *SnapshotGraph) CountNeighborsMatched(u, v chickpeas.NodeID, dir chickpe
 	return s.g.CountNeighborsMatch(u, v, dir, m.m)
 }
 
+// ChainRootsVia resolves the chain-collapse capability through the core
+// structural checks: one rel type, tried against each candidate label.
+func (s *SnapshotGraph) ChainRootsVia(types []string, dir chickpeas.Direction, labels []string) (chickpeas.RootsVia, bool) {
+	if len(types) != 1 {
+		return nil, false
+	}
+	for _, l := range labels {
+		if roots, ok := s.g.ChainCollapseVia(types[0], dir, l); ok {
+			return roots, true
+		}
+	}
+	return nil, false
+}
+
+// FunctionalVia resolves the single-type functionality check.
+func (s *SnapshotGraph) FunctionalVia(types []string, dir chickpeas.Direction) bool {
+	return len(types) == 1 && s.g.FunctionalVia(types[0], dir)
+}
+
 // SubstringCandidates: the native backend keeps its scan-filter (no
 // trigram index), matching the Rust native default.
 func (s *SnapshotGraph) SubstringCandidates(label, field, needle string) (*nodeset.Set, bool) {

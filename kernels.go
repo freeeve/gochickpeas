@@ -66,6 +66,127 @@ func (g *Snapshot) RootVia(node NodeID, t RelType, dir Direction) NodeID {
 	return node
 }
 
+// terminalKey keys the terminal-exclusivity cache.
+type terminalKey struct {
+	dir Direction
+	t   RelType
+	l   Label
+}
+
+// ChainCollapseVia reports whether an unbounded zero-minimum
+// reachable-set expansion over relType in dir, filtered to label, is
+// equivalent to one RootsVia lookup -- and returns the root array when it
+// is. Two structural facts, each verified (never assumed) and cached:
+// the type must be FUNCTIONAL in dir (every node has at most one such
+// rel, so the reachable set is exactly the ancestor chain), and label
+// must be TERMINAL-EXCLUSIVE for it (no labeled node has such a rel
+// outgoing in dir, so only a chain's terminal can carry the label --
+// making "reachable nodes with the label" either the root or nothing).
+func (g *Snapshot) ChainCollapseVia(relType string, dir Direction, label string) (RootsVia, bool) {
+	if dir == Both {
+		return nil, false
+	}
+	t, ok := g.RelType(relType)
+	if !ok {
+		return nil, false
+	}
+	l, ok := g.Label(label)
+	if !ok {
+		return nil, false
+	}
+	if !g.functionalCached(t, dir) {
+		return nil, false
+	}
+	tk := terminalKey{dir: dir, t: t, l: l}
+	g.rootsMu.Lock()
+	tOK, tSeen := g.terminalOnly[tk]
+	g.rootsMu.Unlock()
+	if !tSeen {
+		tOK = g.checkTerminalOnly(t, dir, l)
+		g.rootsMu.Lock()
+		g.terminalOnly[tk] = tOK
+		g.rootsMu.Unlock()
+	}
+	if !tOK {
+		return nil, false
+	}
+	return g.RootsVia(t, dir), true
+}
+
+// FunctionalVia reports whether relType is functional in dir -- every
+// node has at most one such rel, so its reachability structure is a
+// forest of chains (RootsVia's precondition). Verified once and cached.
+func (g *Snapshot) FunctionalVia(relType string, dir Direction) bool {
+	if dir == Both {
+		return false
+	}
+	t, ok := g.RelType(relType)
+	if !ok {
+		return false
+	}
+	return g.functionalCached(t, dir)
+}
+
+// functionalCached is FunctionalVia's verify-once core.
+func (g *Snapshot) functionalCached(t RelType, dir Direction) bool {
+	g.rootsMu.Lock()
+	fOK, fSeen := g.functionalVia[rootsKey{dir: dir, t: t}]
+	g.rootsMu.Unlock()
+	if fSeen {
+		return fOK
+	}
+	fOK = g.checkFunctionalVia(t, dir)
+	g.rootsMu.Lock()
+	g.functionalVia[rootsKey{dir: dir, t: t}] = fOK
+	g.rootsMu.Unlock()
+	return fOK
+}
+
+// checkFunctionalVia verifies every node has at most one relType rel in
+// dir. One CSR pass.
+func (g *Snapshot) checkFunctionalVia(t RelType, dir Direction) bool {
+	offsets, types := g.outOffsets, g.outTypes
+	if dir == Incoming {
+		offsets, types = g.inOffsets, g.inTypes
+	}
+	for v := 0; v+1 < len(offsets); v++ {
+		n := 0
+		for k := offsets[v]; k < offsets[v+1]; k++ {
+			if types[k] == t {
+				n++
+				if n > 1 {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// checkTerminalOnly verifies no l-labeled node has a relType rel
+// outgoing in dir. One pass over the label's members.
+func (g *Snapshot) checkTerminalOnly(t RelType, dir Direction, l Label) bool {
+	set, ok := g.labelIndex[l]
+	if !ok {
+		return true
+	}
+	offsets, types := g.outOffsets, g.outTypes
+	if dir == Incoming {
+		offsets, types = g.inOffsets, g.inTypes
+	}
+	for id := range set.Iter() {
+		if int(id)+1 >= len(offsets) {
+			continue
+		}
+		for k := offsets[id]; k < offsets[id+1]; k++ {
+			if types[k] == t {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // NeighborVia is the single neighbor each node reaches via the functional
 // relType in dir (one hop -- e.g. a message's hasCreator); the depth-1
 // sibling of RootsVia. Node-indexed; a node with no such neighbor maps to

@@ -102,6 +102,18 @@ type Graph interface {
 	// multiplicity test never enumerates a candidate set. Equal to the
 	// number of times v appears in the matched dir expansion of u.
 	CountNeighborsMatched(u, v chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) int
+	// ChainRootsVia returns the per-node forest-root array when an
+	// unbounded zero-minimum reachable expansion over types in dir,
+	// label-filtered by any of labels, provably collapses to a root
+	// lookup: exactly one type, functional in dir, with a label no
+	// non-terminal carries (both facts verified against the data and
+	// cached). ok=false means run the general walk.
+	ChainRootsVia(types []string, dir chickpeas.Direction, labels []string) (chickpeas.RootsVia, bool)
+	// FunctionalVia reports whether the single type is functional in dir
+	// (at most one such rel per node) -- the reachable set of a
+	// functional type is the ancestor chain, walkable without frontier
+	// or dedup state. Verified against the data and cached.
+	FunctionalVia(types []string, dir chickpeas.Direction) bool
 
 	// CompileNodeMatcher pre-resolves a node pattern's labels and inline
 	// {key: value} properties (params already resolved to values by the

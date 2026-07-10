@@ -66,8 +66,12 @@ type Snapshot struct {
 
 	// rootsViaIndex caches the forest-root arrays of RootsVia per
 	// (direction, rel type); the returned slices index lock-free.
+	// functionalVia / terminalOnly cache ChainCollapseVia's structural
+	// proofs (resolved per compiled stage, off the per-row path).
 	rootsMu       sync.Mutex
 	rootsViaIndex map[rootsKey]RootsVia
+	functionalVia map[rootsKey]bool
+	terminalOnly  map[terminalKey]bool
 
 	// typedAdj caches each rel type's lazy typed-adjacency holder behind
 	// an atomic copy-on-write map: Match runs per call on the
@@ -123,6 +127,8 @@ func newSnapshot() *Snapshot {
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
 		rootsViaIndex:  map[rootsKey]RootsVia{},
+		functionalVia:  map[rootsKey]bool{},
+		terminalOnly:   map[terminalKey]bool{},
 		labelBits:      map[Label][]uint64{},
 		fulltextIndex:  map[propIndexKey]*FullTextField{},
 		geoIndex:       map[geoKey]*GeoIndex{},
