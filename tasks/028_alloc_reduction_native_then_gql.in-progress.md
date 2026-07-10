@@ -436,3 +436,10 @@ a candidate if a profile ever ranks it). Gate 89/89 MATCH. Suite now
   profile ever surfaces it).
 - TestPlanCacheConcurrent flake (Len()=0, pre-existing at a252f48) -- has not
   recurred under -race this round, but still wants its own diagnosis.
+  RESOLVED (2026-07-10): PlanCache.insert released a replaced L1 entry's
+  hold BEFORE taking the new one; when both held the same plan (two
+  racing first-runs of one query string), the refcount transiently hit
+  zero and deref deleted the byTemplate entry while its L1 holders lived
+  on -- Len()==0 with a fully working cache. Reproduced deterministically
+  at -count=300 -race on a loaded box; incref-before-deref fixes it;
+  1000x -race clean after.

@@ -181,11 +181,15 @@ func (c *PlanCache) insert(query string, cp *cachedPlan, lifted []value.Value) {
 	for _, v := range lifted {
 		bytes += valueBytes(v)
 	}
+	// Take the new hold BEFORE releasing a replaced entry's: when the old
+	// entry holds the same plan (two racing first-runs of one query
+	// string), deref-first transiently zeroed the refcount and deleted
+	// the template while its L1 holders lived on -- the Len()==0 flake.
+	cp.refs++
 	if old, ok := c.byQuery[query]; ok {
 		c.bytes -= old.bytes
 		c.deref(old.plan)
 	}
-	cp.refs++
 	c.byQuery[query] = &l1Entry{plan: cp, params: lifted, bytes: bytes, tick: c.tick}
 	c.bytes += bytes
 	c.evict()
