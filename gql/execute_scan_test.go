@@ -363,6 +363,21 @@ func TestErrorKinds(t *testing.T) {
 	if _, err := Run(g, "MATCH (p:Person) RETURN nosuchfn(p) AS n"); !errors.Is(err, ErrBind) {
 		t.Fatalf("unknown function kind: %v", err)
 	}
+	// A variable has one element kind: cross-kind reuse within a
+	// segment's patterns is a bind error in every direction (node->rel,
+	// rel->node, node->path); same-kind reuse stays legal (tasks/058).
+	if _, err := Run(g, "MATCH (A:!A)-[A]-() RETURN 0"); !errors.Is(err, ErrBind) {
+		t.Fatalf("node var reused as rel: %v", err)
+	}
+	if _, err := Run(g, "MATCH ()-[r]->() MATCH (r:Person) RETURN r"); !errors.Is(err, ErrBind) {
+		t.Fatalf("rel var reused as node: %v", err)
+	}
+	if _, err := Run(g, "MATCH p = (a)-->() MATCH (p:Person) RETURN 0"); !errors.Is(err, ErrBind) {
+		t.Fatalf("path var reused as node: %v", err)
+	}
+	if _, err := Run(g, "MATCH (a:Person)-->() MATCH (a)-->(b) RETURN b"); err != nil {
+		t.Fatalf("same-kind node reuse should stay legal: %v", err)
+	}
 	// An unknown YIELD column is a typed plan error (algo.* yields
 	// node/value, not score).
 	if _, err := Run(g, "CALL algo.pagerank() YIELD node, score RETURN score"); !errors.Is(err, ErrPlan) {

@@ -23,6 +23,9 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		specs = splitBoundAnchors(specs, inCols, g)
 	}
 
+	if err := checkPatternVarKinds(specs); err != nil {
+		return nil, err
+	}
 	inWidth := len(inCols)
 	slots := make(map[string]int, inWidth+8)
 	bound := make(map[int]bool, inWidth+8)
@@ -153,6 +156,54 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 // buildMatchStage lowers one MATCH pattern spec: anchor choice (cost
 // tiers), scan + hops, per-hop predicate extraction, label-expression
 // lowering, and named-path binding.
+// checkPatternVarKinds rejects a variable reused across element kinds
+// (node, relationship, path) within a segment's patterns. The planner
+// keys slots by name alone, so a cross-kind reuse would silently share
+// one slot between two different bindings and the execution paths could
+// disagree on which binding survives (fuzz-found, tasks/058); GQL gives
+// a variable one element type, so this is a bind error.
+func checkPatternVarKinds(specs []stageSpec) error {
+	const (
+		kNode = iota + 1
+		kRel
+		kPath
+	)
+	names := [...]string{kNode: "a node", kRel: "a relationship", kPath: "a path"}
+	kinds := map[string]int{}
+	claim := func(v string, k int) error {
+		if v == "" {
+			return nil
+		}
+		if prev, ok := kinds[v]; ok && prev != k {
+			return bindErrf("variable `%s` is already bound as %s and cannot rebind as %s",
+				v, names[prev], names[k])
+		}
+		kinds[v] = k
+		return nil
+	}
+	for i := range specs {
+		s := &specs[i]
+		if err := claim(s.pathVar, kPath); err != nil {
+			return err
+		}
+		if s.pattern == nil {
+			continue
+		}
+		if err := claim(s.pattern.Start.Var, kNode); err != nil {
+			return err
+		}
+		for h := range s.pattern.Hops {
+			if err := claim(s.pattern.Hops[h].Rel.Var, kRel); err != nil {
+				return err
+			}
+			if err := claim(s.pattern.Hops[h].Node.Var, kNode); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nextSlot *int, matchWheres *[]ast.Expr, g graph.Graph) (*MatchStage, error) {
 	pattern := spec.pattern
 	where := spec.where
