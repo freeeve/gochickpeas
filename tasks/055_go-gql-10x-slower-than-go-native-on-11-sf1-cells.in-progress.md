@@ -113,6 +113,19 @@ evidence order:
    RelMatch.matches per rel + roaring binarySearch under the type
    probes -- hoisting type containment to range/bitmap intersection is
    the candidate. Core-level.
+   DONE (round 4): lazy typed adjacency (typedadj.go) -- a per-(type,
+   direction) CSR view (offsets/nbrs/poss, incoming positions pre-mapped
+   through inToOut) built on first traversal for types clearing a
+   memory floor (rels >= idspace/4; below it the offsets array would
+   dwarf the payload). Snapshot.Match resolves the lazy holder once per
+   compiled stage, so traversal calls stay lock-free; single-type
+   expands append contiguous runs with zero per-rel type tests, and
+   per-node order matches the primary CSR so results are identical
+   (randomized typed-vs-scan parity test; MatchType keeps the scan
+   path). Alternated-binary bench at 10% selectivity: 9.7 vs 62 ns/op
+   (6.3x). End-to-end under residual load: Q12 1572 -> 970 ms (ratio
+   29.0x), Q1 543 -> 361 ms (47.0x, compounding with round 2's fused
+   comparison), IC2 10.3x. Gate 89/89 MATCH.
 3. genMatches / subquery probes for Q18/Q12 (72% cum across the mix).
 
 ### Same-commit table (both sides at 77473b8, emitted to bench-out)

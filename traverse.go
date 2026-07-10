@@ -31,6 +31,10 @@ type RelMatch struct {
 	kind uint8 // 0 = all, 1 = one, 2 = many (possibly empty = match nothing)
 	one  RelType
 	many []RelType
+	// tp is the single type's lazy typed-adjacency holder, populated by
+	// Snapshot.Match (not the snapshot-less MatchType): traversals route
+	// through the contiguous per-type view when it exists (typedadj.go).
+	tp *typedPair
 }
 
 // MatchAll matches every relationship type.
@@ -70,7 +74,7 @@ func (g *Snapshot) Match(relTypes ...string) RelMatch {
 		return MatchAll()
 	case 1:
 		if t, ok := g.RelType(relTypes[0]); ok {
-			return MatchType(t)
+			return RelMatch{kind: 1, one: t, tp: g.typedPairFor(t)}
 		}
 		return MatchNone()
 	}
@@ -152,18 +156,28 @@ func (g *Snapshot) NeighborsMatch(node NodeID, dir Direction, m RelMatch) iter.S
 // needs.
 func (g *Snapshot) AppendNeighborsMatch(dst []NodeID, node NodeID, dir Direction, m RelMatch) []NodeID {
 	if dir == Outgoing || dir == Both {
-		lo, hi := relRange(g.outOffsets, node)
-		for k := lo; k < hi; k++ {
-			if m.matches(g.outTypes[k]) {
-				dst = append(dst, g.outNbrs[k])
+		if tc := m.tp.view(true); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			dst = append(dst, tc.nbrs[lo:hi]...)
+		} else {
+			lo, hi := relRange(g.outOffsets, node)
+			for k := lo; k < hi; k++ {
+				if m.matches(g.outTypes[k]) {
+					dst = append(dst, g.outNbrs[k])
+				}
 			}
 		}
 	}
 	if dir == Incoming || dir == Both {
-		lo, hi := relRange(g.inOffsets, node)
-		for k := lo; k < hi; k++ {
-			if m.matches(g.inTypes[k]) {
-				dst = append(dst, g.inNbrs[k])
+		if tc := m.tp.view(false); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			dst = append(dst, tc.nbrs[lo:hi]...)
+		} else {
+			lo, hi := relRange(g.inOffsets, node)
+			for k := lo; k < hi; k++ {
+				if m.matches(g.inTypes[k]) {
+					dst = append(dst, g.inNbrs[k])
+				}
 			}
 		}
 	}
@@ -175,18 +189,36 @@ func (g *Snapshot) AppendNeighborsMatch(dst []NodeID, node NodeID, dir Direction
 // allocation-free.
 func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield func(NodeID) bool) {
 	if dir == Outgoing || dir == Both {
-		lo, hi := relRange(g.outOffsets, node)
-		for k := lo; k < hi; k++ {
-			if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
-				return
+		if tc := m.tp.view(true); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			for k := lo; k < hi; k++ {
+				if !yield(tc.nbrs[k]) {
+					return
+				}
+			}
+		} else {
+			lo, hi := relRange(g.outOffsets, node)
+			for k := lo; k < hi; k++ {
+				if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
+					return
+				}
 			}
 		}
 	}
 	if dir == Incoming || dir == Both {
-		lo, hi := relRange(g.inOffsets, node)
-		for k := lo; k < hi; k++ {
-			if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
-				return
+		if tc := m.tp.view(false); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			for k := lo; k < hi; k++ {
+				if !yield(tc.nbrs[k]) {
+					return
+				}
+			}
+		} else {
+			lo, hi := relRange(g.inOffsets, node)
+			for k := lo; k < hi; k++ {
+				if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
+					return
+				}
 			}
 		}
 	}
@@ -214,31 +246,49 @@ func (g *Snapshot) RelsMatch(node NodeID, dir Direction, m RelMatch) iter.Seq[Re
 // escapes.
 func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(RelRef) bool) {
 	if dir == Outgoing || dir == Both {
-		lo, hi := relRange(g.outOffsets, node)
-		for k := lo; k < hi; k++ {
-			t := g.outTypes[k]
-			if !m.matches(t) {
-				continue
+		if tc := m.tp.view(true); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			for k := lo; k < hi; k++ {
+				if !yield(RelRef{Neighbor: tc.nbrs[k], Type: m.one, Direction: Outgoing, Pos: tc.poss[k]}) {
+					return
+				}
 			}
-			if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
-				return
+		} else {
+			lo, hi := relRange(g.outOffsets, node)
+			for k := lo; k < hi; k++ {
+				t := g.outTypes[k]
+				if !m.matches(t) {
+					continue
+				}
+				if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
+					return
+				}
 			}
 		}
 	}
 	if dir == Incoming || dir == Both {
-		lo, hi := relRange(g.inOffsets, node)
-		for k := lo; k < hi; k++ {
-			t := g.inTypes[k]
-			if !m.matches(t) {
-				continue
+		if tc := m.tp.view(false); tc != nil {
+			lo, hi := relRange(tc.offsets, node)
+			for k := lo; k < hi; k++ {
+				if !yield(RelRef{Neighbor: tc.nbrs[k], Type: m.one, Direction: Incoming, Pos: tc.poss[k]}) {
+					return
+				}
 			}
-			// Map the incoming position to where the property is stored.
-			pos := uint32(k)
-			if k < len(g.inToOut) {
-				pos = g.inToOut[k]
-			}
-			if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
-				return
+		} else {
+			lo, hi := relRange(g.inOffsets, node)
+			for k := lo; k < hi; k++ {
+				t := g.inTypes[k]
+				if !m.matches(t) {
+					continue
+				}
+				// Map the incoming position to where the property is stored.
+				pos := uint32(k)
+				if k < len(g.inToOut) {
+					pos = g.inToOut[k]
+				}
+				if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
+					return
+				}
 			}
 		}
 	}
