@@ -56,3 +56,36 @@ Note for whoever ports the "transient excursion" test: in Rust that case is a de
 not a wrong-answer guard, since wrapping addition is exact mod 2^64 whenever the true total fits.
 In Go, where nothing panics, it is *purely* a guard against a future checked-add implementation
 being partition-order-dependent. Keep it anyway -- it pins the property.
+
+## Outcome (2026-07-10)
+
+Implemented per the agreed design, mirroring rustychickpeas 429e0a7:
+
+- `AggRow.Sum` is now `*int64`: nil exactly when the group's true total
+  lies outside int64 range; a query without a Sum column reports `&0`.
+- `acc128` (int128.go): two-word two's-complement accumulator on
+  `math/bits.Add64` (~30 lines, no big.Int, no allocation). Used at the
+  bump site and both partial-merge sites in aggregate_run.go, so the
+  verdict depends on the true total alone -- partition-independent.
+  runHops never sums (Sum+Hop is ErrSchema), so all accumulation sites
+  are covered.
+- gql: aggState's int sum accumulates through the same accumulator (a
+  package-private copy in gql/internal/exec, kept unexported on both
+  sides by design -- the public surface carries the nullable int64, not a
+  128-bit type); a pure-int total outside int64 finalizes as Null,
+  matching the engine overflow policy; the mixed int/float path converts
+  the 128-bit total to float (float-sum precision limits apply anyway).
+- internal/ldbc kernels deref `*r.Sum` deliberately: LDBC-scale totals
+  cannot overflow, and a panic there is the loudest available signal for
+  an engine defect.
+
+Regression suite ported (aggregate_overflow_test.go + gql
+TestSumInt64Overflow): exactness at both int64 boundaries; one-past-
+boundary nil/Null both serially and through the ~20k-node parallel
+merge; the repeating [+Max, +Max, Min+1, Min+1] partition-order guard
+netting exactly 0; no-Sum-column / empty-input reporting 0, never
+nil/Null. FuzzAcc128 drives the accumulator against big.Int through the
+public Aggregate API with an arbitrary group split (20s clean).
+
+Verified: full module green, parity gate 89/89 MATCH. `AggRow.Sum` is a
+public API change -> tagged v0.10.0.
