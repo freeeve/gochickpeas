@@ -2,6 +2,35 @@
 
 Filed from rustychickpeas-ldbc on 2026-07-10 (cross-repo ask).
 
+## Final same-commit table (dc7de70, clean window at load ~6, emitted to bench-out)
+
+Both sides re-measured at one commit after seven rounds of general
+engine work (bounded/streaming top-k, const folding, fused comparisons,
+rank/select sparse reads, typed adjacency, bound-endpoint probes,
+lock-free holder lookup). The native denominators themselves got FASTER
+(typed adjacency serves the kernels too: Q18 44 -> 29 ms, Q12 33 -> 19,
+IC9 64 -> 43), and the ratios still collapsed:
+
+| cell | gql ms | native ms | ratio | filed at |
+| --- | ---: | ---: | ---: | ---: |
+| BI/Q1 | 359.3 | 7.71 | 46.6x | 75.0x |
+| BI/Q12 | 842.1 | 18.95 | 44.4x | 88.7x |
+| BI/Q18 | 1228.1 | 29.12 | 42.2x | 143.6x |
+| BI/Q13 | 1.8 | 0.11 | (timer territory) | 17.8x |
+| IC/IC2 | 58.7 | 4.66 | 12.6x | 58.3x |
+| IC/IC10 | 81.0 | 7.25 | 11.2x | 40.5x |
+| BI/Q6 | 662.6 | 59.55 | 11.1x | 21.1x |
+| IC/IC9 | 464.8 | 43.22 | 10.8x | 82.5x |
+| BI/Q11 | 94.2 | 9.40 | 10.0x | 18.5x |
+| IC/IC8 | 0.7 | 0.19 | 3.6x | 23.2x |
+| BI/Q2 | 63.1 | 9.45 | 6.7x | 14.3x |
+
+Absolute gql times: Q18 3738 -> 1228 ms, IC9 3818 -> 465, Q12 1583 ->
+842 vs the filing. Remaining >10x cells cluster on interpreted per-row
+work over big scans/joins (Q1/Q12/Q18) -- the scan-level batch filter
+and tasks/056's segment streaming are the identified next levers. Q13's
+denominator rounds into the filing's own sub-0.1ms exclusion class.
+
 From the LDBC timings sweep published 2026-07-10. Source of truth is
 `rustychickpeas-ldbc:viz/public/data/timings.json`; live at rcptest.evefreeman.com.
 
