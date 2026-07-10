@@ -31,3 +31,36 @@ profile the planner/executor overhead. The list grew from 11 -> 14 cells vs the 
 Note (from the rustychickpeas side, same loop): the rcp cypher engine shows an analogous BI Q17
 pathology (its shipped Q17 is ~9 s vs a 6 ms native floor), so if the Go GQL planner shares lowering
 strategy with rcp, BI Q17 may have a common root worth comparing across the two engines.
+
+## Round-1 scoping (2026-07-10, profile at ddd0c09)
+
+Combined Q8+Q17 CPU profile (2/2 MATCH): 89.7% cumulative under
+genMatches with NO single hot site -- levelCandidates 34%, compiled
+per-level filter eval (ceval+cevalBin) ~30/24%, NodeMatcherAccepts 7.5%
+(roaring container binarySearch 3.9% under it), semijoin
+slices.BinarySearch 3.4%, memmove/memclr ~7%. Death-by-interpretation
+across the join DFS, not a fixable hotspot: the prior rounds' levers
+(folding, fusion, typed adjacency, batch seams) are already in.
+
+Levers, in expected-value order:
+
+1. **Level-batch filter evaluation** -- the repeatedly deferred design:
+   evaluate a level's compiled conjuncts column-at-a-time over the
+   candidate buffer (the buffer already exists post-AppendNeighbors)
+   instead of tree-walking per candidate. Slots analysis + the fused
+   cCmpPropConst node are the building blocks; a typed columnar kernel
+   for prop-vs-const conjuncts over a candidate slice would displace
+   most of the ceval share and much of levelCandidates. Big design;
+   needs its own session-fresh implementation pass.
+2. **Dense-label bitset representation** -- labels covering a large
+   fraction of the id space (Message, Person at SF1) pay a roaring
+   container binary search per NodeMatcherAccepts probe; a plain bitset
+   Contains for above-threshold labels is a label-kind-keyed
+   representation choice (core, general), worth ~5-8% of this mix.
+3. **BI Q17 cross-engine comparison** (the rcp note): before engine
+   work, diff the Go plan against the native kernel's join order --
+   2096x on 2.41 ms native suggests a plan-shape gap (join order /
+   anti-join placement), which is planner territory, not eval speed.
+
+Not started in this firing (deliberate): the batch-filter design wants
+a fresh implementation session; this round's write-up is the handoff.
