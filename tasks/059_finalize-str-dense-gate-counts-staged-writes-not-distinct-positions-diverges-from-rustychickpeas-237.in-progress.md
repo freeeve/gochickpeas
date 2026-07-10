@@ -79,3 +79,20 @@ this task changes.
 `rustychickpeas` `tasks/250_core_dense_column_missingness` (the mirror of this repo's 041) is a
 *separate*, still-open divergence: Go requires full coverage for i64/f64/bool dense, Rust accepts
 80%. Rust's 237 narrows its rule (80% of *distinct* positions) but does not close that gap.
+
+## Outcome (2026-07-10)
+
+Implemented exactly as specified: distinctPositions factored out of
+coversAllPositions (which now calls it and compares to span), and the
+str dense gate takes distinctPositions(pairs, span) instead of
+len(pairs) -- the >=80% threshold itself unchanged, per the documented
+intentional str/numeric difference. TestStrDenseGateCountsDistinctPositions
+pins both directions: 100 distinct positions re-set 9x each over a
+1000 span (900 writes > the 800 gate) finalizes sparse, and a genuine
+850-distinct fill stays dense.
+
+Full suite green (incl. the conformance byte-identity corpus -- no
+existing fixture exercises duplicates, as filed), parity gate 89/89
+MATCH. The corpus-fixture ask is filed as rustychickpeas tasks/255 via
+taskman so gen_conformance pins the 237/059 agreement on both sides.
+No public API change; no tag.

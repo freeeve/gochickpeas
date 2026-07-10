@@ -75,16 +75,19 @@ func denseThreshold(pairCount, span int) bool {
 // denseStrThreshold: str keeps the historical >=80% rule -- the dense str
 // layout encodes missing as atom 0 by design (the read layer folds the
 // empty-string check into Prop.Str), so partial fill loses nothing that
-// the format doesn't already conflate, and str selection stays
-// byte-identical with the Rust finalize.
-func denseStrThreshold(pairCount, span int) bool {
-	return pairCount >= int(float64(span)*0.8)
+// the format doesn't already conflate. The gate counts DISTINCT staged
+// positions, not writes (the caller passes distinctPositions), matching
+// the Rust finalize's tasks/237 rule so str selection stays
+// byte-identical across the two writers.
+func denseStrThreshold(fill, span int) bool {
+	return fill >= int(float64(span)*0.8)
 }
 
-// coversAllPositions reports whether the pairs touch every position of the
-// span (the exactness check behind the dense selection: a write count can
-// reach span through duplicates while leaving positions unset).
-func coversAllPositions[P interface{ pairID() uint32 }](pairs []P, span int) bool {
+// distinctPositions counts the distinct positions the pairs touch -- the
+// dense gates' real quantity: a staged-write count can reach any
+// threshold through duplicate writes to a few positions while the fill
+// stays tiny (rustychickpeas tasks/237).
+func distinctPositions[P interface{ pairID() uint32 }](pairs []P, span int) int {
 	seen := bitset.New(span)
 	covered := 0
 	for _, p := range pairs {
@@ -93,7 +96,13 @@ func coversAllPositions[P interface{ pairID() uint32 }](pairs []P, span int) boo
 			covered++
 		}
 	}
-	return covered == span
+	return covered
+}
+
+// coversAllPositions reports whether the pairs touch every position of the
+// span (the exactness check behind the dense selection).
+func coversAllPositions[P interface{ pairID() uint32 }](pairs []P, span int) bool {
+	return distinctPositions(pairs, span) == span
 }
 
 func columnFromPairsI64(pairs []i64Pair, span int) Column {
@@ -162,7 +171,7 @@ func columnFromPairsBool(pairs []boolPair, span int) Column {
 }
 
 func columnFromPairsStr(pairs []strPair, span int) Column {
-	if denseStrThreshold(len(pairs), span) {
+	if denseStrThreshold(distinctPositions(pairs, span), span) {
 		col := make(denseStrCol, span)
 		for _, p := range pairs {
 			col[p.id] = p.val
