@@ -198,6 +198,131 @@ func segmentBoundSlots(seg *plan.Segment) []bool {
 	return b
 }
 
+// streamableBoundary reports whether seg's projection boundary is pure
+// per-row passthrough -- no aggregation, DISTINCT, ORDER BY, or
+// pagination -- so its rows can seed the next segment as they are
+// produced instead of materializing between segments.
+func streamableBoundary(seg *plan.Segment) bool {
+	p := &seg.Proj
+	return !p.Aggregated && !p.Distinct && len(p.OrderBy) == 0 &&
+		p.Skip == nil && p.Limit == nil && len(p.Post) == 0 && p.NHidden == 0
+}
+
+// passthroughSink is a streamed projection boundary: it projects the
+// upstream segment's output columns, applies the boundary WHERE, and
+// re-seeds the downstream chain's input buffer per row. Only built for
+// streamableBoundary segments, where this is value-identical to
+// finalize-then-reseed.
+type passthroughSink struct {
+	ctx      *eval.Ctx
+	returns  []RowEval
+	slots    map[string]int
+	where    RowEval
+	colScope map[string]int
+	out      []value.Value
+	buf      []value.Value
+	next     rowSink
+}
+
+func newPassthroughSink(ctx *eval.Ctx, seg *plan.Segment, nextWidth int, next rowSink) *passthroughSink {
+	p := &passthroughSink{
+		ctx:     ctx,
+		returns: make([]RowEval, len(seg.Proj.Returns)),
+		slots:   seg.Slots,
+		out:     make([]value.Value, len(seg.Proj.Returns)),
+		buf:     make([]value.Value, nextWidth),
+		next:    next,
+	}
+	for i, r := range seg.Proj.Returns {
+		p.returns[i] = compileEval(ctx, r.Expr, seg.Slots)
+	}
+	if seg.PostWhere != nil {
+		p.colScope = make(map[string]int, len(seg.Proj.Columns))
+		for i, c := range seg.Proj.Columns {
+			p.colScope[c] = i
+		}
+		p.where = compileEval(ctx, seg.PostWhere, p.colScope)
+	}
+	return p
+}
+
+func (p *passthroughSink) push(row []value.Value) {
+	for i, c := range p.returns {
+		p.out[i] = c.Eval(p.ctx, row, p.slots)
+	}
+	if p.where != nil && !p.where.Eval(p.ctx, p.out, p.colScope).IsTruthy() {
+		return
+	}
+	clear(p.buf)
+	copy(p.buf, p.out)
+	p.next.push(p.buf)
+}
+
+func (p *passthroughSink) close() { p.next.close() }
+
+// buildChain wires a segment's stages onto term, returning the head sink
+// (no PROFILE cells: streaming runs are unprofiled by construction).
+func buildChain(ctx *eval.Ctx, seg *plan.Segment, term rowSink, constIn func(int) bool, sample []value.Value) rowSink {
+	uniq := &uniqEnv{}
+	sink := term
+	for i := len(seg.Stages) - 1; i >= 0; i-- {
+		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, sample, nil, uniq)
+	}
+	return sink
+}
+
+// runSegmentRun executes a run of segments whose interior boundaries are
+// all streamable: every non-final segment's terminal becomes a
+// passthrough into the next segment's chain, so rows cross boundaries as
+// they are produced and only the final terminal retains state. The first
+// segment keeps the materialized-inputs batch-constant analysis; the
+// streamed-into segments compile conservatively (nothing batch-constant
+// -- a perf-only distinction, cInCarried still applies per epoch).
+func runSegmentRun(ctx *eval.Ctx, segs []*plan.Segment, inputs [][]value.Value) [][]value.Value {
+	last := segs[len(segs)-1]
+	if len(segs) == 1 {
+		return runSegment(ctx, last, inputs, nil)
+	}
+	never := func(int) bool { return false }
+	var term terminal
+	if last.Proj.Aggregated {
+		term = newAggSink(ctx, &last.Proj, last.Slots)
+	} else {
+		term = newProjSink(ctx, &last.Proj, last.Slots, last.RowWidth)
+	}
+	head := buildChain(ctx, last, term, never, nil)
+	for k := len(segs) - 2; k >= 0; k-- {
+		seg := segs[k]
+		pt := newPassthroughSink(ctx, seg, segs[k+1].RowWidth, head)
+		constIn := never
+		var sample []value.Value
+		if k == 0 {
+			bound := segmentBoundSlots(seg)
+			if len(inputs) > 0 {
+				sample = make([]value.Value, seg.RowWidth)
+				copy(sample, inputs[0])
+			}
+			constIn = func(s int) bool {
+				if s < 0 || s >= len(bound) || bound[s] {
+					return false
+				}
+				return slotAgrees(s, inputs, true)
+			}
+		}
+		head = buildChain(ctx, seg, pt, constIn, sample)
+	}
+	buf := make([]value.Value, segs[0].RowWidth)
+	for _, in := range inputs {
+		clear(buf)
+		copy(buf, in)
+		head.push(buf)
+	}
+	head.close()
+	out := term.finalize()
+	applyPostWhere(ctx, last, &out)
+	return out
+}
+
 // applyPostWhere applies a segment's projection-boundary WHERE (FILTER /
 // RETURN...NEXT guard) to its output rows in place, by output column.
 func applyPostWhere(ctx *eval.Ctx, seg *plan.Segment, out *[][]value.Value) {

@@ -40,11 +40,18 @@ func ExecuteProfiled(ctx *eval.Ctx, p *plan.Plan) *explain.Profile {
 }
 
 // runBranch runs one branch's segment pipeline from a single empty seed
-// row.
+// row, streaming across every run of boundaries whose upstream projection
+// is per-row passthrough (rows cross a NEXT without materializing; the
+// run's final segment materializes as before).
 func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 	rows := [][]value.Value{nil}
-	for _, seg := range segments {
-		rows = runSegment(ctx, seg, rows, nil)
+	for i := 0; i < len(segments); {
+		j := i
+		for j+1 < len(segments) && streamableBoundary(segments[j]) {
+			j++
+		}
+		rows = runSegmentRun(ctx, segments[i:j+1], rows)
+		i = j + 1
 	}
 	return rows
 }
