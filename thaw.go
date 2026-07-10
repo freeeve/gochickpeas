@@ -69,7 +69,23 @@ func NewBuilderFromSnapshot(g *Snapshot) *Builder {
 	if !b.knownNodes.IsEmpty() {
 		b.nextNodeID = b.knownNodes.Maximum() + 1
 	}
+	// Record the source last: every staging call above runs against a
+	// source-less builder, so the restage itself dirties nothing and an
+	// unedited thaw finalizes by aliasing g wholesale (cow.go).
+	b.src = g
+	b.srcRelToOutCSR = invertPositions(outToStaging)
 	return b
+}
+
+// invertPositions inverts the outgoing-CSR position -> staged rel index map
+// into the staged rel index -> outgoing-CSR position map Finalize needs to
+// place rel properties when it aliases the CSR rather than rebuilding it.
+func invertPositions(outToStaging []uint32) []uint32 {
+	relToOut := make([]uint32, len(outToStaging))
+	for outPos, idx := range outToStaging {
+		relToOut[idx] = uint32(outPos)
+	}
+	return relToOut
 }
 
 // thawRels stages g's rels in an order consistent with both CSR directions,

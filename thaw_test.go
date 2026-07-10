@@ -5,7 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/RoaringBitmap/roaring/v2"
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/rcpg"
 )
@@ -29,13 +28,24 @@ func refinalize(t *testing.T, raw []byte, opts rcpg.WriteOptions) []byte {
 // WriteRCPG must reproduce the file exactly -- sparse ids, parallel rels,
 // rel props, dense/sparse columns of all four kinds, float specials,
 // unaligned dense bool, and version strings all survive the thaw.
+//
+// "big" carries a deliberately optimize()d run container in its label index
+// (a parser-coverage feature of the corpus; neither finalize emits run
+// containers). An unedited thaw dirties nothing, so Finalize aliases that
+// bitmap straight through rather than rebuilding it as a plain array -- the
+// run container survives and the bytes match exactly.
 func TestThawRoundTripByteIdentical(t *testing.T) {
-	for _, name := range []string{"sparse_ids", "all_columns", "multi_label_types"} {
+	for _, name := range []string{"sparse_ids", "all_columns", "multi_label_types", "big"} {
 		t.Run(name, func(t *testing.T) {
 			raw := fixtureBytes(t, name)
-			if got := refinalize(t, raw, rcpg.DefaultWriteOptions()); !bytes.Equal(got, raw) {
+			got := refinalize(t, raw, rcpg.DefaultWriteOptions())
+			if !bytes.Equal(got, raw) {
 				t.Fatalf("thaw round trip differs from golden bytes (got %d, want %d)",
 					len(got), len(raw))
+			}
+			// And the round trip is a fixed point from there.
+			if again := refinalize(t, got, rcpg.DefaultWriteOptions()); !bytes.Equal(again, got) {
+				t.Fatal("thaw round trip is not idempotent")
 			}
 		})
 	}
@@ -79,36 +89,8 @@ func TestThawRoundTripFinalizeNormalized(t *testing.T) {
 		}
 	})
 
-	// "big" carries a deliberately optimize()d run container in its label
-	// index (a parser-coverage feature of the corpus; neither finalize emits
-	// run containers). Normalizing just those bitmaps to finalize's plain
-	// construction must make the round trip byte-identical -- everything
-	// else (100k-rel CSR reconstruction, dense/sparse columns, version)
-	// matches exactly.
-	t.Run("big", func(t *testing.T) {
-		raw := fixtureBytes(t, "big")
-		section, err := rcpg.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, e := range section.LabelIndex {
-			bm := roaring.New()
-			bm.AddMany(e.Bitmap.ToArray())
-			section.LabelIndex[i].Bitmap = bm
-		}
-		var want bytes.Buffer
-		if err := rcpg.WriteWith(section, &want, rcpg.DefaultWriteOptions()); err != nil {
-			t.Fatal(err)
-		}
-		got := refinalize(t, raw, rcpg.DefaultWriteOptions())
-		if !bytes.Equal(got, want.Bytes()) {
-			t.Fatal("thawed big differs from run-container-normalized golden bytes")
-		}
-		// And from the normalized form, the round trip is a fixed point.
-		if again := refinalize(t, got, rcpg.DefaultWriteOptions()); !bytes.Equal(again, got) {
-			t.Fatal("thaw round trip of big is not idempotent")
-		}
-	})
+	// "big" moved to TestThawRoundTripByteIdentical: aliasing carries its run
+	// container through the thaw, so it no longer needs normalizing.
 }
 
 // TestThawAllRelColumnTypes round-trips a builder-made snapshot carrying rel

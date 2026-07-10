@@ -79,6 +79,19 @@ type Builder struct {
 	// cascade, rels added afterwards -- which resurrect the node -- survive.
 	// Nil until the first removal.
 	removedNodes map[NodeID]int
+
+	// src is the snapshot this builder was thawed from (nil when it was built
+	// from scratch), and the dirty sets record which of its components have
+	// diverged since. Finalize shares the rest with the successor rather than
+	// rebuilding them; see cow.go. srcRelToOutCSR maps a staged rel index to
+	// its position in src's outgoing CSR, and survives exactly as long as the
+	// rel set stays clean.
+	src            *Snapshot
+	srcRelToOutCSR []uint32
+	dirtyNodeCols  map[PropertyKey]struct{}
+	dirtyRelCols   map[PropertyKey]struct{}
+	dirtyLabels    map[Label]struct{}
+	relsDirty      bool
 }
 
 // NewBuilder returns a builder with capacity hints (0 = the 2^20 default);
@@ -162,7 +175,9 @@ func (b *Builder) addNodeAt(id NodeID, labels []string) (NodeID, error) {
 		return 0, err
 	}
 	for _, l := range labels {
-		b.nodeLabels[id] = append(b.nodeLabels[id], Label(b.interner.GetOrIntern(l)))
+		label := Label(b.interner.GetOrIntern(l))
+		b.nodeLabels[id] = append(b.nodeLabels[id], label)
+		b.markLabelDirty(label)
 	}
 	b.knownNodes.Add(id)
 	return id, nil
@@ -185,6 +200,7 @@ func (b *Builder) addRelTyped(u, v NodeID, typeID RelType) (int, error) {
 	if len(b.rels) >= int(^uint32(0)) {
 		return 0, fmt.Errorf("%w: maximum rel limit (2^32 - 1)", ErrCapacity)
 	}
+	b.markRelsDirty()
 	b.degOut[u]++
 	b.degIn[v]++
 	idx := len(b.rels)
@@ -290,6 +306,7 @@ func (b *Builder) SetPropByKey(node NodeID, key PropertyKey, value any) error {
 	if err := b.ensureCapacity(node); err != nil {
 		return err
 	}
+	b.markNodeColDirty(key)
 	switch v.Kind() {
 	case KindStr:
 		atom, _ := v.StrID()
@@ -381,6 +398,7 @@ func (b *Builder) SetRelPropAt(relIdx int, key string, value any) error {
 	if err != nil {
 		return err
 	}
+	b.markRelColDirty(k)
 	idx := uint32(relIdx)
 	switch v.Kind() {
 	case KindStr:

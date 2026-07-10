@@ -10,6 +10,7 @@
 package chickpeas
 
 import (
+	"maps"
 	"sort"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -205,10 +206,97 @@ func buildCSRDirection(n int, rels [][2]NodeID, relTypes []RelType, deg []uint32
 	return offsets, nbrs, types, relToCSR
 }
 
+// buildTypeIndex indexes rels by outgoing-CSR position per type (FORMAT.md
+// section 4), built from the finalized outTypes so it stays correct when rels
+// are staged out of source order -- mirroring the Rust fix (rustychickpeas
+// 96243bb).
+func buildTypeIndex(g *Snapshot) {
+	byType := map[RelType][]uint32{}
+	for pos, t := range g.outTypes {
+		byType[t] = append(byType[t], uint32(pos))
+	}
+	for t, positions := range byType {
+		bm := roaring.New()
+		bm.AddMany(positions) // ascending CSR order, duplicate-free
+		g.typeIndex[t] = nodeset.FromBitmap(bm)
+	}
+}
+
+// finalizeLabels builds the per-label node bitmaps, sharing the source
+// snapshot's bitmap for every label whose membership is untouched. With no
+// dirty label the whole index aliases and the O(n) label scan is skipped.
+func (b *Builder) finalizeLabels(g *Snapshot, n int, p *aliasPlan) {
+	if p.src != nil && p.labels {
+		maps.Copy(g.labelIndex, p.src.labelIndex)
+		p.allLabels = true
+		return
+	}
+	byLabel := map[Label][]uint32{}
+	for id, labels := range b.nodeLabels[:min(n, len(b.nodeLabels))] {
+		for _, l := range labels {
+			if p.labelClean(l) {
+				continue
+			}
+			byLabel[l] = append(byLabel[l], uint32(id))
+		}
+	}
+	if p.src != nil {
+		for l, set := range p.src.labelIndex {
+			if p.labelClean(l) {
+				g.labelIndex[l] = set
+				p.aliasedLabels[l] = struct{}{}
+			}
+		}
+	}
+	for l, ids := range byLabel {
+		bm := roaring.New()
+		bm.AddMany(ids) // ascending and deduped by construction order
+		g.labelIndex[l] = nodeset.FromBitmap(bm)
+	}
+}
+
+// finalizeNodeColumns stores every staged node column, sharing the source
+// snapshot's column for each untouched key.
+func finalizeNodeColumns[P any](
+	g *Snapshot, p *aliasPlan, staged map[PropertyKey][]P, span int, build func([]P, int) Column) {
+	for key, pairs := range staged {
+		if col, ok := p.nodeColumn(key); ok {
+			g.columns[key] = col
+			continue
+		}
+		g.columns[key] = build(pairs, span)
+	}
+}
+
+// finalizeRelColumns stores every staged rel column, sharing the source's for
+// each untouched key. A rebuilt column remaps its staged rel indexes to
+// outgoing-CSR positions, the addressing the snapshot stores rel properties
+// under.
+func finalizeRelColumns[P relPair[P]](
+	g *Snapshot, p *aliasPlan, staged map[PropertyKey][]P, span int,
+	relToOutCSR []uint32, build func([]P, int) Column) {
+	for key, pairs := range staged {
+		if col, ok := p.relColumn(key); ok {
+			g.relColumns[key] = col
+			continue
+		}
+		out := make([]P, len(pairs))
+		for i, pair := range pairs {
+			out[i] = pair.withPairID(relToOutCSR[pair.pairID()])
+		}
+		g.relColumns[key] = build(out, span)
+	}
+}
+
 // Finalize consumes the builder into an immutable Snapshot; the builder
 // must not be used afterwards. indexProperties optionally names property
 // keys whose (label, key) equality indexes are built upfront (faster first
 // queries, more memory); all others build lazily on first access.
+//
+// A builder thawed from a snapshot rebuilds only the components it dirtied
+// and shares the rest with its source (cow.go), so a property-only edit skips
+// the O(m) CSR rebuild and every untouched column, and the source's lazy
+// caches carry forward.
 func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 	// Fold pending removals (rel tombstones + detach-delete cascades) into
 	// the staging state first; a no-op when nothing was removed.
@@ -225,102 +313,58 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 	g.nRels = uint64(m)
 	g.version = b.version
 
-	// The four build phases are independent pure reads of the staging
-	// state, so they run as a parallel join; results are deterministic.
-	var relToOutCSR, relToInCSR []uint32
-	parallel.Join(
-		func() {
-			g.outOffsets, g.outNbrs, g.outTypes, relToOutCSR =
-				buildCSRDirection(n, b.rels, b.relTypes, b.degOut, 0)
-		},
-		func() {
-			g.inOffsets, g.inNbrs, g.inTypes, relToInCSR =
-				buildCSRDirection(n, b.rels, b.relTypes, b.degIn, 1)
-		},
-		func() {
-			byLabel := map[Label][]uint32{}
-			for id, labels := range b.nodeLabels[:min(n, len(b.nodeLabels))] {
-				for _, l := range labels {
-					byLabel[l] = append(byLabel[l], uint32(id))
-				}
-			}
-			for l, ids := range byLabel {
-				bm := roaring.New()
-				bm.AddMany(ids) // ascending and deduped by construction order
-				g.labelIndex[l] = nodeset.FromBitmap(bm)
-			}
-		},
-	)
-	// Type index by outgoing-CSR position (FORMAT.md section 4), built from
-	// the finalized outTypes so it stays correct when rels are staged out of
-	// source order -- mirroring the Rust fix (rustychickpeas 96243bb).
-	byType := map[RelType][]uint32{}
-	for pos, t := range g.outTypes {
-		byType[t] = append(byType[t], uint32(pos))
-	}
-	for t, positions := range byType {
-		bm := roaring.New()
-		bm.AddMany(positions) // ascending CSR order, duplicate-free
-		g.typeIndex[t] = nodeset.FromBitmap(bm)
-	}
-
-	for key, pairs := range b.nodeColI64 {
-		g.columns[key] = columnFromPairsI64(pairs, n)
-	}
-	for key, pairs := range b.nodeColF64 {
-		g.columns[key] = columnFromPairsF64(pairs, n)
-	}
-	for key, pairs := range b.nodeColBool {
-		g.columns[key] = columnFromPairsBool(pairs, n)
-	}
-	for key, pairs := range b.nodeColStr {
-		g.columns[key] = columnFromPairsStr(pairs, n)
-	}
-
-	// Rel properties are stored by outgoing-CSR position: remap the staged
-	// rel indexes, and build the incoming -> outgoing position map so
-	// incoming traversals read them too (only when rel props exist).
+	plan := b.newAliasPlan(n, m)
+	// Rel properties are stored by outgoing-CSR position, so the successor
+	// needs the incoming -> outgoing map whenever it has any.
 	hasRelProps := len(b.relColI64)+len(b.relColF64)+len(b.relColBool)+len(b.relColStr) > 0
-	if hasRelProps {
-		g.inToOut = make([]uint32, m)
-		for idx := range m {
-			g.inToOut[relToInCSR[idx]] = relToOutCSR[idx]
+
+	var relToOutCSR []uint32
+	if plan.csr {
+		plan.aliasCSR(g, hasRelProps)
+		relToOutCSR = b.srcRelToOutCSR
+		b.finalizeLabels(g, n, plan)
+	} else {
+		// The three build phases are independent pure reads of the staging
+		// state, so they run as a parallel join; results are deterministic.
+		var relToInCSR []uint32
+		parallel.Join(
+			func() {
+				g.outOffsets, g.outNbrs, g.outTypes, relToOutCSR =
+					buildCSRDirection(n, b.rels, b.relTypes, b.degOut, 0)
+			},
+			func() {
+				g.inOffsets, g.inNbrs, g.inTypes, relToInCSR =
+					buildCSRDirection(n, b.rels, b.relTypes, b.degIn, 1)
+			},
+			func() {
+				b.finalizeLabels(g, n, plan)
+			},
+		)
+		buildTypeIndex(g)
+		if hasRelProps {
+			g.inToOut = make([]uint32, m)
+			for idx := range m {
+				g.inToOut[relToInCSR[idx]] = relToOutCSR[idx]
+			}
 		}
-	}
-	remap := func(id uint32) uint32 { return relToOutCSR[id] }
-	for key, pairs := range b.relColI64 {
-		out := make([]i64Pair, len(pairs))
-		for i, p := range pairs {
-			out[i] = i64Pair{id: remap(p.id), val: p.val}
-		}
-		g.relColumns[key] = columnFromPairsI64(out, m)
-	}
-	for key, pairs := range b.relColF64 {
-		out := make([]f64Pair, len(pairs))
-		for i, p := range pairs {
-			out[i] = f64Pair{id: remap(p.id), val: p.val}
-		}
-		g.relColumns[key] = columnFromPairsF64(out, m)
-	}
-	for key, pairs := range b.relColBool {
-		out := make([]boolPair, len(pairs))
-		for i, p := range pairs {
-			out[i] = boolPair{id: remap(p.id), val: p.val}
-		}
-		g.relColumns[key] = columnFromPairsBool(out, m)
-	}
-	for key, pairs := range b.relColStr {
-		out := make([]strPair, len(pairs))
-		for i, p := range pairs {
-			out[i] = strPair{id: remap(p.id), val: p.val}
-		}
-		g.relColumns[key] = columnFromPairsStr(out, m)
 	}
 
-	g.atoms = b.interner.Atoms()
+	finalizeNodeColumns(g, plan, b.nodeColI64, n, columnFromPairsI64)
+	finalizeNodeColumns(g, plan, b.nodeColF64, n, columnFromPairsF64)
+	finalizeNodeColumns(g, plan, b.nodeColBool, n, columnFromPairsBool)
+	finalizeNodeColumns(g, plan, b.nodeColStr, n, columnFromPairsStr)
+
+	finalizeRelColumns(g, plan, b.relColI64, m, relToOutCSR, columnFromPairsI64)
+	finalizeRelColumns(g, plan, b.relColF64, m, relToOutCSR, columnFromPairsF64)
+	finalizeRelColumns(g, plan, b.relColBool, m, relToOutCSR, columnFromPairsBool)
+	finalizeRelColumns(g, plan, b.relColStr, m, relToOutCSR, columnFromPairsStr)
+
+	g.atoms = plan.aliasAtoms(b)
+	g.carryLazyCaches(plan)
 
 	// Eagerly build the requested equality indexes from the finished
-	// columns -- identical to what the lazy path would build on demand.
+	// columns -- identical to what the lazy path would build on demand, and
+	// skipped for an index already carried forward from the source.
 	for _, keyName := range indexProperties {
 		keyID, ok := g.atoms.ID(keyName)
 		if !ok {
@@ -331,8 +375,11 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 			continue
 		}
 		for l, labelNodes := range g.labelIndex {
-			g.propIndex[propIndexKey{label: l, key: keyID}] =
-				buildPropValueIndex(column, labelNodes)
+			indexKey := propIndexKey{label: l, key: keyID}
+			if _, carried := g.propIndex[indexKey]; carried {
+				continue
+			}
+			g.propIndex[indexKey] = buildPropValueIndex(column, labelNodes)
 		}
 	}
 	return g

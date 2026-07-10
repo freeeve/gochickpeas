@@ -59,6 +59,9 @@ func (b *Builder) removeNodePropPairsByKey(node NodeID, key PropertyKey) bool {
 	removed = sweepPairs(b.nodeColF64, key, node) || removed
 	removed = sweepPairs(b.nodeColBool, key, node) || removed
 	removed = sweepPairs(b.nodeColStr, key, node) || removed
+	if removed {
+		b.markNodeColDirty(key)
+	}
 	return removed
 }
 
@@ -77,19 +80,26 @@ func (b *Builder) RemoveProp(node NodeID, key string) bool {
 }
 
 // removeNodePropPairs purges every staged property pair of node across all
-// keys (the detach-delete property sweep).
+// keys (the detach-delete property sweep). Only the keys that actually held a
+// pair for node are marked dirty; the rest still alias at Finalize, since a
+// node the column never covered leaves the rebuilt column unchanged.
 func (b *Builder) removeNodePropPairs(node NodeID) {
+	sweep := func(removed bool, key PropertyKey) {
+		if removed {
+			b.markNodeColDirty(key)
+		}
+	}
 	for key := range b.nodeColI64 {
-		sweepPairs(b.nodeColI64, key, node)
+		sweep(sweepPairs(b.nodeColI64, key, node), key)
 	}
 	for key := range b.nodeColF64 {
-		sweepPairs(b.nodeColF64, key, node)
+		sweep(sweepPairs(b.nodeColF64, key, node), key)
 	}
 	for key := range b.nodeColBool {
-		sweepPairs(b.nodeColBool, key, node)
+		sweep(sweepPairs(b.nodeColBool, key, node), key)
 	}
 	for key := range b.nodeColStr {
-		sweepPairs(b.nodeColStr, key, node)
+		sweep(sweepPairs(b.nodeColStr, key, node), key)
 	}
 }
 
@@ -123,6 +133,9 @@ func (b *Builder) RemoveRelPropAt(relIdx int, key string) (bool, error) {
 	removed = sweepPairs(b.relColF64, k, id) || removed
 	removed = sweepPairs(b.relColBool, k, id) || removed
 	removed = sweepPairs(b.relColStr, k, id) || removed
+	if removed {
+		b.markRelColDirty(k)
+	}
 	return removed, nil
 }
 
@@ -140,6 +153,7 @@ func (b *Builder) RemoveRel(relIdx int) error {
 	if b.removedRels == nil {
 		b.removedRels = roaring.New()
 	}
+	b.markRelsDirty()
 	b.removedRels.Add(uint32(relIdx))
 	r := b.rels[relIdx]
 	b.degOut[r[0]]--
@@ -163,8 +177,14 @@ func (b *Builder) RemoveNode(id NodeID) bool {
 	}
 	b.knownNodes.Remove(id)
 	if int(id) < len(b.nodeLabels) {
+		for _, l := range b.nodeLabels[id] {
+			b.markLabelDirty(l)
+		}
 		b.nodeLabels[id] = nil
 	}
+	// The Finalize cascade rescans every staged rel for incidence, so the rel
+	// set is treated as dirty even when the node turns out to be isolated.
+	b.markRelsDirty()
 	b.removeNodePropPairs(id)
 	if b.removedNodes == nil {
 		b.removedNodes = map[NodeID]int{}
