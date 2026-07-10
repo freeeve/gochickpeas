@@ -101,25 +101,38 @@ type cFunc struct {
 	args []cnode
 }
 
+// cCmpPropConst fuses <prop> <comparison> <constant> -- the dominant
+// filter shape -- into one node: the hoisted column read and the shared
+// value.Compare run with no child dispatch. rev marks a constant left
+// operand. Semantics are identical to the unfused cBin: same reader,
+// same Compare coercions, same three-valued collapse.
+type cCmpPropConst struct {
+	prop *cProp
+	c    value.Value
+	op   ast.BinOp
+	rev  bool
+}
+
 // cSlow defers to the interpreter (unrecognized functions, list
 // machinery, map forms, label predicates, cost).
 type cSlow struct{ e ast.Expr }
 
-func (*cLit) isC()       {}
-func (*cSlot) isC()      {}
-func (*cProp) isC()      {}
-func (*cNot) isC()       {}
-func (*cNeg) isC()       {}
-func (*cBin) isC()       {}
-func (*cList) isC()      {}
-func (*cIn) isC()        {}
-func (*cInConst) isC()   {}
-func (*cInCarried) isC() {}
-func (*cIsNull) isC()    {}
-func (*cSubquery) isC()  {}
-func (*cCase) isC()      {}
-func (*cFunc) isC()      {}
-func (*cSlow) isC()      {}
+func (*cLit) isC()          {}
+func (*cSlot) isC()         {}
+func (*cProp) isC()         {}
+func (*cCmpPropConst) isC() {}
+func (*cNot) isC()          {}
+func (*cNeg) isC()          {}
+func (*cBin) isC()          {}
+func (*cList) isC()         {}
+func (*cIn) isC()           {}
+func (*cInConst) isC()      {}
+func (*cInCarried) isC()    {}
+func (*cIsNull) isC()       {}
+func (*cSubquery) isC()     {}
+func (*cCase) isC()         {}
+func (*cFunc) isC()         {}
+func (*cSlow) isC()         {}
 
 // New compiles e against the segment's slots and snapshot. Parameters
 // resolve at compile time (their values are constant for the execution).
@@ -152,7 +165,11 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		return foldLits(ctx, built, g, c)
 	case *ast.Binary:
 		l, r := comp(ctx, n.LHS, slots, g), comp(ctx, n.RHS, slots, g)
-		return foldLits(ctx, &cBin{op: n.Op, l: l, r: r}, g, l, r)
+		built := foldLits(ctx, &cBin{op: n.Op, l: l, r: r}, g, l, r)
+		if fused := fuseCmpPropConst(n.Op, built, l, r); fused != nil {
+			return fused
+		}
+		return built
 	case *ast.ListExpr:
 		xs := make([]cnode, len(n.Elems))
 		for i, el := range n.Elems {
@@ -208,6 +225,31 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		}
 		return &cSlow{e: e}
 	}
+}
+
+// fuseCmpPropConst collapses <prop> <comparison> <constant> (either
+// operand order) into a cCmpPropConst when the binary did not already
+// fold to a literal; nil when the shape doesn't apply.
+func fuseCmpPropConst(op ast.BinOp, built, l, r cnode) cnode {
+	switch op {
+	case ast.OpEq, ast.OpNeq, ast.OpLt, ast.OpLte, ast.OpGt, ast.OpGte:
+	default:
+		return nil
+	}
+	if _, folded := built.(*cLit); folded {
+		return nil
+	}
+	if p, ok := l.(*cProp); ok {
+		if c, isLit := r.(*cLit); isLit {
+			return &cCmpPropConst{prop: p, c: c.v, op: op}
+		}
+	}
+	if p, ok := r.(*cProp); ok {
+		if c, isLit := l.(*cLit); isLit {
+			return &cCmpPropConst{prop: p, c: c.v, op: op, rev: true}
+		}
+	}
+	return nil
 }
 
 // foldLits replaces built with its evaluated literal when every input is

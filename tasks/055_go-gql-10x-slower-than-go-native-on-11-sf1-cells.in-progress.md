@@ -61,6 +61,32 @@ eval), Q18/IC-subquery probe costs, the fixed per-query setup on the
 sub-3ms cells (IC8, Q13), and the same-commit go-native re-sweep for the
 denominator (emitting alongside this round).
 
+## Progress (2026-07-10, round 2) -- fused prop-vs-const comparison
+
+Profiled BI/Q1 (70.7x, ~1.2k allocs, pure CPU): 58% of samples in ceval
+tree dispatch over the filter -- the per-row cost of walking
+cBin(cProp, cLit) with Value round-trips and the CmpBool closure, times
+~3M rows x 2 scans. Landed cCmpPropConst: comp fuses
+<prop> <comparison> <constant> (either operand order, all six ops) into
+one node running the hoisted column read and the SHARED value.Compare
+with no child dispatch -- semantics identical by construction (same
+reader path, same coercions incl. the Int/Temporal epoch-millis case,
+same three-valued collapse). Slots analysis reports the fused node's
+slot so WHERE pushdown is unaffected.
+
+Machine was under a load-66 hugo build all round, so wall-clock was
+unusable (every cross-run comparison swung 2-4x uniformly, including
+no-filter queries). Evidence recorded instead via a same-process
+interleaved micro-benchmark (fuse_bench_test.go): fused 35.3 ns/op vs
+unfused 68.2 ns/op -- 1.9x per filter evaluation, stable across
+repeats. Full tests green, gate 89/89 MATCH. Re-measure the Q1/Q2/Q6
+cells on a quiet machine next round before updating the ratio table.
+
+Next: Q1's residual (aggregator update per row + .year extraction +
+CASE dispatch -- candidates: fused CASE-over-int-thresholds, or the
+scan-level batch filter which subsumes all of these), Q12/Q18 subquery
+probes, streaming sink-level top-k.
+
 ### Same-commit table (both sides at 77473b8, emitted to bench-out)
 
 The apples-to-apples re-measure the filing asked for; every cell improved

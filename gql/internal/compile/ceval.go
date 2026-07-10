@@ -20,40 +20,32 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		}
 		return value.Null()
 	case *cProp:
-		if n.slot < 0 || n.slot >= len(row) {
+		return cevalProp(n, row)
+	case *cCmpPropConst:
+		l, r := cevalProp(n.prop, row), n.c
+		if n.rev {
+			l, r = r, l
+		}
+		o, ok := value.Compare(l, r)
+		if !ok {
 			return value.Null()
 		}
-		base := row[n.slot]
-		switch base.Kind() {
-		case value.KindNode:
-			id, _ := base.AsNode()
-			return n.reader.readNode(id)
-		case value.KindRel:
-			pos, _ := base.AsRel()
-			return n.reader.readRel(pos)
-		case value.KindMap:
-			entries, _ := base.AsMap()
-			for _, e := range entries {
-				if e.Key == n.reader.key {
-					return e.Val
-				}
-			}
-			return value.Null()
-		case value.KindInt:
-			// Temporal accessor over an i64 epoch-millis value.
-			ms, _ := base.AsInt()
-			if comp, ok := eval.Component(ms, n.reader.key); ok {
-				return value.Int(comp)
-			}
-			return value.Null()
-		case value.KindTemporal:
-			ms, _, _ := base.AsTemporal()
-			if comp, ok := eval.Component(ms, n.reader.key); ok {
-				return value.Int(comp)
-			}
-			return value.Null()
+		var b bool
+		switch n.op {
+		case ast.OpEq:
+			b = o == 0
+		case ast.OpNeq:
+			b = o != 0
+		case ast.OpLt:
+			b = o < 0
+		case ast.OpLte:
+			b = o <= 0
+		case ast.OpGt:
+			b = o > 0
+		default: // ast.OpGte
+			b = o >= 0
 		}
-		return value.Null()
+		return value.Bool(b)
 	case *cNot:
 		if b, ok := ceval(ctx, n.e, g, row, slots).AsBool(); ok {
 			return value.Bool(!b)
@@ -210,6 +202,46 @@ func packNodeKey(slots []int, row []value.Value) (uint64, bool) {
 
 // cevalBin mirrors the interpreter's binary dispatch over compiled
 // operands.
+// cevalProp reads a compiled property access against the row: a graph
+// column for node/rel slot values, a map field, or a temporal component
+// of an epoch-millis int; anything else is Null.
+func cevalProp(n *cProp, row []value.Value) value.Value {
+	if n.slot < 0 || n.slot >= len(row) {
+		return value.Null()
+	}
+	base := row[n.slot]
+	switch base.Kind() {
+	case value.KindNode:
+		id, _ := base.AsNode()
+		return n.reader.readNode(id)
+	case value.KindRel:
+		pos, _ := base.AsRel()
+		return n.reader.readRel(pos)
+	case value.KindMap:
+		entries, _ := base.AsMap()
+		for _, e := range entries {
+			if e.Key == n.reader.key {
+				return e.Val
+			}
+		}
+		return value.Null()
+	case value.KindInt:
+		// Temporal accessor over an i64 epoch-millis value.
+		ms, _ := base.AsInt()
+		if comp, ok := eval.Component(ms, n.reader.key); ok {
+			return value.Int(comp)
+		}
+		return value.Null()
+	case value.KindTemporal:
+		ms, _, _ := base.AsTemporal()
+		if comp, ok := eval.Component(ms, n.reader.key); ok {
+			return value.Int(comp)
+		}
+		return value.Null()
+	}
+	return value.Null()
+}
+
 func cevalBin(ctx *eval.Ctx, n *cBin, g *chickpeas.Snapshot, row []value.Value, slots map[string]int) value.Value {
 	switch n.op {
 	case ast.OpAnd:

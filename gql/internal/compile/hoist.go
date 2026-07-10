@@ -145,6 +145,8 @@ func slotsOf(c cnode, out *[]int, hasSlow *bool) {
 		*out = append(*out, n.s)
 	case *cProp:
 		*out = append(*out, n.slot)
+	case *cCmpPropConst:
+		*out = append(*out, n.prop.slot)
 	case *cNot:
 		slotsOf(n.e, out, hasSlow)
 	case *cNeg:
