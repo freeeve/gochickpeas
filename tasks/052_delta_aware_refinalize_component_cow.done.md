@@ -89,3 +89,83 @@ builder invariants.
 - Parity gate green (gql MATCH + native manifests) via /verify.
 - Bench: micro-bench thaw+refinalize for (a) no-edit, (b) 1-property edit,
   (c) 1-rel edit on the LDBC snapshot; record before/after.
+
+## Outcome
+
+Scope 1-3 landed in 90f4489; scope 4 (lazy thaw) deferred, see below.
+
+Dirty tracking and the alias plan live in a new `cow.go`; `Builder` gained
+`src`, `srcRelToOutCSR`, three dirty sets, and `relsDirty`. `Finalize` grew an
+`aliasPlan` that decides per component, and `finalizeLabels` /
+`finalizeNodeColumns` / `finalizeRelColumns` / `buildTypeIndex` split out of
+it. Thaw records the source last, so the restage itself dirties nothing.
+
+What aliases:
+
+- both CSRs + `inToOut` + typeIndex when the rel set AND the id space are
+  clean (an id-space change rewrites both offset arrays, so `relsDirty` alone
+  is not sufficient -- that was the subtlest condition here)
+- node/rel columns per untouched key; rel columns only alongside the CSR,
+  since they are keyed by outgoing-CSR position. A rebuilt rel column on a
+  clean CSR remaps through `srcRelToOutCSR` (the inverted thaw map) rather
+  than a position map from a CSR build that never ran.
+- label bitmaps per untouched label; no dirty label at all skips the O(n)
+  label scan outright
+- the atom table when nothing new was interned (an LDBC-scale copy)
+- propIndex / fulltext / geo / rootsVia / colPos caches keyed on aliased
+  components
+
+Deliberate conservatism: `RemoveNode` marks the rel set dirty unconditionally,
+because the Finalize cascade rescans every staged rel for incidence anyway.
+
+`relStats` is NOT carried forward even on a clean CSR: it is a `sync.OnceValue`
+closure over the source snapshot, so sharing it would chain each successor to
+its whole ancestor snapshot and defeat the GC. Carrying it needs the built
+value, not the thunk -- a small follow-up if it ever shows up in a profile.
+
+### Bench (50k nodes / 200k rels, `BenchmarkRefinalize`, aliased vs rebuilt)
+
+The benchmark keeps both paths so the before/after stays reproducible in-repo;
+thaw is excluded from the timer (it remains O(n+m), see below).
+
+| edit         | rebuilt | aliased | allocs rebuilt -> aliased |
+|--------------|---------|---------|---------------------------|
+| no edit      | 7.06ms  | 21.9us  | 17.1MB -> 2.3KB           |
+| one property | 7.48ms  | 238us   | 17.1MB -> 410KB           |
+| one rel      | 9.75ms  | 8.38ms  | 17.9MB -> 16.3MB          |
+
+The one-rel row is the expected floor: both CSRs and every rel column rebuild;
+node columns, labels, and atoms still alias.
+
+### Verification
+
+- `FuzzRefinalizeMatchesRebuild` is the gate the CLAUDE.md parity rule asks
+  for: the same builder + edit script finalized twice, once aliasing and once
+  with `src` cleared (forcing the general path), must produce byte-identical
+  RCPG, and the source's bytes must be unchanged after both. 2.3M execs clean.
+- Component-level alias assertions (`cow_test.go`) on backing-array identity
+  for the no-edit, property-edit, rel-edit, id-space-growth, prop-removal,
+  atom-interning, and cache-carry cases.
+- Parity gate: 89/89 MATCH, 0 DIFF, 0 SKIP.
+- Public-API drive: thaw -> edit -> Finalize -> `gql.Run`, chained twice; the
+  source keeps reading its old values and the eager index carries forward.
+
+### Behavior change worth knowing
+
+An unedited thaw of a snapshot READ FROM A FILE now reproduces that file's
+bytes exactly rather than finalize's canonical re-encoding of them, because
+clean components carry through untouched. The `big` corpus fixture carries an
+`optimize()`d roaring run container in its label index; it used to need
+normalizing before comparison and now round-trips byte-identically, so it
+moved from `TestThawRoundTripFinalizeNormalized` into
+`TestThawRoundTripByteIdentical`. Editing the label rebuilds the bitmap with
+finalize's plain construction, as before.
+
+### Follow-ups
+
+- Scope 4 (lazy thaw) not attempted: with refinalize aliasing, thaw is now the
+  whole cost of a no-edit cycle (the O(m) Kahn restage plus rematerializing
+  every column into staged pairs). That is where the next win is, and it is
+  worth its own task now that dirty tracking exists to lean on.
+- `RemoveNode` on an isolated node forces a CSR rebuild; a per-node incident
+  rel index would let it stay clean.
