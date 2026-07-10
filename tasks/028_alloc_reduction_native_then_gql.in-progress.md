@@ -333,6 +333,66 @@ adds), then everything <63k. Public core additions this round:
 Snapshot.AppendNeighborsMatch -- a version bump is warranted per the tagging
 policy when these land as a release (Eve opted to batch the tag for later).
 
+### Round 6 (2026-07-10) -- manifest grew 49 -> 89; new leaders profiled fresh
+
+Baseline re-emitted at 2fa25f4 (89 queries; suite 49.5M allocs). The ranking
+shifted completely: the never-profiled BI additions dominate -- Q17 36.1M
+allocs / 3.0GB, Q4 6.5M / 1.39GB, Q10 2.75M / 407MB; then CR1 653k, SPB a5
+652k / a25 566k, Q18 532k. Per-query -memprofile attribution:
+
+- Q17: ~90% under the WHERE conjunct -- value.Map 22.7M + value.Duration
+  22.1M: `duration({hours: 4})` rebuilt map + value per candidate row (the
+  map literal compiles to cSlow, so the existing foldFunc never saw a cLit
+  arg).
+- Q4: ~all aggregator -- freshGroup 6.9M + update 4.1M + finalize 2.2M
+  (~2.3M groups x ~6 allocs each).
+- Q10: path machinery -- pathRelPositions 1.66M + pathFromParents 1.15M +
+  RelationshipsMatched iter closures 737k + value.Path 468k (the round-5
+  "convert if a profile surfaces it" note fired).
+
+Fixes, all parity-gated:
+
+1. **Compile-time constant folding** (compile.go) -- constExpr walks the
+   AST for row/graph-independence (list-scope iteration vars tracked as
+   bound; params count as const since New resolves them per execution;
+   every FuncOp is deterministic; startNode/endNode fail resolution);
+   row-independent interpreter-backed subtrees (map literals included)
+   compile to their literal, and the structural nodes (unary/binary/list/
+   in/isnull) fold bottom-up through cLit inputs via one ceval. Q17
+   36,057,391 -> 5,803 allocs (3.0GB -> 10.9MB), 34.4s -> 15.2s.
+2. **Lazy range() in list scopes** (eval/lists.go) -- listSource gives the
+   all/any/none/single, reduce, and comprehension forms a lazily iterated
+   integer sequence for range(a,b[,s]) sources under exactly applyRange's
+   semantics (pinned by TestLazyRangeListScope); no boxed list per
+   evaluation. No bench mover (CR1's quantifier was consumed by the
+   round-5 mono pushdown), but general for any surviving range idiom.
+3. **Flat chunked aggregator slabs + packed group index** (aggregate.go) --
+   aggGroup/freshGroup replaced by per-aggregator chunk slabs (4096
+   groups/chunk: no growth-copy bytes, at most one partial chunk waste)
+   for keys/states/seen, and group keys packing into a uint64 (single
+   entity id or 62-bit int, or an entity pair below 2^30 -- 2-bit shape
+   tags keep the key spaces disjoint, mirroring AppendKey) route through
+   a map[uint64]int whose inserts allocate nothing; unpackable keys keep
+   the byte-string map. Q4 6,506,071 -> 1,109,983 allocs (-83%); Q18
+   531,807 -> 271,265 (-49%; the round-5 "inherent per-group" remainder
+   halved). Interleaved 3-run A/B on Q4 (loaded machine): 29.5s new vs
+   30.6s baseline -- wall-time neutral-to-better; the earlier single-run
+   "regression" was load noise. The first flat-slab cut grew Q4's total
+   bytes 1.39GB -> 2.25GB via slab-doubling copies; the chunked form
+   brought it to 1.18GB, below baseline.
+
+Round 6 gate: 89/89 MATCH (verify-only + emission at 7d30ecc), 45s
+FuzzQuery clean. Suite: 49,475,614 -> 6,519,136 allocs (86.8%); bytes
+7.68GB -> 4.44GB. Aggregation-heavy SPB swept along: a25 566k -> 329k,
+a5 652k -> 218k. Q17 wall time 34.4s -> 15.2s. Timings this round are
+otherwise untrustworthy (machine under concurrent load; alloc counts are
+the signal). No public API change; no tag.
+
+Remaining leaders: Q10 2.74M (shortest-path stage: per-pair parent map,
+RelationshipsMatched iter.Seq closures, pathRelPositions/pathFromParents
+slices -- scratch-reuse + batch-seam conversion, the round-5 leftover),
+SPB a13 339k (row-proportional), CR1 624k, BI/Q19 210k.
+
 ### Next round (open)
 
 - CR1 last mile (optional, ~440k): `all(x IN range(a,b) WHERE p)` materializes

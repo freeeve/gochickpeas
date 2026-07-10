@@ -6,6 +6,8 @@
 package compile
 
 import (
+	"maps"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
@@ -141,22 +143,28 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		return &cLit{v: value.Null()}
 	case *ast.Unary:
 		c := comp(ctx, n.Expr, slots, g)
+		var built cnode
 		if n.Op == ast.Not {
-			return &cNot{e: c}
+			built = &cNot{e: c}
+		} else {
+			built = &cNeg{e: c}
 		}
-		return &cNeg{e: c}
+		return foldLits(ctx, built, g, c)
 	case *ast.Binary:
-		return &cBin{op: n.Op, l: comp(ctx, n.LHS, slots, g), r: comp(ctx, n.RHS, slots, g)}
+		l, r := comp(ctx, n.LHS, slots, g), comp(ctx, n.RHS, slots, g)
+		return foldLits(ctx, &cBin{op: n.Op, l: l, r: r}, g, l, r)
 	case *ast.ListExpr:
 		xs := make([]cnode, len(n.Elems))
 		for i, el := range n.Elems {
 			xs[i] = comp(ctx, el, slots, g)
 		}
-		return &cList{xs: xs}
+		return foldLits(ctx, &cList{xs: xs}, g, xs...)
 	case *ast.In:
-		return &cIn{e: comp(ctx, n.Expr, slots, g), list: comp(ctx, n.List, slots, g)}
+		e2, list := comp(ctx, n.Expr, slots, g), comp(ctx, n.List, slots, g)
+		return foldLits(ctx, &cIn{e: e2, list: list}, g, e2, list)
 	case *ast.IsNull:
-		return &cIsNull{e: comp(ctx, n.Expr, slots, g), negated: n.Negated}
+		c := comp(ctx, n.Expr, slots, g)
+		return foldLits(ctx, &cIsNull{e: c, negated: n.Negated}, g, c)
 	case *ast.Exists:
 		ms, ok := correlatedSlots(n.Pattern, n.Where, slots)
 		return &cSubquery{pattern: n.Pattern, where: n.Where, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
@@ -190,9 +198,122 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 	default:
 		// Cost (kernel dispatch lands with M17), list predicates,
 		// comprehensions, reduce, index/slice, property-of-expression,
-		// map forms, label predicates: interpreter-backed.
+		// map forms, label predicates: interpreter-backed -- but a
+		// row-independent subtree still folds to its literal (the dominant
+		// win is a constant map argument to a temporal constructor in a
+		// hot filter, e.g. duration({hours: 4}), which otherwise
+		// rebuilds map + value per row).
+		if constExpr(e, nil) {
+			return &cLit{v: eval.Eval(ctx, e, nil, nil)}
+		}
 		return &cSlow{e: e}
 	}
+}
+
+// foldLits replaces built with its evaluated literal when every input is
+// already a literal -- the cnode ops are pure, so one ceval with no row is
+// result-identical to per-row evaluation. Folding composes bottom-up
+// through comp, so nested constant expressions collapse to one cLit.
+func foldLits(ctx *eval.Ctx, built cnode, g *chickpeas.Snapshot, inputs ...cnode) cnode {
+	for _, in := range inputs {
+		if _, ok := in.(*cLit); !ok {
+			return built
+		}
+	}
+	return &cLit{v: ceval(ctx, built, g, nil, nil)}
+}
+
+// constExpr reports whether e reads nothing from the row or graph -- no
+// free variable (iteration variables bound by an enclosing list scope
+// pass), no property access, no subquery, pattern, path, or label form --
+// so it evaluates identically for every row. Parameters count as constant:
+// New resolves them at compile time, once per execution. Scalar functions
+// are all deterministic; startNode/endNode sit outside ResolveFuncOp and
+// so fail the resolution check.
+func constExpr(e ast.Expr, bound map[string]bool) bool {
+	switch n := e.(type) {
+	case *ast.Lit:
+		return true
+	case *ast.Var:
+		return bound[n.Name]
+	case *ast.Unary:
+		return constExpr(n.Expr, bound)
+	case *ast.Binary:
+		return constExpr(n.LHS, bound) && constExpr(n.RHS, bound)
+	case *ast.ListExpr:
+		for _, el := range n.Elems {
+			if !constExpr(el, bound) {
+				return false
+			}
+		}
+		return true
+	case *ast.MapLit:
+		for _, f := range n.Fields {
+			if !constExpr(f.Val, bound) {
+				return false
+			}
+		}
+		return true
+	case *ast.In:
+		return constExpr(n.Expr, bound) && constExpr(n.List, bound)
+	case *ast.IsNull:
+		return constExpr(n.Expr, bound)
+	case *ast.Index:
+		return constExpr(n.Base, bound) && constExpr(n.Idx, bound)
+	case *ast.Slice:
+		return constExpr(n.Base, bound) &&
+			(n.From == nil || constExpr(n.From, bound)) &&
+			(n.To == nil || constExpr(n.To, bound))
+	case *ast.PropOf:
+		return constExpr(n.Base, bound)
+	case *ast.Case:
+		if n.Operand != nil && !constExpr(n.Operand, bound) {
+			return false
+		}
+		for _, w := range n.Whens {
+			if !constExpr(w.Cond, bound) || !constExpr(w.Result, bound) {
+				return false
+			}
+		}
+		return n.Else == nil || constExpr(n.Else, bound)
+	case *ast.Func:
+		if n.Distinct || n.Star {
+			return false
+		}
+		if _, ok := eval.ResolveFuncOp(n.Name); !ok {
+			return false
+		}
+		for _, a := range n.Args {
+			if !constExpr(a, bound) {
+				return false
+			}
+		}
+		return true
+	case *ast.ListPred:
+		return constExpr(n.List, bound) && constExpr(n.Pred, boundWith(bound, n.Var))
+	case *ast.Reduce:
+		return constExpr(n.List, bound) && constExpr(n.Init, bound) &&
+			constExpr(n.Body, boundWith(bound, n.Acc, n.Var))
+	case *ast.ListComp:
+		if !constExpr(n.List, bound) {
+			return false
+		}
+		inner := boundWith(bound, n.Var)
+		return (n.Filter == nil || constExpr(n.Filter, inner)) &&
+			(n.Map == nil || constExpr(n.Map, inner))
+	default:
+		return false
+	}
+}
+
+// boundWith extends a bound-variable set with list-scope iteration names.
+func boundWith(bound map[string]bool, vars ...string) map[string]bool {
+	out := make(map[string]bool, len(bound)+len(vars))
+	maps.Copy(out, bound)
+	for _, v := range vars {
+		out[v] = true
+	}
+	return out
 }
 
 // foldFunc constant-folds a scalar function whose arguments are all

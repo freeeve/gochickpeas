@@ -98,15 +98,11 @@ func (s *aggState) finalize() value.Value {
 	}
 }
 
-// aggGroup is one group's key values, accumulators, and per-aggregate
-// DISTINCT dedup sets (keyed on the canonical value encoding -- identical
-// grouping to the Rust GroupKey set; the Rust entity-id fast path is a
-// perf-only representation).
-type aggGroup struct {
-	keys   []value.Value
-	states []aggState
-	seen   []distinctSet
-}
+// Group state lives in flat stride-indexed slabs on the aggregator (keys,
+// accumulators, DISTINCT sets) rather than per-group heap objects -- the
+// grouping itself stays keyed on the canonical value encoding, identical
+// to the Rust GroupKey set; the packed-uint64 index below is a perf-only
+// representation, like the distinctSet entity-id fast path.
 
 // distinctSet is one aggregate's DISTINCT dedup set. Node and relationship
 // values -- the overwhelmingly common DISTINCT columns -- probe a compact
@@ -160,12 +156,27 @@ func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 	return true
 }
 
-// aggregator is the single-pass group-by accumulator.
+// aggregator is the single-pass group-by accumulator. Group state lives in
+// flat slabs indexed by group number at strides len(groupC)/len(aggC), so
+// a NEW group costs amortized slab growth instead of per-group heap
+// objects; group keys that pack into a uint64 (entity ids and 62-bit ints,
+// the common grouping columns) route through an integer-keyed index whose
+// inserts allocate nothing, and only unpackable keys pay the byte-string
+// map. A key tuple packs (or not) purely by its values, so the two maps
+// never split a logical group.
 type aggregator struct {
 	groupC []RowEval
 	aggC   []RowEval // nil entry = count(*)
 	index  map[string]int
-	groups []*aggGroup
+	indexI map[uint64]int
+
+	nGroups     int
+	keysChunks  [][]value.Value
+	stateChunks [][]aggState
+	seenChunks  [][]distinctSet // filled only when a DISTINCT aggregate exists
+	hasDistinct bool
+	kinds       []plan.AggKind
+
 	// keyScratch/gkScratch/dkScratch are the per-update key buffers, reused
 	// so routing a row to an existing group (or a seen DISTINCT value)
 	// allocates nothing.
@@ -175,7 +186,7 @@ type aggregator struct {
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
-	a := &aggregator{index: map[string]int{}}
+	a := &aggregator{index: map[string]int{}, indexI: map[uint64]int{}}
 	for _, gi := range proj.GroupIdx {
 		a.groupC = append(a.groupC, compileEval(ctx, proj.Returns[gi].Expr, slots))
 	}
@@ -185,41 +196,147 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 		} else {
 			a.aggC = append(a.aggC, nil)
 		}
+		a.kinds = append(a.kinds, ac.Kind)
+		if ac.Distinct {
+			a.hasDistinct = true
+		}
 	}
 	return a
 }
 
-func freshGroup(proj *plan.ProjPlan, keys []value.Value) *aggGroup {
-	g := &aggGroup{
-		keys:   keys,
-		states: make([]aggState, len(proj.Aggs)),
-		seen:   make([]distinctSet, len(proj.Aggs)),
+// chunkGroups is the slab chunk size in groups: chunks allocate once and
+// never move, so group state pays no growth-copy bytes and at most one
+// partial chunk of waste.
+const chunkGroups = 4096
+
+// keysOf/statesOf/seenOf are a group's slab windows.
+func (a *aggregator) keysOf(idx int) []value.Value {
+	k := len(a.groupC)
+	w := (idx % chunkGroups) * k
+	return a.keysChunks[idx/chunkGroups][w : w+k]
+}
+
+func (a *aggregator) statesOf(idx int) []aggState {
+	s := len(a.aggC)
+	w := (idx % chunkGroups) * s
+	return a.stateChunks[idx/chunkGroups][w : w+s]
+}
+
+func (a *aggregator) seenOf(idx int) []distinctSet {
+	s := len(a.aggC)
+	w := (idx % chunkGroups) * s
+	return a.seenChunks[idx/chunkGroups][w : w+s]
+}
+
+// appendGroup claims the next slab windows for a new group, copying its
+// key tuple in.
+func (a *aggregator) appendGroup(keys []value.Value) int {
+	idx := a.nGroups
+	a.nGroups++
+	if idx%chunkGroups == 0 {
+		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, chunkGroups*len(a.groupC)))
+		a.stateChunks = append(a.stateChunks, make([]aggState, 0, chunkGroups*len(a.aggC)))
+		if a.hasDistinct {
+			a.seenChunks = append(a.seenChunks, make([]distinctSet, chunkGroups*len(a.aggC)))
+		}
 	}
-	for i, ac := range proj.Aggs {
-		g.states[i].kind = ac.Kind
+	c := idx / chunkGroups
+	a.keysChunks[c] = append(a.keysChunks[c], keys...)
+	for _, k := range a.kinds {
+		a.stateChunks[c] = append(a.stateChunks[c], aggState{kind: k})
 	}
-	return g
+	return idx
+}
+
+// packGroupKey packs a group-key tuple into a uint64: a single entity id
+// or 62-bit int, or a pair of entity ids below 2^30. Packing is a pure
+// function of the values, and the 2-bit shape tag keeps the int, node,
+// rel, and pair key spaces disjoint (mirroring AppendKey's kind tags).
+func packGroupKey(keys []value.Value) (uint64, bool) {
+	switch len(keys) {
+	case 1:
+		v := keys[0]
+		switch v.Kind() {
+		case value.KindInt:
+			i, _ := v.AsInt()
+			if i < -(1<<61) || i >= 1<<61 {
+				return 0, false
+			}
+			return 0<<62 | uint64(i)&(1<<62-1), true
+		case value.KindNode:
+			id, _ := v.AsNode()
+			return 1<<62 | uint64(uint32(id)), true
+		case value.KindRel:
+			pos, _ := v.AsRel()
+			return 2<<62 | uint64(uint32(pos)), true
+		}
+	case 2:
+		e1, ok1 := packedEntity30(keys[0])
+		e2, ok2 := packedEntity30(keys[1])
+		if ok1 && ok2 {
+			return 3<<62 | e1<<31 | e2, true
+		}
+	}
+	return 0, false
+}
+
+// packedEntity30 packs a node/rel id below 2^30 with its kind bit into 31
+// bits, for the pair form of packGroupKey.
+func packedEntity30(v value.Value) (uint64, bool) {
+	var id uint64
+	var kind uint64
+	switch v.Kind() {
+	case value.KindNode:
+		n, _ := v.AsNode()
+		id = uint64(uint32(n))
+	case value.KindRel:
+		p, _ := v.AsRel()
+		id, kind = uint64(uint32(p)), 1
+	default:
+		return 0, false
+	}
+	if id >= 1<<30 {
+		return 0, false
+	}
+	return kind<<30 | id, true
+}
+
+// groupIdx routes a key tuple to its group's slab index, creating the
+// group on first sight.
+func (a *aggregator) groupIdx(keys []value.Value) int {
+	if gk64, packed := packGroupKey(keys); packed {
+		idx, hit := a.indexI[gk64]
+		if !hit {
+			idx = a.appendGroup(keys)
+			a.indexI[gk64] = idx
+		}
+		return idx
+	}
+	gk := a.gkScratch[:0]
+	for _, v := range keys {
+		gk = value.AppendKey(gk, v)
+	}
+	a.gkScratch = gk
+	idx, hit := a.index[string(gk)]
+	if !hit {
+		idx = a.appendGroup(keys)
+		a.index[string(gk)] = idx
+	}
+	return idx
 }
 
 // update routes one matched row into its group.
 func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan, slots map[string]int) {
 	a.keyScratch = a.keyScratch[:0]
-	gk := a.gkScratch[:0]
 	for _, c := range a.groupC {
-		v := c.Eval(ctx, m, slots)
-		a.keyScratch = append(a.keyScratch, v)
-		gk = value.AppendKey(gk, v)
+		a.keyScratch = append(a.keyScratch, c.Eval(ctx, m, slots))
 	}
-	a.gkScratch = gk
-	idx, ok := a.index[string(gk)]
-	if !ok {
-		idx = len(a.groups)
-		keys := make([]value.Value, len(a.keyScratch))
-		copy(keys, a.keyScratch)
-		a.groups = append(a.groups, freshGroup(proj, keys))
-		a.index[string(gk)] = idx
+	idx := a.groupIdx(a.keyScratch)
+	states := a.statesOf(idx)
+	var seen []distinctSet
+	if a.hasDistinct {
+		seen = a.seenOf(idx)
 	}
-	grp := a.groups[idx]
 	for j := range proj.Aggs {
 		var arg value.Value
 		present := a.aggC[j] != nil
@@ -227,11 +344,11 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 			arg = a.aggC[j].Eval(ctx, m, slots)
 		}
 		if proj.Aggs[j].Distinct && present && !arg.IsNull() {
-			if !grp.seen[j].add(arg, &a.dkScratch) {
+			if !seen[j].add(arg, &a.dkScratch) {
 				continue
 			}
 		}
-		grp.states[j].update(arg, present)
+		states[j].update(arg, present)
 	}
 }
 
@@ -239,8 +356,8 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 // over no input), applies the nested-aggregate scalar wrappers over the
 // hidden slots, then orders and paginates.
 func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) [][]value.Value {
-	if len(a.groups) == 0 && len(proj.GroupIdx) == 0 {
-		a.groups = append(a.groups, freshGroup(proj, nil))
+	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
+		a.appendGroup(nil)
 	}
 	nCols := len(proj.Returns)
 	// Wrappers read the hidden accumulator slots as __agg{k} and the
@@ -259,14 +376,16 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	for i, p := range proj.Post {
 		postC[i] = compileEval(ctx, p.Expr, postSlots)
 	}
-	out := make([][]value.Value, 0, len(a.groups))
-	for _, grp := range a.groups {
+	out := make([][]value.Value, 0, a.nGroups)
+	for idx := 0; idx < a.nGroups; idx++ {
 		row := make([]value.Value, nCols+proj.NHidden)
+		keys := a.keysOf(idx)
 		for k, gi := range proj.GroupIdx {
-			row[gi] = grp.keys[k]
+			row[gi] = keys[k]
 		}
+		states := a.statesOf(idx)
 		for j := range proj.Aggs {
-			row[proj.Aggs[j].OutIdx] = grp.states[j].finalize()
+			row[proj.Aggs[j].OutIdx] = states[j].finalize()
 		}
 		for i, p := range proj.Post {
 			row[p.Col] = postC[i].Eval(ctx, row, postSlots)

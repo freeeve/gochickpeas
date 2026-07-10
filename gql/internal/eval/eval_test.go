@@ -199,6 +199,56 @@ func TestListAndRangeFunctions(t *testing.T) {
 	wantInts(t, g, "[1, 2, 3, 4][-2..]", 3, 4)
 }
 
+// TestLazyRangeListScope pins the lazy range() source inside the list-scope
+// forms against applyRange's semantics: same folds, same null cases (zero
+// step, non-int bound), same non-int-step-defaults-to-1 quirk, both step
+// directions, and emptiness when the step points away from the end.
+func TestLazyRangeListScope(t *testing.T) {
+	g := testGraph(t)
+	wantBool(t, g, "all(i IN range(1, 5) WHERE i > 0)", true)
+	wantBool(t, g, "all(i IN range(1, 5) WHERE i > 1)", false)
+	wantBool(t, g, "any(i IN range(0, 10, 2) WHERE i = 6)", true)
+	wantBool(t, g, "any(i IN range(0, 10, 2) WHERE i = 5)", false)
+	wantBool(t, g, "none(i IN range(5, 1, -2) WHERE i = 4)", true)
+	wantBool(t, g, "single(i IN range(1, 5) WHERE i = 3)", true)
+	wantBool(t, g, "all(i IN range(5, 1) WHERE false)", true)
+	wantBool(t, g, "any(i IN range(5, 1) WHERE true)", false)
+	wantNull(t, g, "all(i IN range(1, 5, 0) WHERE i > 0)")
+	wantNull(t, g, "any(i IN range('a', 5) WHERE true)")
+	wantBool(t, g, "all(i IN range(1, 3, 'x') WHERE i >= 1)", true)
+
+	// reduce and list comprehension are engine-only nodes; build directly.
+	rangeCall := func(args ...int64) *ast.Func {
+		f := &ast.Func{Name: "range"}
+		for _, a := range args {
+			f.Args = append(f.Args, &ast.Lit{Value: ast.IntLit(a)})
+		}
+		return f
+	}
+	sum := &ast.Reduce{
+		Acc: "s", Init: &ast.Lit{Value: ast.IntLit(0)}, Var: "y", List: rangeCall(1, 100),
+		Body: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Var{Name: "s"}, RHS: &ast.Var{Name: "y"}},
+	}
+	if got, _ := Eval(g, sum, nil, nil).AsInt(); got != 5050 {
+		t.Fatalf("reduce over range(1,100) = %d, want 5050", got)
+	}
+	sumDown := &ast.Reduce{
+		Acc: "s", Init: &ast.Lit{Value: ast.IntLit(0)}, Var: "y", List: rangeCall(10, 1, -3),
+		Body: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Var{Name: "s"}, RHS: &ast.Var{Name: "y"}},
+	}
+	if got, _ := Eval(g, sumDown, nil, nil).AsInt(); got != 22 {
+		t.Fatalf("reduce over range(10,1,-3) = %d, want 22", got)
+	}
+	comp := &ast.ListComp{
+		Var: "y", List: rangeCall(1, 6),
+		Filter: &ast.Binary{Op: ast.OpGt, LHS: &ast.Var{Name: "y"}, RHS: &ast.Lit{Value: ast.IntLit(3)}},
+		Map:    &ast.Binary{Op: ast.OpMul, LHS: &ast.Var{Name: "y"}, RHS: &ast.Lit{Value: ast.IntLit(10)}},
+	}
+	if xs, _ := Eval(g, comp, nil, nil).AsList(); len(xs) != 3 {
+		t.Fatalf("list comp over range = %v", xs)
+	}
+}
+
 func TestMembershipAndNullPredicates(t *testing.T) {
 	g := testGraph(t)
 	wantBool(t, g, "2 IN [1, 2, 3]", true)
