@@ -38,3 +38,28 @@ unchanged.
   should collapse (523MB -> tens of MB); IC2/Q2 similar shapes.
 - The intra-segment streaming tests (tasks/028 round 4) as the
   semantics reference.
+
+## Outcome (2026-07-10)
+
+Implemented as scoped: runBranch groups each maximal run of segments
+whose interior boundaries are streamable (streamableBoundary: no
+aggregation, DISTINCT, ORDER BY, pagination, or aggregate wrappers) and
+runSegmentRun chains them -- every non-final segment's terminal becomes
+a passthroughSink that projects the output columns, applies the
+boundary WHERE per row, and re-seeds the next chain's width buffer; only
+the final segment's terminal retains state, and its post-WHERE runs as
+before. The first segment keeps the materialized-inputs batch-constant
+analysis; streamed-into segments compile with nothing batch-constant
+(perf-only distinction -- HoistConstIn untriggered is value-identical,
+and cInCarried still fires per epoch). PROFILE keeps the per-segment
+materializing path, so its counters are unchanged. Each chain gets its
+own rel-uniqueness env, preserving per-MATCH scope.
+
+Measured: IC9 boundary bytes 523.5MB -> 4.4MB (-99.2%), IC2 68.2MB ->
+1.4MB; allocs 1,034 -> 678 and 385 -> 313; single-segment Q2 bit-
+identical and untouched. Gate 89/89 MATCH, full suite green.
+
+The 45s FuzzQuery insurance surfaced a dual-path divergence on
+MATCH(A:!A)-[A]-()RETURN(0) -- verified PRE-EXISTING by stashing this
+change (still fails), filed as tasks/058 with the repro; the failing
+seed was deliberately not committed to the corpus.
