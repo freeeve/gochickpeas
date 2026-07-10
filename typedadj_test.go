@@ -84,6 +84,29 @@ func TestTypedAdjacencyMatchesScan(t *testing.T) {
 		}
 	}
 
+	// CountNeighborsMatch parity: for every (u, v, dir, type) the count
+	// equals the number of times v appears in the matched enumeration --
+	// including parallel-rel multiplicity, both side-picks, and the
+	// below-floor scan fallback.
+	for _, ty := range types {
+		m := g.Match(ty)
+		for _, dir := range []chickpeas.Direction{chickpeas.Outgoing, chickpeas.Incoming, chickpeas.Both} {
+			for trial := 0; trial < 500; trial++ {
+				u := chickpeas.NodeID(rng.Intn(n))
+				v := chickpeas.NodeID(rng.Intn(n))
+				want := 0
+				for nb := range g.NeighborsMatch(u, dir, m) {
+					if nb == v {
+						want++
+					}
+				}
+				if got := g.CountNeighborsMatch(u, v, dir, m); got != want {
+					t.Fatalf("%s dir %v count(%d,%d) = %d, want %d", ty, dir, u, v, got, want)
+				}
+			}
+		}
+	}
+
 	// Below-floor types keep the scan path but stay correct through Match.
 	for _, ty := range []string{"COLD", "WARM"} {
 		m := g.Match(ty)
