@@ -8,18 +8,25 @@ package chickpeas
 
 import "github.com/freeeve/gochickpeas/internal/bitset"
 
-// posIndex maps a position to the slot of its (pos, value) pair in a sparse
-// column, replacing the binary search with an O(1) map read.
-type posIndex map[uint32]uint32
+// posIndex accelerates a sparse column's random reads: a presence bitmap
+// with block ranks resolves pos -> pair slot in O(1) -- one rank read plus
+// a bounded popcount, no hashing or per-probe branching. A sparse column's
+// pair array is position-sorted (its own Get binary-searches it), so the
+// rank IS the slot. nil means unindexed (dense and rank layouts are
+// already O(1)).
+type posIndex = *rankIndex
 
 func buildPosIndex(c Column) posIndex {
-	m := make(posIndex, c.Len())
-	slot := uint32(0)
+	positions := make([]uint32, 0, c.Len())
+	span := 0
 	for pos := range c.Entries() {
-		m[pos] = slot
-		slot++
+		positions = append(positions, pos)
+		if int(pos)+1 > span {
+			span = int(pos) + 1
+		}
 	}
-	return m
+	r := buildRankIndex(positions, span)
+	return &r
 }
 
 // readIndexed reads a position through the resolved index when present,
@@ -28,11 +35,11 @@ func readIndexed(c Column, idx posIndex, pos uint32) (Value, bool) {
 	if idx == nil {
 		return c.Get(pos)
 	}
-	slot, ok := idx[pos]
+	slot, ok := idx.slot(pos)
 	if !ok {
 		return Value{}, false
 	}
-	return valueAtSlot(c, slot)
+	return valueAtSlot(c, uint32(slot))
 }
 
 // Col is a resolved property column, narrowed to a typed reader with I64 /

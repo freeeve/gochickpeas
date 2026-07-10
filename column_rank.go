@@ -12,9 +12,11 @@ import (
 	"github.com/freeeve/gochickpeas/internal/bitset"
 )
 
-// rankBlock is the positions-per-block granularity: a Get does one indexed
-// blockRank read plus a popcount over at most this many bits.
-const rankBlock = 512
+// rankBlock is the positions-per-block granularity. One word per block
+// makes a Get exactly two loads plus one masked popcount -- no partial-sum
+// loop -- at the cost of a block-rank array half the presence bitmap's
+// size (in-memory only; rank columns serialize as sparse).
+const rankBlock = 64
 
 type rankIndex struct {
 	present   *bitset.Bits

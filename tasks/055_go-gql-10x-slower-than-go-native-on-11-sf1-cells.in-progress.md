@@ -101,6 +101,14 @@ evidence order:
    propReader.read -- the core colPosIndex is a map probed per read; a
    rank/select layout (column_rank.go machinery exists) would make
    sparse random reads branchless. Core-level, fully general.
+   DONE (round 3): posIndex is now *rankIndex (presence bitmap + block
+   ranks; the sparse pair array is position-sorted so rank == slot), and
+   rankBlock dropped 512 -> 64 so a probe is two loads + one masked
+   popcount -- which also removed the partial-sum loop from the
+   finalize-band rank columns' own Gets. Alternated-binary bench (4x
+   each, loaded box): rank median 25.5 vs map 27.4 ns/op -- ~7% on the
+   probe, plus 10-20x less index memory and no map buckets for GC to
+   scan. Gate 89/89 MATCH.
 2. AppendNeighborsMatch inner loop (18% cum, biggest single site):
    RelMatch.matches per rel + roaring binarySearch under the type
    probes -- hoisting type containment to range/bitmap intersection is
