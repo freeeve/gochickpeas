@@ -139,6 +139,17 @@ evidence order:
    identical load: 6064 vs 7901 ms (-23%). Gate 89/89 MATCH. Absolute
    table numbers still owed a quiet machine (load 12-16 all round).
 
+Sweep attempt (2026-07-10 ~05:40): a same-commit pair at 27cdb3f ran in
+the night's quietest window (load 4.8, falling) -- but an external job
+spiked the box to load 58 mid-sweep, contaminating different queries on
+different sides (Q2's NATIVE denominator read 202 ms vs its real ~10;
+IC9's gql tripled). Both sides verified 89/89 MATCH, but the timing
+emissions were discarded UNCOMMITTED as known-bad rather than published
+to the viz. The coherent cells that did land agree with the interleaved
+evidence (Q12 18.5x, Q6 8.5x, Q11 8.8x, Q1 58.9x vs 47.1x/12.7x/16.3x/
+70.7x at 77473b8). Table refresh remains owed; re-run when the box is
+actually quiet.
+
 ### Same-commit table (both sides at 77473b8, emitted to bench-out)
 
 The apples-to-apples re-measure the filing asked for; every cell improved
