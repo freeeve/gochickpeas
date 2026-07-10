@@ -9,6 +9,7 @@ package chickpeas
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/freeeve/gochickpeas/nodeset"
 )
@@ -68,11 +69,15 @@ type Snapshot struct {
 	rootsMu       sync.Mutex
 	rootsViaIndex map[rootsKey]RootsVia
 
-	// typedAdj caches each rel type's lazy typed-adjacency holder; Match
-	// resolves it once per compiled stage, so traversal calls stay
-	// lock-free (typedadj.go).
-	typedMu  sync.Mutex
-	typedAdj map[RelType]*typedPair
+	// typedAdj caches each rel type's lazy typed-adjacency holder behind
+	// an atomic copy-on-write map: Match runs per call on the
+	// string-typed traversal conveniences, so the hit path must be
+	// lock-free (an earlier mutexed lookup here put a lock acquisition
+	// inside kernel neighbor loops -- a 25x native-kernel regression).
+	// typedMu serializes only the rare miss's copy-insert (typedadj.go).
+	typedMu    sync.Mutex
+	typedSlots atomic.Pointer[[typedSlotsLen]atomic.Pointer[typedPair]]
+	typedAdj   atomic.Pointer[map[RelType]*typedPair]
 
 	// fulltextIndex / geoIndex cache the lazily built per-field search
 	// indexes; the shared values are cloned out under a brief lock so
@@ -113,7 +118,6 @@ func newSnapshot() *Snapshot {
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
 		rootsViaIndex:  map[rootsKey]RootsVia{},
-		typedAdj:       map[RelType]*typedPair{},
 		fulltextIndex:  map[propIndexKey]*FullTextField{},
 		geoIndex:       map[geoKey]*GeoIndex{},
 	}

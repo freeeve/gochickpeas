@@ -11,7 +11,11 @@
 
 package chickpeas
 
-import "sync"
+import (
+	"maps"
+	"sync"
+	"sync/atomic"
+)
 
 // typedCSR is one direction's single-type view. nil means "not built"
 // (below the floor): callers fall back to the type-tested scan.
@@ -66,16 +70,56 @@ func (p *typedPair) view(out bool) *typedCSR {
 	return p.in
 }
 
-// typedPairFor returns the shared lazy holder for one type, creating it
-// under the snapshot's cache choreography.
+// typedSlotsLen is the dense-id fast path's span: rel-type atoms below it
+// resolve through a per-slot atomic slice (two atomic loads, no hashing);
+// the rare larger atom falls back to the copy-on-write map. Both paths
+// are lock-free on the hit, since the string-typed traversal conveniences
+// resolve per call inside kernel loops.
+const typedSlotsLen = 4096
+
+// typedPairFor returns the shared lazy holder for one type. Holders are
+// created at most once per type (CAS / mutexed copy-insert) and never
+// replaced, so a stale read only re-misses.
 func (g *Snapshot) typedPairFor(t RelType) *typedPair {
-	g.typedMu.Lock()
-	defer g.typedMu.Unlock()
-	if p, ok := g.typedAdj[t]; ok {
+	if t < typedSlotsLen {
+		slots := g.typedSlots.Load()
+		if slots == nil {
+			g.typedMu.Lock()
+			if slots = g.typedSlots.Load(); slots == nil {
+				slots = &[typedSlotsLen]atomic.Pointer[typedPair]{}
+				g.typedSlots.Store(slots)
+			}
+			g.typedMu.Unlock()
+		}
+		if p := slots[t].Load(); p != nil {
+			return p
+		}
+		p := &typedPair{g: g, t: t}
+		if !slots[t].CompareAndSwap(nil, p) {
+			p = slots[t].Load()
+		}
 		return p
 	}
+	if m := g.typedAdj.Load(); m != nil {
+		if p, ok := (*m)[t]; ok {
+			return p
+		}
+	}
+	g.typedMu.Lock()
+	defer g.typedMu.Unlock()
+	old := g.typedAdj.Load()
+	if old != nil {
+		if p, ok := (*old)[t]; ok {
+			return p
+		}
+	}
+	next := make(map[RelType]*typedPair, 1)
+	if old != nil {
+		maps.Copy(next, *old)
+	}
 	p := &typedPair{g: g, t: t}
-	g.typedAdj[t] = p
+	next[t] = p
+	g.typedAdj.Store(&next)
 	return p
 }
 

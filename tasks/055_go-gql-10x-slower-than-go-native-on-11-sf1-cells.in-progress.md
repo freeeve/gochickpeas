@@ -139,6 +139,31 @@ evidence order:
    identical load: 6064 vs 7901 ms (-23%). Gate 89/89 MATCH. Absolute
    table numbers still owed a quiet machine (load 12-16 all round).
 
+## Progress (2026-07-10, round 7) -- typedPairFor mutex regression found and fixed
+
+The two "contaminated" sweeps shared a systematic signature: Q2's NATIVE
+denominator inflated ~25x in both, while neighbors tracked reference.
+Root cause was mine, from round 4: the typed-adjacency holder lookup in
+Snapshot.Match took a MUTEX, and native kernels written in the
+documented convenience style (g.Neighbors(node, dir, "TYPE") per call,
+resolving Match per call) suddenly took a contended lock inside 8-way
+parallel folds -- biQ2's exact shape. gql never saw it (matchers resolve
+per stage).
+
+Fix: typedPairFor is now lock-free on the hit path -- a per-slot atomic
+slice for rel-type atoms below 4096 (two atomic loads, no hashing; CAS
+on first touch) with a copy-on-write map fallback for larger atoms; the
+mutex only serializes a miss's insert. Binary-level A/B (pre-typed
+706af3c vs fixed HEAD, alternated 3x): the 25x collapse is gone --
+quietest round reads 22.3 vs 22.5 ms, remaining delta unfalsifiable
+inside the box's noise band (the same OLD binary read 17-102 ms across
+rounds). Race-stressed 30x clean; gate 89/89 MATCH. If a quiet-box
+measurement later shows a real residual on Match-per-call kernels, the
+documented hoist (resolve Match once outside the loop) is the idiom.
+
+Both contaminated sweeps' emissions stayed uncommitted and are now
+doubly obsolete (they measured the mutex bug). Sweep still owed.
+
 ## Progress (2026-07-10, round 6) -- streaming sink-level top-k
 
 The round-4 (tasks/028) deferred item, done at the sink: under ORDER BY
