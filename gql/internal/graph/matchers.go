@@ -47,22 +47,38 @@ type propPred struct {
 	expected value.Value
 }
 
+// labelTest is one compiled label membership check: a dense label probes
+// a word bitmap (one load and mask), the rest the compressed node set. An
+// empty test (unknown label) rejects every candidate.
+type labelTest struct {
+	bits []uint64
+	set  *nodeset.Set
+}
+
+func (t *labelTest) contains(id uint32) bool {
+	if t.bits != nil {
+		w := int(id) >> 6
+		return w < len(t.bits) && t.bits[w]>>(id&63)&1 == 1
+	}
+	return t.set != nil && t.set.Contains(id)
+}
+
 // NodeMatcher is a node pattern's labels and inline properties pre-resolved
-// to snapshot handles. A nil labels entry is a label unknown to the graph,
-// which rejects every candidate.
+// to snapshot handles.
 type NodeMatcher struct {
-	labels []*nodeset.Set
+	labels []labelTest
 	props  []propPred
 }
 
-// CompileNodeMatcher resolves each label to its node set and each inline
-// key to its column once, so the per-candidate NodeMatcherAccepts avoids
-// re-interning constant names.
+// CompileNodeMatcher resolves each label to its membership test (the
+// engine's dense word bitmap when the label has one, the node set
+// otherwise) and each inline key to its column once, so the per-candidate
+// NodeMatcherAccepts avoids re-interning constant names.
 func (s *SnapshotGraph) CompileNodeMatcher(labels []string, props []PropSpec) *NodeMatcher {
-	m := &NodeMatcher{labels: make([]*nodeset.Set, len(labels)), props: make([]propPred, len(props))}
+	m := &NodeMatcher{labels: make([]labelTest, len(labels)), props: make([]propPred, len(props))}
 	for i, l := range labels {
 		if set, ok := s.g.NodesWithLabel(l); ok {
-			m.labels[i] = set
+			m.labels[i] = labelTest{bits: s.g.LabelDense(l), set: set}
 		}
 	}
 	for i, p := range props {
@@ -87,8 +103,8 @@ func (s *SnapshotGraph) CompileNodeMatcher(labels []string, props []PropSpec) *N
 // NodeMatcherAccepts reports whether node carries every label and matches
 // every inline property of the compiled matcher.
 func (s *SnapshotGraph) NodeMatcherAccepts(m *NodeMatcher, node chickpeas.NodeID) bool {
-	for _, set := range m.labels {
-		if set == nil || !set.Contains(uint32(node)) {
+	for i := range m.labels {
+		if !m.labels[i].contains(uint32(node)) {
 			return false
 		}
 	}

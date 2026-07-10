@@ -64,3 +64,19 @@ Levers, in expected-value order:
 
 Not started in this firing (deliberate): the batch-filter design wants
 a fresh implementation session; this round's write-up is the handoff.
+
+## Round 2 (2026-07-10) -- lever 2 landed: dense-label word bitmaps
+
+Snapshot.LabelDense lazily builds a plain word bitmap for labels
+covering >= idspace/8; CompileNodeMatcher resolves it once per operator
+and the per-candidate label test becomes one load and mask.
+Alternated-binary bench: 16 -> 7 ns/probe (2.3x), TestLabelDenseMatchesSet
+pins bitmap/set agreement + the sparse-label nil. Gate 89/89 MATCH.
+
+End-to-end on the heavy cells: neutral (Q8 -4%, Q17/Q10/Q4 within
+noise at load 11-28) -- consistent with the profile's 4-8% share; their
+cost is levers 1 and 3. LabelDense is new public core API -> v0.12.0.
+
+Levers 1 (level-batch filters) and 3 (Q17 plan-shape diff vs the native
+kernel, likely shared root with rcp's Q17 pathology) remain the round-3
+menu -- still recommended for a fresh session.

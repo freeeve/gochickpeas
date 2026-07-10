@@ -11,6 +11,54 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 )
 
+// TestLabelDenseMatchesSet checks the dense word bitmap agrees with the
+// label set exactly, and that below-threshold labels return nil.
+func TestLabelDenseMatchesSet(t *testing.T) {
+	b := chickpeas.NewBuilder(600, 1)
+	for i := 0; i < 600; i++ {
+		label := "Rare"
+		if i%2 == 0 {
+			label = "Common" // 50% >= idspace/8: dense
+		}
+		if _, err := b.AddNode(label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+	if g.LabelDense("Rare") == nil {
+		// Rare is 50% too -- both clear the 1/8 floor here; use a truly
+		// sparse label instead.
+	}
+	words := g.LabelDense("Common")
+	if words == nil {
+		t.Fatal("Common should be dense")
+	}
+	set, _ := g.NodesWithLabel("Common")
+	for id := 0; id < 600; id++ {
+		inBits := words[id>>6]>>(id&63)&1 == 1
+		if inBits != set.Contains(uint32(id)) {
+			t.Fatalf("id %d: bits %v set %v", id, inBits, set.Contains(uint32(id)))
+		}
+	}
+	if g.LabelDense("NoSuchLabel") != nil {
+		t.Fatal("unknown label should return nil")
+	}
+	// A genuinely sparse label stays nil.
+	b2 := chickpeas.NewBuilder(1000, 1)
+	for i := 0; i < 1000; i++ {
+		label := "Big"
+		if i < 20 {
+			label = "Tiny"
+		}
+		if _, err := b2.AddNode(label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b2.Finalize().LabelDense("Tiny") != nil {
+		t.Fatal("2% label should not build a dense bitmap")
+	}
+}
+
 func TestTypedAdjacencyMatchesScan(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	const n = 400

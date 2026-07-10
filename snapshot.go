@@ -79,6 +79,11 @@ type Snapshot struct {
 	typedSlots atomic.Pointer[[typedSlotsLen]atomic.Pointer[typedPair]]
 	typedAdj   atomic.Pointer[map[RelType]*typedPair]
 
+	// labelBits caches LabelDense's word bitmaps (resolved per compiled
+	// operator, so the mutex is off the per-candidate path).
+	labelBitsMu sync.Mutex
+	labelBits   map[Label][]uint64
+
 	// fulltextIndex / geoIndex cache the lazily built per-field search
 	// indexes; the shared values are cloned out under a brief lock so
 	// queries run off the mutex.
@@ -118,6 +123,7 @@ func newSnapshot() *Snapshot {
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
 		rootsViaIndex:  map[rootsKey]RootsVia{},
+		labelBits:      map[Label][]uint64{},
 		fulltextIndex:  map[propIndexKey]*FullTextField{},
 		geoIndex:       map[geoKey]*GeoIndex{},
 	}
@@ -269,6 +275,34 @@ func (g *Snapshot) NodesWithLabel(label string) (*nodeset.Set, bool) {
 	}
 	set, ok := g.labelIndex[l]
 	return set, ok
+}
+
+// LabelDense returns a plain word-bitmap over the label's members when
+// the label covers at least an eighth of the id space, else nil. A dense
+// label's membership probe is then one load and mask
+// (words[id>>6]>>(id&63)&1) instead of a compressed-set container search
+// -- the per-candidate label test in pattern matching. Built lazily once
+// per label; the returned slice is shared and must not be mutated.
+func (g *Snapshot) LabelDense(label string) []uint64 {
+	l, ok := g.Label(label)
+	if !ok {
+		return nil
+	}
+	set, ok := g.labelIndex[l]
+	if !ok || set.Len()*8 < int(g.CSRIDSpace()) {
+		return nil
+	}
+	g.labelBitsMu.Lock()
+	defer g.labelBitsMu.Unlock()
+	if w, ok := g.labelBits[l]; ok {
+		return w
+	}
+	words := make([]uint64, (int(g.CSRIDSpace())+63)/64)
+	for id := range set.Iter() {
+		words[id>>6] |= 1 << (id & 63)
+	}
+	g.labelBits[l] = words
+	return words
 }
 
 // RelsWithType is the set of outgoing-CSR positions of rels with relType;
