@@ -393,6 +393,34 @@ RelationshipsMatched iter.Seq closures, pathRelPositions/pathFromParents
 slices -- scratch-reuse + batch-seam conversion, the round-5 leftover),
 SPB a13 339k (row-proportional), CR1 624k, BI/Q19 210k.
 
+### Round 6b (2026-07-10) -- shortest-path stage scratch + batch seam
+
+Q10's chunk, per the attribution above. All general machinery in
+shortest.go, no query shapes:
+
+- spScratch per runSPStage: the walk's visited set + double-buffered
+  frontier (reachScratch precedent), the single-path parent map, the
+  all-shortest dist map, and batch neighbor buffers -- cleared per call,
+  never escaping (the spTree memo's retained parent maps still allocate
+  fresh).
+- appendHopNeighbors: hop iteration through AppendNeighborsMatched /
+  AppendRelationshipsMatched with in-place predicate compaction -- no
+  per-hop iter.Seq yield closures. pathRelPositions reads each pair's
+  candidates the same way. The recursive all-shortest enumeratePaths
+  keeps the iterator form deliberately: its nesting cannot share one
+  buffer (documented in code).
+- pathFromParents: count-then-fill-backward, one exactly-sized
+  allocation, no reverse pass.
+- shortestPath / spTree.pathTo return nodesRels by value (found flag),
+  removing the per-path box.
+
+Q10 2,750,466 -> 822,769 allocs (-70%), 407MB -> 343MB; remainder is
+retained path materialization (nodes/rels slices + value.Path, the same
+cost the Rust side pays) + interpreted-filter residue. Q19/IC14
+unchanged (weighted Dijkstra path, untouched -- its own scratch pass is
+a candidate if a profile ever ranks it). Gate 89/89 MATCH. Suite now
+~4.6M allocs (from 49.5M at this round's baseline).
+
 ### Next round (open)
 
 - CR1 last mile (optional, ~440k): `all(x IN range(a,b) WHERE p)` materializes
