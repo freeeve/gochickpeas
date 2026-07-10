@@ -11,6 +11,51 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 )
 
+// TestNeighborIDSetContract pins the 062 split (mirror of rustychickpeas
+// 242 item 2): AppendNeighborsMatch returns a deduplicated ASCENDING id
+// set -- parallel same-type rels and Both-direction double-sightings
+// collapse -- while AppendNeighborsEach and the Rels iterators preserve
+// per-relationship multiplicity in CSR order.
+func TestNeighborIDSetContract(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	a, _ := b.AddNode("N")
+	x, _ := b.AddNode("N")
+	y, _ := b.AddNode("N")
+	// Two parallel a->x rels, one a->y, one y->a (seen under Both).
+	for _, r := range [][2]chickpeas.NodeID{{a, x}, {a, x}, {a, y}, {y, a}} {
+		if _, err := b.AddRel(r[0], r[1], "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+	m := g.Match("R")
+
+	set := g.AppendNeighborsMatch(nil, a, chickpeas.Both, m)
+	want := []chickpeas.NodeID{x, y} // deduped (x once, y once despite out+in), ascending
+	if len(set) != 2 || set[0] != want[0] || set[1] != want[1] {
+		t.Fatalf("set contract: %v, want %v", set, want)
+	}
+
+	each := g.AppendNeighborsEach(nil, a, chickpeas.Both, m)
+	if len(each) != 4 { // x, x, y (out) + y (in): per-rel multiplicity
+		t.Fatalf("each contract: %v, want 4 entries", each)
+	}
+
+	rels := 0
+	for range g.RelsMatch(a, chickpeas.Both, m) {
+		rels++
+	}
+	if rels != 4 {
+		t.Fatalf("RelsMatch multiplicity: %d, want 4", rels)
+	}
+
+	// A prefix in dst stays untouched and unsorted-into.
+	pre := g.AppendNeighborsMatch([]chickpeas.NodeID{99}, a, chickpeas.Outgoing, m)
+	if pre[0] != 99 || len(pre) != 3 {
+		t.Fatalf("prefix preserved: %v", pre)
+	}
+}
+
 // TestLabelDenseMatchesSet checks the dense word bitmap agrees with the
 // label set exactly, and that below-threshold labels return nil.
 func TestLabelDenseMatchesSet(t *testing.T) {

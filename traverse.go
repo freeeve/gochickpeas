@@ -148,13 +148,29 @@ func (g *Snapshot) NeighborsMatch(node NodeID, dir Direction, m RelMatch) iter.S
 	}
 }
 
-// AppendNeighborsMatch appends node's matching dir neighbors over a
-// pre-resolved RelMatch to dst. It walks the CSR ranges directly rather
-// than through a yield closure: neighborsYield is too large to inline, so
-// handing it a closure would heap-escape that closure on every call. The
-// walk mirrors neighborsYield exactly, minus the early-stop the fill never
-// needs.
+// AppendNeighborsMatch appends node's matching dir neighbors to dst as a
+// deduplicated ASCENDING id set -- the neighbor-ID surface contract
+// (parallel same-type rels, or a rel seen from both directions under
+// Both, contribute one entry). Per-relationship multiplicity in CSR
+// order stays available on AppendNeighborsEach and the Rels iterators.
+// Only the appended tail is sorted and compacted; dst's existing prefix
+// is untouched.
 func (g *Snapshot) AppendNeighborsMatch(dst []NodeID, node NodeID, dir Direction, m RelMatch) []NodeID {
+	base := len(dst)
+	dst = g.AppendNeighborsEach(dst, node, dir, m)
+	tail := dst[base:]
+	slices.Sort(tail)
+	return append(dst[:base], slices.Compact(tail)...)
+}
+
+// AppendNeighborsEach appends one entry per matching dir relationship of
+// node, in CSR order -- the traversal primitive behind pattern expansion,
+// where relationship multiplicity and first-seen order are semantic. It
+// walks the CSR ranges directly rather than through a yield closure:
+// neighborsYield is too large to inline, so handing it a closure would
+// heap-escape that closure on every call. The walk mirrors
+// neighborsYield exactly, minus the early-stop the fill never needs.
+func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction, m RelMatch) []NodeID {
 	if dir == Outgoing || dir == Both {
 		if tc := m.tp.view(true); tc != nil {
 			lo, hi := relRange(tc.offsets, node)

@@ -154,12 +154,16 @@ func (s *SnapshotGraph) RelationshipsMatched(node chickpeas.NodeID, dir chickpea
 	}
 }
 
-// AppendNeighborsMatched appends node's matching dir neighbors to dst,
-// delegating to the core append accessor so the fill stays allocation-free
-// across the package boundary (the iter.Seq form would escape a per-call
-// yield closure to the heap).
+// AppendNeighborsMatched appends one entry per matching dir relationship
+// of node in CSR order (per-rel multiplicity -- pattern-match row
+// semantics), delegating to the core AppendNeighborsEach so the fill
+// stays allocation-free across the package boundary (the iter.Seq form
+// would escape a per-call yield closure to the heap). The engine's
+// deduped-ascending neighbor-ID set contract lives on
+// Snapshot.AppendNeighborsMatch, which the executor deliberately does
+// not use.
 func (s *SnapshotGraph) AppendNeighborsMatched(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) []chickpeas.NodeID {
-	return s.g.AppendNeighborsMatch(dst, node, dir, m.m)
+	return s.g.AppendNeighborsEach(dst, node, dir, m.m)
 }
 
 // AppendNeighborsByType appends node's dir neighbors over types to dst,
@@ -167,7 +171,7 @@ func (s *SnapshotGraph) AppendNeighborsMatched(dst []chickpeas.NodeID, node chic
 // so the fill stays allocation-free (the iter.Seq form escapes a per-call
 // yield closure across the package boundary).
 func (s *SnapshotGraph) AppendNeighborsByType(dst []chickpeas.NodeID, node chickpeas.NodeID, dir chickpeas.Direction, types []string) []chickpeas.NodeID {
-	return s.g.AppendNeighborsMatch(dst, node, dir, s.g.Match(types...))
+	return s.g.AppendNeighborsEach(dst, node, dir, s.g.Match(types...))
 }
 
 // AppendRelationshipsMatched appends traversed relationships' neighbors
