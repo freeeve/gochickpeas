@@ -175,21 +175,22 @@ func GACDLPSeeded(g *chickpeas.Snapshot, directed bool, iterations int, init []u
 	for range iterations {
 		parallel.For(n, func(lo, hi int) {
 			// Per-chunk scratch (a few dozen chunks per pass); reused
-			// across the chunk's nodes.
-			var buf []uint32
+			// across the chunk's nodes. Neighbors batch-append through
+			// the CSR seam (no per-element yield), then rewrite to labels
+			// in place -- NodeID and the label are both uint32, so one
+			// buffer serves both stages.
+			var buf []chickpeas.NodeID
+			all := chickpeas.MatchAll()
 			for v := lo; v < hi; v++ {
 				buf = buf[:0]
 				if directed {
-					for u := range g.Neighbors(uint32(v), chickpeas.Outgoing) {
-						buf = append(buf, cur[u])
-					}
-					for u := range g.Neighbors(uint32(v), chickpeas.Incoming) {
-						buf = append(buf, cur[u])
-					}
+					buf = g.AppendNeighborsEach(buf, chickpeas.NodeID(v), chickpeas.Outgoing, all)
+					buf = g.AppendNeighborsEach(buf, chickpeas.NodeID(v), chickpeas.Incoming, all)
 				} else {
-					for u := range g.Neighbors(uint32(v), chickpeas.Both) {
-						buf = append(buf, cur[u])
-					}
+					buf = g.AppendNeighborsEach(buf, chickpeas.NodeID(v), chickpeas.Both, all)
+				}
+				for i, u := range buf {
+					buf[i] = chickpeas.NodeID(cur[u])
 				}
 				slices.Sort(buf)
 				best, bestCount := cur[v], 0

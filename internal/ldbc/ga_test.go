@@ -2,6 +2,8 @@ package ldbc
 
 import (
 	"math"
+	"math/rand"
+	"slices"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -174,5 +176,84 @@ func TestGAValidators(t *testing.T) {
 	reshaped := ParseGAReference("1 100\n2 200\n3 200\n")
 	if GACheckRelabel(ds, []uint32{5, 5, 7}, reshaped) == nil {
 		t.Fatal("relabel should reject a reshaped partition")
+	}
+}
+
+// refCDLP is a serial sort-and-scan CDLP, the executable reference for
+// the parallel kernel (chunking must not change any label).
+func refCDLP(g *chickpeas.Snapshot, directed bool, iterations int, init []uint32) []uint32 {
+	n := int(g.NodeCount())
+	cur := slices.Clone(init)
+	next := make([]uint32, n)
+	for range iterations {
+		for v := 0; v < n; v++ {
+			var buf []uint32
+			dirs := []chickpeas.Direction{chickpeas.Both}
+			if directed {
+				dirs = []chickpeas.Direction{chickpeas.Outgoing, chickpeas.Incoming}
+			}
+			for _, d := range dirs {
+				for u := range g.Neighbors(uint32(v), d) {
+					buf = append(buf, cur[u])
+				}
+			}
+			slices.Sort(buf)
+			best, bestCount := cur[v], 0
+			for i := 0; i < len(buf); {
+				lab := buf[i]
+				j := i + 1
+				for j < len(buf) && buf[j] == lab {
+					j++
+				}
+				if j-i > bestCount {
+					bestCount = j - i
+					best = lab
+				}
+				i = j
+			}
+			next[v] = best
+		}
+		cur, next = next, cur
+	}
+	return cur
+}
+
+// TestGACDLPMatchesSerialReference drives the parallel kernel over a
+// hub-heavy random graph with tie pressure: it must produce exactly the
+// serial scan's labels, including the smallest-label tie rule.
+func TestGACDLPMatchesSerialReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(31))
+	for _, directed := range []bool{false, true} {
+		b := chickpeas.NewBuilder(400, 4000)
+		for i := 0; i < 400; i++ {
+			if _, err := b.AddNode("N"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Hub 0 far past the counting threshold; spokes share labels so
+		// the mode has genuine ties.
+		for i := 1; i < 350; i++ {
+			if _, err := b.AddRel(0, chickpeas.NodeID(i), "E"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 800; i++ {
+			u, v := chickpeas.NodeID(rng.Intn(400)), chickpeas.NodeID(rng.Intn(400))
+			if _, err := b.AddRel(u, v, "E"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		g := b.Finalize()
+		init := make([]uint32, 400)
+		for i := range init {
+			init[i] = uint32(rng.Intn(8)) // few labels -> heavy tie pressure
+		}
+		got := GACDLPSeeded(g, directed, 4, init)
+		want := refCDLP(g, directed, 4, init)
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("directed=%v node %d: adaptive %d, ref %d", directed, i, got[i], want[i])
+			}
+		}
 	}
 }
