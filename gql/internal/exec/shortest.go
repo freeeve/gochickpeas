@@ -77,6 +77,14 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 		pw = buildPathWeight(ctx, sp)
 	}
 	memo := map[graph.NodeID]*spTree{}
+	// paths memoizes the fully MATERIALIZED path per (source, target)
+	// pair: a stage joined against many rows repeats few distinct pairs,
+	// and re-reading the parent chain plus re-scanning each hop's
+	// adjacency for its relationship position dominates such stages. A
+	// present nil entry records "no path". Path values are immutable, so
+	// rows share the backing arrays.
+	type pairKey struct{ a, b graph.NodeID }
+	paths := map[pairKey]*nodesRels{}
 	for _, row := range rows {
 		var path nodesRels
 		found := false
@@ -88,12 +96,24 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 						path, found = *p, true
 					}
 				case srcFreq[a] >= 2:
-					tree, ok := memo[a]
-					if !ok {
-						tree = buildSPTree(ctx, a, sp, rm, hop, scr)
-						memo[a] = tree
+					if p, seen := paths[pairKey{a, b}]; seen {
+						if p != nil {
+							path, found = *p, true
+						}
+					} else {
+						tree, ok := memo[a]
+						if !ok {
+							tree = buildSPTree(ctx, a, sp, rm, hop, scr)
+							memo[a] = tree
+						}
+						path, found = tree.pathTo(ctx, b, sp, rm, hop, scr)
+						if found {
+							cp := path
+							paths[pairKey{a, b}] = &cp
+						} else {
+							paths[pairKey{a, b}] = nil
+						}
 					}
-					path, found = tree.pathTo(ctx, b, sp, rm, hop, scr)
 				default:
 					path, found = shortestPath(ctx, a, b, sp, rm, hop, scr)
 				}
