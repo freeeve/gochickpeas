@@ -49,18 +49,40 @@ type propPred struct {
 
 // labelTest is one compiled label membership check: a dense label probes
 // a word bitmap (one load and mask), the rest the compressed node set. An
-// empty test (unknown label) rejects every candidate.
+// empty test (unknown label) rejects every candidate. A set-backed test
+// counts its probes and self-densifies past adaptiveDenseProbes: probe
+// volume, not label density, is what amortizes the id-space-proportional
+// bitmap, and the engine caches it per label so one hot execution pays
+// the build for every later compile. Matchers are compiled per stage per
+// execution and evaluated single-threaded, so the plain counter is safe.
 type labelTest struct {
-	bits []uint64
-	set  *nodeset.Set
+	bits   []uint64
+	set    *nodeset.Set
+	label  string
+	probes uint32
 }
 
-func (t *labelTest) contains(id uint32) bool {
+// adaptiveDenseProbes is the set-probe count past which a label test
+// requests the floor-free bitmap (LabelDenseForced); heavy levels probe
+// millions of times, so the ~2 ms build repays within one execution.
+const adaptiveDenseProbes = 1 << 16
+
+func (t *labelTest) contains(g *chickpeas.Snapshot, id uint32) bool {
 	if t.bits != nil {
 		w := int(id) >> 6
 		return w < len(t.bits) && t.bits[w]>>(id&63)&1 == 1
 	}
-	return t.set != nil && t.set.Contains(id)
+	if t.set == nil {
+		return false
+	}
+	t.probes++
+	if t.probes >= adaptiveDenseProbes {
+		if t.bits = g.LabelDenseForced(t.label); t.bits != nil {
+			w := int(id) >> 6
+			return w < len(t.bits) && t.bits[w]>>(id&63)&1 == 1
+		}
+	}
+	return t.set.Contains(id)
 }
 
 // NodeMatcher is a node pattern's labels and inline properties pre-resolved
@@ -78,7 +100,7 @@ func (s *SnapshotGraph) CompileNodeMatcher(labels []string, props []PropSpec) *N
 	m := &NodeMatcher{labels: make([]labelTest, len(labels)), props: make([]propPred, len(props))}
 	for i, l := range labels {
 		if set, ok := s.g.NodesWithLabel(l); ok {
-			m.labels[i] = labelTest{bits: s.g.LabelDense(l), set: set}
+			m.labels[i] = labelTest{bits: s.g.LabelDense(l), set: set, label: l}
 		}
 	}
 	for i, p := range props {
@@ -104,7 +126,7 @@ func (s *SnapshotGraph) CompileNodeMatcher(labels []string, props []PropSpec) *N
 // every inline property of the compiled matcher.
 func (s *SnapshotGraph) NodeMatcherAccepts(m *NodeMatcher, node chickpeas.NodeID) bool {
 	for i := range m.labels {
-		if !m.labels[i].contains(uint32(node)) {
+		if !m.labels[i].contains(s.g, uint32(node)) {
 			return false
 		}
 	}

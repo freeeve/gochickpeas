@@ -284,27 +284,56 @@ func (g *Snapshot) NodesWithLabel(label string) (*nodeset.Set, bool) {
 }
 
 // LabelDense returns a plain word-bitmap over the label's members when
-// the label covers at least an eighth of the id space, else nil. A dense
-// label's membership probe is then one load and mask
-// (words[id>>6]>>(id&63)&1) instead of a compressed-set container search
-// -- the per-candidate label test in pattern matching. Built lazily once
-// per label; the returned slice is shared and must not be mutated.
+// one is already cached or the label covers at least an eighth of the id
+// space, else nil. A dense label's membership probe is then one load and
+// mask (words[id>>6]>>(id&63)&1) instead of a compressed-set container
+// search -- the per-candidate label test in pattern matching. Built
+// lazily once per label; the returned slice is shared and must not be
+// mutated. The density floor gates only the BUILD: a bitmap forced by a
+// probe-heavy caller (LabelDenseForced) serves every later compile.
 func (g *Snapshot) LabelDense(label string) []uint64 {
 	l, ok := g.Label(label)
 	if !ok {
 		return nil
 	}
+	g.labelBitsMu.Lock()
+	if w, ok := g.labelBits[l]; ok {
+		g.labelBitsMu.Unlock()
+		return w
+	}
+	g.labelBitsMu.Unlock()
 	set, ok := g.labelIndex[l]
 	if !ok || set.Len()*8 < int(g.CSRIDSpace()) {
 		return nil
 	}
+	return g.labelDenseBuild(l)
+}
+
+// LabelDenseForced builds (or returns) the label's word bitmap ignoring
+// the density floor -- for callers that have measured probe volume high
+// enough to amortize the id-space-proportional bitmap (an adaptive
+// representation choice on observed access volume, never on query
+// identity). nil only for an unknown label.
+func (g *Snapshot) LabelDenseForced(label string) []uint64 {
+	l, ok := g.Label(label)
+	if !ok {
+		return nil
+	}
+	if _, ok := g.labelIndex[l]; !ok {
+		return nil
+	}
+	return g.labelDenseBuild(l)
+}
+
+// labelDenseBuild builds and caches the label's word bitmap.
+func (g *Snapshot) labelDenseBuild(l Label) []uint64 {
 	g.labelBitsMu.Lock()
 	defer g.labelBitsMu.Unlock()
 	if w, ok := g.labelBits[l]; ok {
 		return w
 	}
 	words := make([]uint64, (int(g.CSRIDSpace())+63)/64)
-	for id := range set.Iter() {
+	for id := range g.labelIndex[l].Iter() {
 		words[id>>6] |= 1 << (id & 63)
 	}
 	g.labelBits[l] = words

@@ -321,3 +321,61 @@ func TestStatisticsAndGeoHooks(t *testing.T) {
 		t.Fatal("bbox miss")
 	}
 }
+
+// TestAdaptiveLabelDensification pins the probe-counting self-densify: a
+// label far below the density floor keeps the compressed-set probe until
+// adaptiveDenseProbes, switches to the forced word bitmap with identical
+// answers on both sides of the threshold, and leaves the built bitmap
+// cached so a later compile starts dense.
+func TestAdaptiveLabelDensification(t *testing.T) {
+	const n = 4096 // sparse label: 32 members over a 4096 id space (floor needs 512)
+	b := chickpeas.NewBuilder(n, 0)
+	var members []chickpeas.NodeID
+	for i := 0; i < n; i++ {
+		label := "Filler"
+		if i%128 == 0 {
+			label = "Rare"
+		}
+		id, err := b.AddNode(label)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if label == "Rare" {
+			members = append(members, id)
+		}
+	}
+	g := New(b.Finalize())
+	if g.g.LabelDense("Rare") != nil {
+		t.Fatal("Rare must start below the density floor")
+	}
+	m := g.CompileNodeMatcher([]string{"Rare"}, nil)
+	probe := func(rounds int) {
+		t.Helper()
+		for r := 0; r < rounds; r++ {
+			for id := 0; id < n; id += 7 {
+				want := slices.Contains(members, chickpeas.NodeID(id))
+				if got := g.NodeMatcherAccepts(m, chickpeas.NodeID(id)); got != want {
+					t.Fatalf("round %d node %d: accepts %v, want %v (bits=%v)", r, id, got, want, m.labels[0].bits != nil)
+				}
+			}
+		}
+	}
+	probe(1) // well under the threshold: still set-backed
+	if m.labels[0].bits != nil {
+		t.Fatal("bitmap built too early")
+	}
+	probe(adaptiveDenseProbes / (n / 7)) // cross the threshold
+	probe(2)                             // and verify answers after the switch
+	if m.labels[0].bits == nil {
+		t.Fatal("matcher did not self-densify past the probe threshold")
+	}
+	// The forced build is cached on the snapshot: a fresh compile starts
+	// dense, and LabelDense now serves the below-floor bitmap.
+	if g.g.LabelDense("Rare") == nil {
+		t.Fatal("forced bitmap not visible to LabelDense")
+	}
+	m2 := g.CompileNodeMatcher([]string{"Rare"}, nil)
+	if m2.labels[0].bits == nil {
+		t.Fatal("fresh compile did not pick up the cached bitmap")
+	}
+}
