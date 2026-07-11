@@ -1,0 +1,2 @@
+go test fuzz v1
+string("MATCH()--{,3333333}()RETURN 0")

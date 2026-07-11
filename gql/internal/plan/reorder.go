@@ -5,6 +5,7 @@ package plan
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -290,8 +291,38 @@ func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[st
 			first = false
 		}
 	}
-	if first || kCost >= endpointBest {
+	if first || kCost > endpointBest {
 		return nil, nil, false
+	}
+	if kCost == endpointBest {
+		// A BOUND interior tying a bound endpoint (both cost 0) is still
+		// worth re-rooting at when its expansion fan-out is strictly
+		// smaller -- anchoring a fully-anchored check pattern at its
+		// high-degree end enumerates that degree per row where the
+		// low-degree root touches a handful (the estimator's own fan-out
+		// metric decides, never query identity). Nonzero-cost ties keep
+		// the endpoint anchor as before.
+		if kCost != 0 {
+			return nil, nil, false
+		}
+		kFan := math.Inf(1)
+		for i := 1; i < n; i++ {
+			if costs[i] == 0 {
+				if f := patternFanoutFrom(pattern, i, g); f < kFan {
+					k, kFan = i, f
+				}
+			}
+		}
+		eFan := math.Inf(1)
+		if costs[0] == 0 {
+			eFan = patternFanoutFrom(pattern, 0, g)
+		}
+		if costs[n] == 0 {
+			eFan = min(eFan, patternFanoutFrom(pattern, n, g))
+		}
+		if kFan >= eFan {
+			return nil, nil, false
+		}
 	}
 	// The anchor must carry a variable so the second arm can reference it;
 	// synthesize one for an anonymous interior node (safe: the caller

@@ -244,6 +244,72 @@ func TestSplitInteriorAnchor(t *testing.T) {
 	}
 }
 
+func TestSplitBoundInteriorFanoutTie(t *testing.T) {
+	// A fully-anchored check pattern: both the start (h) and an interior
+	// (c) are bound (c through a connected hop, so it is bound by the
+	// time the pattern lowers), tying at anchor cost 0 -- the split must
+	// re-root at the interior because its expansion fan-out (1) is
+	// strictly smaller than the hub endpoint's (20), turning the hub hop
+	// into a bound-target check instead of a 20-wide enumeration.
+	b := chickpeas.NewBuilder(64, 128)
+	h, _ := b.AddNode("Hub")
+	if err := b.SetProp(h, "name", "h"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := b.AddNode("C")
+	if err := b.SetProp(c, "name", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddRel(h, c, "HC"); err != nil {
+		t.Fatal(err)
+	}
+	var mids []chickpeas.NodeID
+	for i := range 20 {
+		m, _ := b.AddNode("M")
+		if err := b.SetProp(m, "mid", int64(i)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.AddRel(h, m, "BIG"); err != nil {
+			t.Fatal(err)
+		}
+		mids = append(mids, m)
+	}
+	tn, _ := b.AddNode("T")
+	if err := b.SetProp(tn, "name", "t0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddRel(c, mids[0], "SM"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddRel(c, tn, "TG"); err != nil {
+		t.Fatal(err)
+	}
+	g := graphNew(b.Finalize())
+
+	p := mustPlan(t, g, "MATCH (h:Hub {name: 'h'})-[:HC]->(c:C), (h)-[:BIG]->(m:M)<-[:SM]-(c)-[:TG]->(t:T) RETURN m.mid, t.name")
+	found := false
+	for _, seg := range p.Branches[0] {
+		for _, st := range seg.Stages {
+			ms, ok := st.(*MatchStage)
+			if !ok {
+				continue
+			}
+			for oi := range ms.Ops {
+				op := &ms.Ops[oi]
+				if op.Kind == OpExpand && len(op.Types) == 1 && op.Types[0] == "BIG" {
+					found = true
+					if !op.Rebind {
+						t.Fatalf("BIG hop = fresh expansion from the hub; want a bound-target check (re-rooted at the bound interior)")
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no BIG hop in the plan")
+	}
+}
+
 func TestSegmentBoundariesAndPostWhere(t *testing.T) {
 	g := buildFixture(t)
 	p := mustPlan(t, g, "MATCH (p:Person) LET twice = p.pid * 2 FILTER twice > 10 RETURN twice ORDER BY twice LIMIT 3")

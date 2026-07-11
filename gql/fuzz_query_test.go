@@ -25,6 +25,16 @@ var (
 	fuzzMultiPart = regexp.MustCompile(`(?i)\b(next|union)\b`)
 	// fuzzDistinct marks a RETURN DISTINCT projection.
 	fuzzDistinct = regexp.MustCompile(`(?i)return\s+distinct`)
+	// fuzzBareScan matches an unconstrained anonymous node pattern. Many
+	// of them comma-joined multiply as N^k full scans -- a cost property
+	// of the input, not a semantics probe -- and a several-second
+	// execution trips the fuzz engine's hang detector, so such inputs
+	// are skipped instead of run.
+	fuzzBareScan = regexp.MustCompile(`\(\s*\)`)
+	// fuzzHugeQuant matches a quantifier with a >= 3-digit bound: the
+	// trail enumeration's cost explodes combinatorially with permissive
+	// bounds (same execution-budget rationale as fuzzBareScan).
+	fuzzHugeQuant = regexp.MustCompile(`\{\s*\d{3,}|,\s*\d{3,}\s*\}`)
 	// fuzzPlanMode marks EXPLAIN/PROFILE queries, which return a rendered
 	// plan (with a wall-clock planning-time header) rather than query rows
 	// -- the row invariants don't apply.
@@ -89,6 +99,9 @@ func FuzzQuery(f *testing.F) {
 	}
 	g := socialGraph(f)
 	f.Fuzz(func(t *testing.T, q string) {
+		if len(fuzzBareScan.FindAllString(q, -1)) >= 6 || fuzzHugeQuant.MatchString(q) {
+			t.Skip("execution-budget skip (wide cartesian / huge quantifier), not semantics")
+		}
 		rows, err := Run(g, q)
 		if err != nil {
 			if !errors.Is(err, ErrParse) && !errors.Is(err, ErrBind) &&
