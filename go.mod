@@ -4,7 +4,7 @@ go 1.25.6
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.19.0
-	github.com/freeeve/libcodex v0.13.0
+	github.com/freeeve/libcodex v0.30.1
 )
 
 require (
