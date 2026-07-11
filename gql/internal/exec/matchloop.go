@@ -35,6 +35,10 @@ type genScratch struct {
 	walk       varWalk
 	dedup      map[graph.NodeID]struct{}
 	semiBuf    []graph.NodeID
+	// swept marks levels whose specialized predicates already ran over
+	// the freshly filled candidate buffer (the fill-time sweep), so the
+	// pop loop skips them and counts bindings from the sweep's credit.
+	swept []bool
 	// chainRoots / chainFunc cache each var-expand op's chain-collapse
 	// and functionality resolutions for this execution (presence =
 	// checked). Plan ops are shared across cached executions, so the
@@ -114,6 +118,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 	}
 	scratch.pos = append(scratch.pos[:0], make([]int, n)...)
 	scratch.uniqPushed = append(scratch.uniqPushed[:0], make([]int, n)...)
+	scratch.swept = append(scratch.swept[:0], make([]bool, n)...)
 	// retire pops a level's live pair pushes off the used stack.
 	retire := func(cur int) {
 		if scratch.uniqPushed[cur] > 0 {
@@ -124,6 +129,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 	row := base
 
 	levelCandidates(ctx, &ops[0], sc, 0, row, uniq, scratch)
+	scratch.swept[0] = sweepLevel(ctx, &ops[0], sc, 0, row, scratch, opRows)
 	cur := 0
 	for {
 		switch {
@@ -179,19 +185,22 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 				row[ops[cur].RelSlot] = value.List(rels)
 			}
 			// PROFILE: the binding counts before the level filters prune,
-			// so pushdown effectiveness is visible per op.
-			if opRows != nil {
+			// so pushdown effectiveness is visible per op (a swept level
+			// credited its pre-sweep volume at fill time).
+			if opRows != nil && !scratch.swept[cur] {
 				opRows[cur]++
 			}
 			// Pushed-down predicates for this level: any failing conjunct
 			// abandons the candidate before deeper ops expand from it.
-			// Specialized per-candidate predicates run first (typed column
-			// read + compare, no row eval), then the general filters.
+			// Specialized per-candidate predicates ran at fill time on a
+			// swept level and run here otherwise; then the general filters.
 			ok := true
-			for _, p := range sc.levelPreds[cur] {
-				if !p(ctx, row, node) {
-					ok = false
-					break
+			if !scratch.swept[cur] {
+				for _, p := range sc.levelPreds[cur] {
+					if !p(ctx, row, node) {
+						ok = false
+						break
+					}
 				}
 			}
 			if ok {
@@ -213,6 +222,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			} else {
 				cur++
 				levelCandidates(ctx, &ops[cur], sc, cur, row, uniq, scratch)
+				scratch.swept[cur] = sweepLevel(ctx, &ops[cur], sc, cur, row, scratch, opRows)
 				scratch.pos[cur] = 0
 			}
 		case cur == 0:
@@ -225,6 +235,58 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			cur--
 		}
 	}
+}
+
+// sweepLevel runs a level's specialized predicates over the freshly
+// filled candidate buffer, compacting survivors in place (parallel
+// rel-position and range buffers stay in sync) and crediting the level's
+// PROFILE binding count with the pre-sweep volume. Every buffered
+// candidate is popped exactly once and the DFS never exits early, so
+// fill-time counting equals the former pop-time counting EXCEPT when the
+// op is uniqueness-tracked -- a uniq-rejected candidate must keep not
+// counting -- so tracked ops keep the pop-time path (reported false).
+func sweepLevel(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, cur int, row []value.Value, scratch *genScratch, opRows []uint64) bool {
+	preds := sc.levelPreds[cur]
+	if len(preds) == 0 || op.Uniq != nil {
+		return false
+	}
+	cand := scratch.cand[cur]
+	if opRows != nil {
+		opRows[cur] += uint64(len(cand))
+	}
+	rel := scratch.candRel[cur]
+	rng := scratch.candRange[cur]
+	relPar := len(rel) == len(cand)
+	rngPar := len(rng) == len(cand)
+	kept := 0
+	for i, id := range cand {
+		ok := true
+		for _, p := range preds {
+			if !p(ctx, row, id) {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		cand[kept] = id
+		if relPar {
+			rel[kept] = rel[i]
+		}
+		if rngPar {
+			rng[kept] = rng[i]
+		}
+		kept++
+	}
+	scratch.cand[cur] = cand[:kept]
+	if relPar {
+		scratch.candRel[cur] = rel[:kept]
+	}
+	if rngPar {
+		scratch.candRange[cur] = rng[:kept]
+	}
+	return true
 }
 
 // slotOf is the node slot an op binds.
