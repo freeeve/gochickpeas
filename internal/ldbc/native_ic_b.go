@@ -102,7 +102,7 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	wfCol, ok := g.RelCol("workFrom")
+	wfCol, ok := g.RelColIndexed("workFrom")
 	if !ok {
 		return nil, fmt.Errorf("rel column workFrom missing")
 	}

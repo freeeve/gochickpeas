@@ -90,7 +90,7 @@ func finSR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	blockedCol, ok := g.Col("isBlocked")
+	blockedCol, ok := g.ColIndexed("isBlocked")
 	if !ok {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
@@ -188,7 +188,7 @@ func finSR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	blockedCol, ok := g.Col("isBlocked")
+	blockedCol, ok := g.ColIndexed("isBlocked")
 	if !ok {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}

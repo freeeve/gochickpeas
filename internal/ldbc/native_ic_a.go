@@ -278,7 +278,7 @@ func icIC5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	jdCol, ok := g.RelCol("joinDate")
+	jdCol, ok := g.RelColIndexed("joinDate")
 	if !ok {
 		return nil, fmt.Errorf("rel column joinDate missing")
 	}
@@ -386,7 +386,7 @@ func icIC7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	ldCol, ok := g.RelCol("creationDate")
+	ldCol, ok := g.RelColIndexed("creationDate")
 	if !ok {
 		return nil, fmt.Errorf("rel column creationDate missing")
 	}

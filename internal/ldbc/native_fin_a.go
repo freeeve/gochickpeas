@@ -50,11 +50,11 @@ type finCols struct {
 }
 
 func finColsOf(g *chickpeas.Snapshot) (finCols, error) {
-	tsCol, ok := g.RelCol("createTime")
+	tsCol, ok := g.RelColIndexed("createTime")
 	if !ok {
 		return finCols{}, fmt.Errorf("rel column createTime missing")
 	}
-	amtCol, ok := g.RelCol("amount")
+	amtCol, ok := g.RelColIndexed("amount")
 	if !ok {
 		return finCols{}, fmt.Errorf("rel column amount missing")
 	}
@@ -124,7 +124,7 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	blockedCol, ok := g.Col("isBlocked")
+	blockedCol, ok := g.ColIndexed("isBlocked")
 	if !ok {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
@@ -193,11 +193,11 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	loanAmt, ok := g.Col("loanAmount")
+	loanAmt, ok := g.ColIndexed("loanAmount")
 	if !ok {
 		return nil, fmt.Errorf("node column loanAmount missing")
 	}
-	loanBal, ok := g.Col("balance")
+	loanBal, ok := g.ColIndexed("balance")
 	if !ok {
 		return nil, fmt.Errorf("node column balance missing")
 	}

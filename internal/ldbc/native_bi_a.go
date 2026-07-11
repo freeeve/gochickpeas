@@ -43,7 +43,7 @@ func biQ1(g *chickpeas.Snapshot) ([][]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	contentCol, ok := g.Col("content")
+	contentCol, ok := g.ColIndexed("content")
 	if !ok {
 		return nil, fmt.Errorf("node column content missing")
 	}
@@ -489,7 +489,7 @@ func biQ11(g *chickpeas.Snapshot) ([][]any, error) {
 		return [][]any{}, nil
 	}
 	startDay, endDay := dayFromCivil(2012, 9, 29), dayFromCivil(2013, 1, 1)
-	kdCol, ok := g.RelCol("creationDate")
+	kdCol, ok := g.RelColIndexed("creationDate")
 	if !ok {
 		return nil, fmt.Errorf("rel column creationDate missing")
 	}
@@ -547,12 +547,12 @@ func biQ12(g *chickpeas.Snapshot) ([][]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	contentCol, ok := g.Col("content")
+	contentCol, ok := g.ColIndexed("content")
 	if !ok {
 		return nil, fmt.Errorf("node column content missing")
 	}
 	contentStr := contentCol.Str()
-	langCol, ok := g.Col("language")
+	langCol, ok := g.ColIndexed("language")
 	if !ok {
 		return nil, fmt.Errorf("node column language missing")
 	}

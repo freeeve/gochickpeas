@@ -97,7 +97,7 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	laCol, ok := g.Col("loanAmount")
+	laCol, ok := g.ColIndexed("loanAmount")
 	if !ok {
 		return nil, fmt.Errorf("node column loanAmount missing")
 	}
@@ -297,7 +297,7 @@ func finCR11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	laCol, ok := g.RelCol("loanAmount")
+	laCol, ok := g.RelColIndexed("loanAmount")
 	if !ok {
 		return nil, fmt.Errorf("rel column loanAmount missing")
 	}

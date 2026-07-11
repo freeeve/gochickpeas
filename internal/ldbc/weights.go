@@ -71,7 +71,7 @@ func q15WeightMap(g *chickpeas.Snapshot) (map[interactionKey]float64, error) {
 // cohortWeightMap is Q20's cohort weights: for each knows pair sharing a
 // university, min |classYear difference| + 1 over the shared enrolments.
 func cohortWeightMap(g *chickpeas.Snapshot) (map[interactionKey]float64, error) {
-	cyCol, ok := g.RelCol("classYear")
+	cyCol, ok := g.RelColIndexed("classYear")
 	if !ok {
 		return nil, fmt.Errorf("rel column classYear missing")
 	}

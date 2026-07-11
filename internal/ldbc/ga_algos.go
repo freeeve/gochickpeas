@@ -56,7 +56,7 @@ func GABFS(g *chickpeas.Snapshot, source uint32, directed bool) []int64 {
 func GASSSP(g *chickpeas.Snapshot, source uint32, directed bool) []float64 {
 	var wcol chickpeas.F64Col
 	hasCol := false
-	if c, ok := g.RelCol("weight"); ok {
+	if c, ok := g.RelColIndexed("weight"); ok {
 		wcol = c.F64()
 		hasCol = true
 	}

@@ -52,7 +52,7 @@ func dayFromCivil(y, m, d int64) int64 {
 // nodeI64Col resolves a node i64 column, erroring when the snapshot
 // lacks it (a schema mismatch the caller should surface, not mask).
 func nodeI64Col(g *chickpeas.Snapshot, key string) (chickpeas.I64Col, error) {
-	c, ok := g.Col(key)
+	c, ok := g.ColIndexed(key)
 	if !ok {
 		return chickpeas.I64Col{}, fmt.Errorf("node column %s missing", key)
 	}
