@@ -4,6 +4,7 @@ package exec
 
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/compile"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -11,11 +12,14 @@ import (
 )
 
 // stageComp is a MATCH stage's per-op pre-resolved state: node matchers,
-// rel matchers, and the WHERE conjuncts bucketed by pushdown level.
+// rel matchers, and the WHERE conjuncts bucketed by pushdown level --
+// each level's bucket split into specialized per-candidate predicates
+// (levelPreds) and general row evaluations (levelFilters).
 type stageComp struct {
 	matchers     []*graph.NodeMatcher
 	relMatchers  []*graph.RelMatcher
 	levelFilters [][]RowEval
+	levelPreds   [][]compile.CandPred
 	hopGates     []hopGate
 	semijoins    []semiCache
 	// seedRel/seedNode are per-op per-chain per-hop matchers for
@@ -29,10 +33,12 @@ type stageComp struct {
 // contains + column reads. constIn reports segment-wide hoisting-constant
 // slots; sample is a seeded input row carrying their values.
 func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) *stageComp {
+	filters, preds := buildLevelFilters(ctx, stage, slots, constIn, sample)
 	sc := &stageComp{
 		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
-		levelFilters: buildLevelFilters(ctx, stage, slots, constIn, sample),
+		levelFilters: filters,
+		levelPreds:   preds,
 		hopGates:     buildHopGates(ctx, stage.Ops),
 		semijoins:    buildSemijoins(stage.Ops),
 	}
@@ -67,18 +73,22 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 // and buckets each at the earliest op level where every slot it reads is
 // bound; graph-touching conjuncts keep last-level timing. A conjunct then
 // prunes a candidate the moment it can fail instead of after the whole
-// pattern binds.
-func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) [][]RowEval {
+// pattern binds. A conjunct whose only row dependency is its level's own
+// node slot and whose shape specializes (compile.CandidatePred) lands in
+// the preds buckets instead -- evaluated per candidate id with no row
+// binding, tree dispatch, or boxing.
+func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) ([][]RowEval, [][]compile.CandPred) {
 	n := max(len(stage.Ops), 1)
 	buckets := make([][]RowEval, n)
+	preds := make([][]compile.CandPred, n)
 	if stage.Where == nil {
-		return buckets
+		return buckets, preds
 	}
 	// A named-path bind assembles p only AFTER the walk, so its WHERE runs
 	// as a post-path filter instead (a level filter over the still-null
 	// path slot would silently drop every row).
 	if stage.PathBind != nil {
-		return buckets
+		return buckets, preds
 	}
 	slotLevel := make(map[int]int, len(stage.Ops))
 	for i := range stage.Ops {
@@ -114,9 +124,16 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 				}
 			}
 		}
-		buckets[min(level, n-1)] = append(buckets[min(level, n-1)], cc)
+		lvl := min(level, n-1)
+		if bare, isCompiled := cc.(*compile.Compiled); isCompiled && lvl < len(stage.Ops) {
+			if p, ok := compile.CandidatePred(bare, slotOf(&stage.Ops[lvl])); ok {
+				preds[lvl] = append(preds[lvl], p)
+				continue
+			}
+		}
+		buckets[lvl] = append(buckets[lvl], cc)
 	}
-	return buckets
+	return buckets, preds
 }
 
 // slotAgrees reports whether slot holds an identical value on every row of

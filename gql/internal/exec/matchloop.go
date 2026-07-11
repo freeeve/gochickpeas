@@ -185,11 +185,21 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			}
 			// Pushed-down predicates for this level: any failing conjunct
 			// abandons the candidate before deeper ops expand from it.
+			// Specialized per-candidate predicates run first (typed column
+			// read + compare, no row eval), then the general filters.
 			ok := true
-			for _, f := range sc.levelFilters[cur] {
-				if !f.Eval(ctx, row, slots).IsTruthy() {
+			for _, p := range sc.levelPreds[cur] {
+				if !p(ctx, node) {
 					ok = false
 					break
+				}
+			}
+			if ok {
+				for _, f := range sc.levelFilters[cur] {
+					if !f.Eval(ctx, row, slots).IsTruthy() {
+						ok = false
+						break
+					}
 				}
 			}
 			if !ok {
