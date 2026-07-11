@@ -21,31 +21,84 @@ import (
 // type in the outgoing CSR with the k-th such rel in the incoming CSR; both
 // CSRs preserve insertion order within a group, so the pairing matches the
 // original rels.
+//
+// Implementation: stable LSD counting sorts bring both sides' position
+// arrays into the identical (src, dst, type) group order -- stability
+// keeps each side's within-group insertion order, so the i-th entries of
+// the two sorted arrays are the same relationship and zip directly. This
+// replaces the former per-group map (one entry plus a slice per distinct
+// rel key -- the dominant load-time cost at tens of millions of rels)
+// with a handful of flat arrays.
 func computeInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes []RelType,
 	inOffsets []uint32, inNbrs []NodeID, inTypes []RelType) []uint32 {
-	type relKey struct {
-		src, dst NodeID
-		t        RelType
+	m := len(outNbrs)
+	inToOut := make([]uint32, m)
+	if m == 0 {
+		return inToOut
 	}
 	n := max(len(inOffsets)-1, 0)
-	groups := map[relKey][]uint32{}
-	for v := 0; v < n; v++ {
-		for inpos := inOffsets[v]; inpos < inOffsets[v+1]; inpos++ {
-			key := relKey{src: inNbrs[inpos], dst: NodeID(v), t: inTypes[inpos]}
-			groups[key] = append(groups[key], inpos)
-		}
+	outSrc := ownersOf(outOffsets, m)
+	inDst := ownersOf(inOffsets, m)
+	maxType := RelType(0)
+	for _, t := range outTypes {
+		maxType = max(maxType, t)
 	}
-	inToOut := make([]uint32, len(outNbrs))
-	for u := 0; u < n; u++ {
-		for outpos := outOffsets[u]; outpos < outOffsets[u+1]; outpos++ {
-			key := relKey{src: NodeID(u), dst: outNbrs[outpos], t: outTypes[outpos]}
-			if q := groups[key]; len(q) > 0 {
-				inToOut[q[0]] = outpos
-				groups[key] = q[1:]
-			}
-		}
+
+	outPos := ascending(m)
+	inPos := ascending(m)
+	tmp := make([]uint32, m)
+	counts := make([]uint32, max(n, int(maxType)+1)+1)
+	// LSD: least-significant key first, so the LAST pass's key is most
+	// significant; both sides end in the same (src, dst, type) order.
+	countingPass(outPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(outTypes[p]) })
+	countingPass(outPos, tmp, counts, n, func(p uint32) uint32 { return uint32(outNbrs[p]) })
+	countingPass(outPos, tmp, counts, n, func(p uint32) uint32 { return outSrc[p] })
+	countingPass(inPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(inTypes[p]) })
+	countingPass(inPos, tmp, counts, n, func(p uint32) uint32 { return inDst[p] })
+	countingPass(inPos, tmp, counts, n, func(p uint32) uint32 { return uint32(inNbrs[p]) })
+
+	for i := range m {
+		inToOut[inPos[i]] = outPos[i]
 	}
 	return inToOut
+}
+
+// ownersOf expands a CSR offsets array to a per-position owner-node array.
+func ownersOf(offsets []uint32, m int) []uint32 {
+	owners := make([]uint32, m)
+	for u := 0; u+1 < len(offsets); u++ {
+		for p := offsets[u]; p < offsets[u+1]; p++ {
+			owners[p] = uint32(u)
+		}
+	}
+	return owners
+}
+
+// ascending is the identity position permutation.
+func ascending(m int) []uint32 {
+	out := make([]uint32, m)
+	for i := range m {
+		out[i] = uint32(i)
+	}
+	return out
+}
+
+// countingPass stably reorders positions in place by key(p) in [0, nKeys),
+// staging through tmp.
+func countingPass(positions, tmp, counts []uint32, nKeys int, key func(uint32) uint32) {
+	clear(counts[:nKeys+1])
+	for _, p := range positions {
+		counts[key(p)+1]++
+	}
+	for k := 1; k <= nKeys; k++ {
+		counts[k] += counts[k-1]
+	}
+	for _, p := range positions {
+		k := key(p)
+		tmp[counts[k]] = p
+		counts[k]++
+	}
+	copy(positions, tmp)
 }
 
 func columnToData(c Column) rcpg.ColumnData {
