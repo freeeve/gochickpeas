@@ -215,3 +215,71 @@ func TestTypedAdjacencyMatchesScan(t *testing.T) {
 		}
 	}
 }
+
+// TestCountNeighborsMatchEdgeSet pins the below-floor bound-pair count:
+// a small type resolved through Match answers off its sorted edge-key set,
+// and must agree with the type-tested scan (MatchType never routes through
+// the holder) for every direction -- parallel relationships, self loops,
+// reversed probes, and absent pairs included.
+func TestCountNeighborsMatchEdgeSet(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	const n = 300
+	b := chickpeas.NewBuilder(n, n*6)
+	for i := 0; i < n; i++ {
+		if _, err := b.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// BULK dominates so COLD stays far below the typed floor.
+	for i := 0; i < n*5; i++ {
+		u, v := chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n))
+		if _, err := b.AddRel(u, v, "BULK"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pairs [][2]chickpeas.NodeID
+	addCold := func(u, v chickpeas.NodeID) {
+		if _, err := b.AddRel(u, v, "COLD"); err != nil {
+			t.Fatal(err)
+		}
+		pairs = append(pairs, [2]chickpeas.NodeID{u, v})
+	}
+	for i := 0; i < 40; i++ {
+		addCold(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)))
+	}
+	addCold(3, 7)
+	addCold(3, 7) // parallel pair
+	addCold(3, 7)
+	addCold(9, 9) // self loop
+	g := b.Finalize()
+
+	cold, ok := g.RelType("COLD")
+	if !ok {
+		t.Fatal("no COLD type")
+	}
+	scan := chickpeas.MatchType(cold)
+	viaSet := g.Match("COLD")
+	probe := func(u, v chickpeas.NodeID) {
+		t.Helper()
+		for _, dir := range []chickpeas.Direction{chickpeas.Outgoing, chickpeas.Incoming, chickpeas.Both} {
+			want := g.CountNeighborsMatch(u, v, dir, scan)
+			got := g.CountNeighborsMatch(u, v, dir, viaSet)
+			if got != want {
+				t.Fatalf("count (%d,%d) dir %v: edge-set %d, scan %d", u, v, dir, got, want)
+			}
+		}
+	}
+	for _, p := range pairs {
+		probe(p[0], p[1])
+		probe(p[1], p[0]) // reversed
+	}
+	for i := 0; i < 200; i++ { // mostly-absent random pairs
+		probe(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)))
+	}
+	if got := g.CountNeighborsMatch(3, 7, chickpeas.Outgoing, viaSet); got != 3 {
+		t.Fatalf("parallel multiplicity = %d, want 3", got)
+	}
+	if got := g.CountNeighborsMatch(9, 9, chickpeas.Both, viaSet); got != g.CountNeighborsMatch(9, 9, chickpeas.Both, scan) {
+		t.Fatalf("self-loop Both disagrees with scan: %d", got)
+	}
+}

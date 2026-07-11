@@ -13,6 +13,7 @@ package chickpeas
 
 import (
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -25,13 +26,17 @@ type typedCSR struct {
 	poss    []uint32
 }
 
-// typedPair lazily holds both directions' views for one type.
+// typedPair lazily holds both directions' views for one type, plus the
+// type's sorted edge-key set -- the below-floor representation for
+// bound-pair probes, sized by the type's payload instead of the id space.
 type typedPair struct {
-	g       *Snapshot
-	t       RelType
-	outOnce sync.Once
-	inOnce  sync.Once
-	out, in *typedCSR
+	g        *Snapshot
+	t        RelType
+	outOnce  sync.Once
+	inOnce   sync.Once
+	out, in  *typedCSR
+	edgeOnce sync.Once
+	edges    []uint64
 }
 
 // typedFloor: a type builds its view only when its relationship count is
@@ -152,6 +157,18 @@ func (g *Snapshot) countDirMatch(u, v NodeID, out bool, m RelMatch) int {
 		}
 		return countHits(tcU.nbrs[loU:hiU], v)
 	}
+	// Below the typed-view floor a single type still answers a bound-pair
+	// count in O(log E) off its sorted edge-key set: the untyped scan pays
+	// the node's FULL degree per probe (every type's relationships), which
+	// dominates existence-heavy predicates over small types.
+	if m.tp != nil {
+		keys := m.tp.edgeKeys()
+		a, b := u, v
+		if !out {
+			a, b = v, u
+		}
+		return countKeyHits(keys, uint64(a)<<32|uint64(uint32(b)))
+	}
 	// Scan fallback: u's primary run with per-rel type tests.
 	offsets, nbrs, types := g.outOffsets, g.outNbrs, g.outTypes
 	if !out {
@@ -163,6 +180,42 @@ func (g *Snapshot) countDirMatch(u, v NodeID, out bool, m RelMatch) int {
 		if nbrs[k] == v && m.matches(types[k]) {
 			n++
 		}
+	}
+	return n
+}
+
+// edgeKeys lazily builds the type's sorted (src<<32|dst) key multiset from
+// one pass over the primary CSR: memory is proportional to the type's
+// relationship count (unlike a typed view's id-space offsets), duplicates
+// preserve parallel-relationship multiplicity, and one array answers both
+// directions (an incoming u->v probe is the key (v, u)).
+func (p *typedPair) edgeKeys() []uint64 {
+	p.edgeOnce.Do(func() {
+		g := p.g
+		var count int
+		if set, ok := g.typeIndex[p.t]; ok {
+			count = set.Len()
+		}
+		keys := make([]uint64, 0, count)
+		for u := 0; u+1 < len(g.outOffsets); u++ {
+			for k := g.outOffsets[u]; k < g.outOffsets[u+1]; k++ {
+				if g.outTypes[k] == p.t {
+					keys = append(keys, uint64(uint32(u))<<32|uint64(uint32(g.outNbrs[k])))
+				}
+			}
+		}
+		slices.Sort(keys)
+		p.edges = keys
+	})
+	return p.edges
+}
+
+// countKeyHits counts key's occurrences in the sorted key multiset.
+func countKeyHits(keys []uint64, key uint64) int {
+	lo, _ := slices.BinarySearch(keys, key)
+	n := 0
+	for i := lo; i < len(keys) && keys[i] == key; i++ {
+		n++
 	}
 	return n
 }
