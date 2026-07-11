@@ -7,6 +7,7 @@ package rcpg
 
 import (
 	"bytes"
+	"unicode/utf8"
 
 	"github.com/RoaringBitmap/roaring/v2"
 )
@@ -133,13 +134,28 @@ func decodeAtoms(body []byte) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One backing string serves every atom: substrings share it, so the
+	// table costs two allocations instead of one per atom (the dominant
+	// residual of the load path at millions of atoms). The backing spans
+	// the section tail, so the interleaved length prefixes ride along --
+	// a few bytes per atom inside one block that stays alive with the
+	// table anyway.
+	base := c.pos
+	blob := string(c.b[base:])
 	atoms := make([]string, 0, preallocCap(count))
 	for range count {
-		s, err := c.str()
+		n, err := c.lenPrefix(1)
 		if err != nil {
 			return nil, err
 		}
-		atoms = append(atoms, s)
+		s, err := c.take(n)
+		if err != nil {
+			return nil, err
+		}
+		if !utf8.Valid(s) {
+			return nil, corruptf("invalid utf8 at offset %d", c.pos)
+		}
+		atoms = append(atoms, blob[c.pos-n-base:c.pos-base])
 	}
 	return atoms, nil
 }
