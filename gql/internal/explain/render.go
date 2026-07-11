@@ -263,6 +263,12 @@ func opLabel(op *plan.BindOp, names []string) string {
 			return fmt.Sprintf("NodeBySeek (%s = id %s)", v, nameOf(src.Slot, names))
 		case plan.ScanTextMatch:
 			return fmt.Sprintf("NodeByTextIndex (%s:%s {%s %s %s})", v, src.Label, src.Field, binopStr(src.Mode), fmtLit(src.Value))
+		case plan.ScanExistsSeed:
+			label := src.Label
+			if label == "" {
+				label = "*"
+			}
+			return fmt.Sprintf("NodeByExistsSeed (%s:%s, %d chain(s))", v, label, len(src.Seeds))
 		case plan.ScanArg:
 			return fmt.Sprintf("Argument (%s%s%s)", v, fmtLabels(op.Labels), fmtProps(op.Props))
 		default:

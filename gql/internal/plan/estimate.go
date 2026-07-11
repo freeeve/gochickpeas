@@ -225,6 +225,14 @@ func scanCard(source *ScanSource, props []ast.PropEntry, g graph.Graph) uint64 {
 		return rnd(base * propSel(props))
 	case ScanTextMatch:
 		return g.LabelCardinality(source.Label)
+	case ScanExistsSeed:
+		// Estimate as the base label scan so join ordering is unchanged
+		// by the seeding -- the narrowing is purely an execution-time
+		// candidate source (like ScanTextMatch's contract).
+		if source.Label != "" {
+			return g.LabelCardinality(source.Label)
+		}
+		return uint64(g.NodeCount())
 	case ScanNodeID, ScanNodeIDVar, ScanArg:
 		return 1
 	default: // ScanAll

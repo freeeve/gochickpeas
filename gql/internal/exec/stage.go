@@ -18,6 +18,10 @@ type stageComp struct {
 	levelFilters [][]RowEval
 	hopGates     []hopGate
 	semijoins    []semiCache
+	// seedRel/seedNode are per-op per-chain per-hop matchers for
+	// ScanExistsSeed walks, resolved once with the rest of the stage.
+	seedRel  [][][]*graph.RelMatcher
+	seedNode [][][]*graph.NodeMatcher
 }
 
 // compileStage pre-resolves the stage's constant names once (labels,
@@ -32,6 +36,8 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 		hopGates:     buildHopGates(ctx, stage.Ops),
 		semijoins:    buildSemijoins(stage.Ops),
 	}
+	sc.seedRel = make([][][]*graph.RelMatcher, len(stage.Ops))
+	sc.seedNode = make([][][]*graph.NodeMatcher, len(stage.Ops))
 	for i := range stage.Ops {
 		op := &stage.Ops[i]
 		props := make([]graph.PropSpec, len(op.Props))
@@ -40,6 +46,19 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 		}
 		sc.matchers[i] = ctx.G.CompileNodeMatcher(op.Labels, props)
 		sc.relMatchers[i] = ctx.G.CompileRelMatcher(op.Types)
+		if op.Kind == plan.OpScan && op.Source.Kind == plan.ScanExistsSeed {
+			sc.seedRel[i] = make([][]*graph.RelMatcher, len(op.Source.Seeds))
+			sc.seedNode[i] = make([][]*graph.NodeMatcher, len(op.Source.Seeds))
+			for ci := range op.Source.Seeds {
+				hops := op.Source.Seeds[ci].Hops
+				sc.seedRel[i][ci] = make([]*graph.RelMatcher, len(hops))
+				sc.seedNode[i][ci] = make([]*graph.NodeMatcher, len(hops))
+				for hi := range hops {
+					sc.seedRel[i][ci][hi] = ctx.G.CompileRelMatcher(hops[hi].Types)
+					sc.seedNode[i][ci][hi] = ctx.G.CompileNodeMatcher(hops[hi].Labels, nil)
+				}
+			}
+		}
 	}
 	return sc
 }

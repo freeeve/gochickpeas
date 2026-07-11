@@ -378,6 +378,60 @@ func TestErrorKinds(t *testing.T) {
 	if _, err := Run(g, "MATCH (a:Person)-->() MATCH (a)-->(b) RETURN b"); err != nil {
 		t.Fatalf("same-kind node reuse should stay legal: %v", err)
 	}
+}
+
+// TestExistsSeededScan pins the EXISTS-driven candidate scan (065): a
+// broad scan whose WHERE is EXISTS (or an OR of EXISTSes) anchored at a
+// bound variable must return exactly the scan-and-filter rows -- across
+// forward and reversed pattern orientations, multi-hop chains, the OR
+// union, a disqualifying mixed OR, and rows reachable only through
+// nodes that fail interior labels (the superset must not lose them
+// because the walk applies pattern labels the witness path satisfies).
+func TestExistsSeededScan(t *testing.T) {
+	b := chickpeas.NewBuilder(32, 64)
+	tag, _ := b.AddNode("Tag")
+	_ = b.SetProp(tag, "name", "t")
+	mkPerson := func(name string) chickpeas.NodeID {
+		p, _ := b.AddNode("Person")
+		_ = b.SetProp(p, "name", name)
+		return p
+	}
+	mkMsg := func(creator chickpeas.NodeID, tagged bool) chickpeas.NodeID {
+		m, _ := b.AddNode("Message")
+		b.AddRel(m, creator, "HAS_CREATOR")
+		if tagged {
+			b.AddRel(m, tag, "HAS_TAG")
+		}
+		return m
+	}
+	alice := mkPerson("alice") // authors a tagged message
+	bob := mkPerson("bob")     // replies to a tagged message
+	carol := mkPerson("carol") // untagged activity only
+	dave := mkPerson("dave")   // no activity
+	_ = dave
+	mt := mkMsg(alice, true)
+	mu := mkMsg(carol, false)
+	reply := mkMsg(bob, false)
+	b.AddRel(reply, mt, "REPLY_OF")
+	_ = mu
+	g := b.Finalize()
+
+	// Forward orientation: person at the pattern start.
+	wantStrs(t, strColOrdered(t, g,
+		"MATCH (t:Tag {name: 't'}) MATCH (p:Person) WHERE EXISTS { MATCH (p)<-[:HAS_CREATOR]-(m:Message)-[:HAS_TAG]->(t) } RETURN p.name AS n ORDER BY n", "n"),
+		"alice")
+	// Reversed orientation: person at the pattern end.
+	wantStrs(t, strColOrdered(t, g,
+		"MATCH (t:Tag {name: 't'}) MATCH (p:Person) WHERE EXISTS { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) } RETURN p.name AS n ORDER BY n", "n"),
+		"alice")
+	// OR of EXISTSes: author or replier.
+	wantStrs(t, strColOrdered(t, g,
+		"MATCH (t:Tag {name: 't'}) MATCH (p:Person) WHERE EXISTS { MATCH (p)<-[:HAS_CREATOR]-(m:Message)-[:HAS_TAG]->(t) } OR EXISTS { MATCH (p)<-[:HAS_CREATOR]-(r:Message)-[:REPLY_OF]->(m2:Message)-[:HAS_TAG]->(t) } RETURN p.name AS n ORDER BY n", "n"),
+		"alice", "bob")
+	// Mixed OR (non-EXISTS leaf) must not lose the property-only row.
+	wantStrs(t, strColOrdered(t, g,
+		"MATCH (t:Tag {name: 't'}) MATCH (p:Person) WHERE EXISTS { MATCH (p)<-[:HAS_CREATOR]-(m:Message)-[:HAS_TAG]->(t) } OR p.name = 'carol' RETURN p.name AS n ORDER BY n", "n"),
+		"alice", "carol")
 	// An unknown YIELD column is a typed plan error (algo.* yields
 	// node/value, not score).
 	if _, err := Run(g, "CALL algo.pagerank() YIELD node, score RETURN score"); !errors.Is(err, ErrPlan) {

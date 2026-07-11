@@ -36,7 +36,31 @@ const (
 	// the Value needle. Candidates are a superset; the kept WHERE conjunct
 	// finalizes, so this is purely a faster source.
 	ScanTextMatch
+	// ScanExistsSeed is an EXISTS-driven candidate scan: the WHERE holds
+	// an EXISTS (or an OR of EXISTSes) correlated to the scan variable
+	// whose pattern anchors at an already-bound variable, so candidates
+	// enumerate backward from the anchor's current value instead of
+	// scanning the label. Candidates are a superset (interior property
+	// and WHERE predicates are ignored during the walk); the kept EXISTS
+	// conjunct finalizes, so like ScanTextMatch this is purely a
+	// narrower source.
+	ScanExistsSeed
 )
+
+// SeedHop is one backward step of an EXISTS seed walk: traverse Types in
+// Dir (already reversed for the walk), landing on nodes carrying Labels.
+type SeedHop struct {
+	Dir    graph.Direction
+	Types  []string
+	Labels []string
+}
+
+// SeedChain walks one EXISTS disjunct's pattern from its bound anchor
+// (AnchorSlot's row value) to the scan variable.
+type SeedChain struct {
+	AnchorSlot int
+	Hops       []SeedHop
+}
 
 // ScanSource is where a Scan op's candidate nodes come from.
 type ScanSource struct {
@@ -47,6 +71,7 @@ type ScanSource struct {
 	Mode  ast.BinOp   // ScanTextMatch
 	Value ast.Literal // ScanProperty value / ScanNodeID id / ScanTextMatch needle
 	Slot  int         // ScanArg / ScanNodeIDVar
+	Seeds []SeedChain // ScanExistsSeed: one chain per EXISTS disjunct
 }
 
 // OpKind discriminates a BindOp.

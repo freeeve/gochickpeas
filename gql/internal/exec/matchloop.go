@@ -41,6 +41,9 @@ type genScratch struct {
 	// resolutions cannot live on the op itself.
 	chainRoots map[*plan.BindOp]chickpeas.RootsVia
 	chainFunc  map[*plan.BindOp]bool
+	// seedFrontier/seedNext are the EXISTS-seed walk's level buffers.
+	seedFrontier []graph.NodeID
+	seedNext     []graph.NodeID
 }
 
 // chainRootsFor resolves (once per op per execution) whether op's
@@ -263,7 +266,25 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 		if id, ok := nodeIDSeekValue(ctx, row[op.Source.Slot]); ok && ctx.G.NodeMatcherAccepts(m, id) {
 			*cand = append(*cand, id)
 		}
+	case plan.ScanExistsSeed:
+		// EXISTS-driven candidate superset; past the fan-out cap fall
+		// back to the base source (the kept conjunct finalizes either
+		// way).
+		if !existsSeedCandidates(ctx, op, m, sc.seedRel[i], sc.seedNode[i], row, cand, scratch) {
+			base := op.Source
+			base.Kind = baseScanKind(&op.Source)
+			freshScan(ctx, &base, m, false, cand)
+		}
 	default:
 		freshScan(ctx, &op.Source, m, scanMatcherRedundant(op), cand)
 	}
+}
+
+// baseScanKind is the source a ScanExistsSeed degrades to when its walk
+// is abandoned: the label scan when one exists, else every node.
+func baseScanKind(src *plan.ScanSource) plan.ScanKind {
+	if src.Label != "" {
+		return plan.ScanLabel
+	}
+	return plan.ScanAll
 }

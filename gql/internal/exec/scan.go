@@ -3,6 +3,8 @@
 package exec
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -72,6 +74,64 @@ func freshScan(ctx *eval.Ctx, src *plan.ScanSource, m *graph.NodeMatcher, skipAc
 			accept(id)
 		}
 	}
+}
+
+// seedFanoutCap bounds one EXISTS seed walk's frontier: past it the walk
+// is abandoned and the scan falls back to its base source for the row --
+// candidate-superset semantics make the bail free.
+const seedFanoutCap = 1 << 17
+
+// existsSeedCandidates enumerates the retained-EXISTS conjuncts'
+// candidate superset: each chain walks from its anchor's current row
+// value hop by hop over deduplicated ascending neighbor sets,
+// label-filtered per level, then the chains union (sort + compact) and
+// the op's own matcher applies. The kept WHERE finalizes, so like
+// ScanTextMatch this only narrows the scan. Reports false when a walk
+// exceeds the fan-out cap (caller falls back to the base source).
+func existsSeedCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, seedRel [][]*graph.RelMatcher, seedNode [][]*graph.NodeMatcher, row []value.Value, cand *[]graph.NodeID, scratch *genScratch) bool {
+	base := len(*cand)
+	for ci := range op.Source.Seeds {
+		ch := &op.Source.Seeds[ci]
+		a, ok := row[ch.AnchorSlot].AsNode()
+		if !ok {
+			continue
+		}
+		frontier := append(scratch.seedFrontier[:0], a)
+		next := scratch.seedNext[:0]
+		for hi := range ch.Hops {
+			next = next[:0]
+			for _, u := range frontier {
+				next = ctx.G.AppendNeighborsMatched(next, u, ch.Hops[hi].Dir, seedRel[ci][hi])
+				if len(next) > seedFanoutCap {
+					scratch.seedFrontier, scratch.seedNext = frontier, next
+					*cand = (*cand)[:base]
+					return false
+				}
+			}
+			slices.Sort(next)
+			next = slices.Compact(next)
+			kept := next[:0]
+			for _, v := range next {
+				if ctx.G.NodeMatcherAccepts(seedNode[ci][hi], v) {
+					kept = append(kept, v)
+				}
+			}
+			frontier, next = kept, frontier
+		}
+		*cand = append(*cand, frontier...)
+		scratch.seedFrontier, scratch.seedNext = frontier, next
+	}
+	tail := (*cand)[base:]
+	slices.Sort(tail)
+	tail = slices.Compact(tail)
+	kept := tail[:0]
+	for _, id := range tail {
+		if ctx.G.NodeMatcherAccepts(m, id) {
+			kept = append(kept, id)
+		}
+	}
+	*cand = (*cand)[:base+len(kept)]
+	return true
 }
 
 // nodeIDSeekValue resolves an id-seek value: an in-id-space non-negative
