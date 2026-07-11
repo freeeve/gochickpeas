@@ -189,7 +189,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			// read + compare, no row eval), then the general filters.
 			ok := true
 			for _, p := range sc.levelPreds[cur] {
-				if !p(ctx, node) {
+				if !p(ctx, row, node) {
 					ok = false
 					break
 				}

@@ -254,6 +254,15 @@ func totalCmpF64(x, y float64) int {
 	return cmpInt(xb, yb)
 }
 
+// TotalOrderF64 exposes OrderCmp's numeric-tier total order (IEEE-754
+// totalOrder) so typed sort-key paths compare through the identical
+// kernel instead of a re-implementation.
+func TotalOrderF64(x, y float64) int { return totalCmpF64(x, y) }
+
+// OrderNumF64 exposes OrderCmp's numeric-tier encoding of an Int/Float
+// value (NaN for anything else), pairing with TotalOrderF64.
+func OrderNumF64(v Value) float64 { return orderNum(v) }
+
 // mapOrder is a total order over maps for OrderCmp: compare entries in
 // key-sorted order by (key, value), then by size, so two maps order
 // deterministically regardless of insertion order (consistent with the

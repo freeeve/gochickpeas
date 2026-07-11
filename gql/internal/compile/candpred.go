@@ -18,14 +18,16 @@ import (
 )
 
 // CandPred reports whether the conjunct holds for a node candidate bound
-// at its specialized slot.
-type CandPred func(ctx *eval.Ctx, id graph.NodeID) bool
+// at its specialized slot. The row carries the level's fixed outer
+// bindings -- only the carried-list rebuild (once per match-call epoch)
+// reads it; hot paths touch the candidate alone.
+type CandPred func(ctx *eval.Ctx, row []value.Value, id graph.NodeID) bool
 
-// CandidatePred specializes c when its only row dependency is the node
-// candidate at slot and its shape is the fused prop-vs-const comparison
-// or a constant-list membership over the candidate's property; ok=false
-// keeps the general row evaluation.
-func CandidatePred(c *Compiled, slot int) (CandPred, bool) {
+// CandidatePred specializes c when its only per-candidate dependency is
+// the node at slot and its shape is the fused prop-vs-const comparison or
+// a constant- or carried-list membership over the candidate's property;
+// ok=false keeps the general row evaluation.
+func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool) {
 	if in, ok := c.c.(*cInConst); ok {
 		p, isProp := in.e.(*cProp)
 		if !isProp || p.slot != slot {
@@ -33,12 +35,31 @@ func CandidatePred(c *Compiled, slot int) (CandPred, bool) {
 		}
 		reader := p.reader
 		m := in.m
-		return func(_ *eval.Ctx, id graph.NodeID) bool {
+		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 			v := reader.readNode(id)
 			if v.IsNull() {
 				return false
 			}
 			return m.resultFor(v).IsTruthy()
+		}, true
+	}
+	if in, ok := c.c.(*cInCarried); ok {
+		p, isProp := in.e.(*cProp)
+		if !isProp || p.slot != slot {
+			return nil, false
+		}
+		reader := p.reader
+		g := c.g
+		return func(ctx *eval.Ctx, row []value.Value, id graph.NodeID) bool {
+			in.refresh(ctx, g, row, slots)
+			if in.notList {
+				return false
+			}
+			v := reader.readNode(id)
+			if v.IsNull() {
+				return false
+			}
+			return in.m.resultFor(v).IsTruthy()
 		}, true
 	}
 	n, ok := c.c.(*cCmpPropConst)
@@ -57,7 +78,7 @@ func CandidatePred(c *Compiled, slot int) (CandPred, bool) {
 	if reader.node.kind == colI64 && konst.Kind() == value.KindInt {
 		ci, _ := konst.AsInt()
 		cf := float64(ci)
-		return func(_ *eval.Ctx, id graph.NodeID) bool {
+		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 			v, present := reader.node.i64.Get(uint32(id))
 			if !present {
 				return false
@@ -72,7 +93,7 @@ func CandidatePred(c *Compiled, slot int) (CandPred, bool) {
 	}
 	if reader.node.kind == colF64 && konst.Kind() == value.KindFloat {
 		cf, _ := konst.AsFloat()
-		return func(_ *eval.Ctx, id graph.NodeID) bool {
+		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 			v, present := reader.node.f64.Get(uint32(id))
 			if !present {
 				return false
@@ -85,7 +106,7 @@ func CandidatePred(c *Compiled, slot int) (CandPred, bool) {
 			return comparable && keep(o)
 		}, true
 	}
-	return func(_ *eval.Ctx, id graph.NodeID) bool {
+	return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 		l, r := reader.readNode(id), konst
 		if rev {
 			l, r = r, l

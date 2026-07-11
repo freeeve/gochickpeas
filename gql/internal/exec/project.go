@@ -342,6 +342,63 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 	for i := range idx {
 		idx[i] = i
 	}
+	// Typed key columns: a key column homogeneous over OrderCmp's numeric
+	// tier (Int/Float) or over one entity kind compares through its
+	// primitive encoding -- the identical kernel (value.TotalOrderF64 /
+	// id order), skipping the boxed rank dispatch per comparison. Any
+	// other mix keeps value.OrderCmp.
+	const (
+		colGeneric = uint8(iota)
+		colNumeric
+		colEntity
+	)
+	colClass := make([]uint8, nk)
+	var fkeys []float64
+	var ukeys []uint64
+	if len(outs) > 0 {
+		for k := range nk {
+			numeric, node, rel := true, true, true
+			for i := range outs {
+				switch keys[i*nk+k].Kind() {
+				case value.KindInt, value.KindFloat:
+					node, rel = false, false
+				case value.KindNode:
+					numeric, rel = false, false
+				case value.KindRel:
+					numeric, node = false, false
+				default:
+					numeric, node, rel = false, false, false
+				}
+				if !numeric && !node && !rel {
+					break
+				}
+			}
+			switch {
+			case numeric:
+				colClass[k] = colNumeric
+				if fkeys == nil {
+					fkeys = make([]float64, len(outs)*nk)
+				}
+				for i := range outs {
+					fkeys[i*nk+k] = value.OrderNumF64(keys[i*nk+k])
+				}
+			case node || rel:
+				colClass[k] = colEntity
+				if ukeys == nil {
+					ukeys = make([]uint64, len(outs)*nk)
+				}
+				for i := range outs {
+					var id uint64
+					if n, ok := keys[i*nk+k].AsNode(); ok {
+						id = uint64(uint32(n))
+					} else if p, ok := keys[i*nk+k].AsRel(); ok {
+						id = uint64(uint32(p))
+					}
+					ukeys[i*nk+k] = id
+				}
+			}
+		}
+	}
 	// The index tiebreak makes cmp a total order, so an unstable generic
 	// sort (no reflection-based swapping) reproduces stable-sort output
 	// exactly -- and a total order is what lets the bounded selection
@@ -349,7 +406,21 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 	cmp := func(a, b int) int {
 		ka, kb := a*nk, b*nk
 		for k := range proj.OrderBy {
-			ord := value.OrderCmp(keys[ka+k], keys[kb+k])
+			var ord int
+			switch colClass[k] {
+			case colNumeric:
+				ord = value.TotalOrderF64(fkeys[ka+k], fkeys[kb+k])
+			case colEntity:
+				x, y := ukeys[ka+k], ukeys[kb+k]
+				switch {
+				case x < y:
+					ord = -1
+				case x > y:
+					ord = 1
+				}
+			default:
+				ord = value.OrderCmp(keys[ka+k], keys[kb+k])
+			}
 			if proj.OrderBy[k].Desc {
 				ord = -ord
 			}

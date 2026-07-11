@@ -126,7 +126,7 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 		}
 		lvl := min(level, n-1)
 		if bare, isCompiled := cc.(*compile.Compiled); isCompiled && lvl < len(stage.Ops) {
-			if p, ok := compile.CandidatePred(bare, slotOf(&stage.Ops[lvl])); ok {
+			if p, ok := compile.CandidatePred(bare, slotOf(&stage.Ops[lvl]), slots); ok {
 				preds[lvl] = append(preds[lvl], p)
 				continue
 			}

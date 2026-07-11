@@ -52,16 +52,44 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		// Mirror the level-filter pipeline: hoisting rewrites constant
 		// lists to their baked membership form before specialization.
 		c := HoistCarriedIn(HoistConstIn(ctx, New(ctx, exprOf(t, src), slots, g), never, nil, slots), never)
-		p, ok := CandidatePred(c, 0)
+		p, ok := CandidatePred(c, 0, slots)
 		if !ok {
 			t.Fatalf("%q did not specialize (compiled to %T)", src, c.c)
 		}
 		for _, id := range ids {
 			row[0] = value.Node(graph.NodeID(id))
 			want := c.Eval(ctx, row, slots).IsTruthy()
-			got := p(ctx, graph.NodeID(id))
+			got := p(ctx, row, graph.NodeID(id))
 			if got != want {
 				t.Fatalf("%q node %d: pred %v, eval %v", src, id, got, want)
+			}
+		}
+	}
+
+	// Carried-list membership: the specialized form must honor the
+	// per-epoch rebuild when the carried slot's list changes.
+	cslots := map[string]int{"n": 0, "xs": 1}
+	crow := make([]value.Value, 2)
+	carried := func(s int) bool { return s == 1 }
+	cc := HoistCarriedIn(HoistConstIn(ctx, New(ctx, exprOf(t, "n.i IN xs"), cslots, g), never, nil, cslots), carried)
+	cp, ok := CandidatePred(cc, 0, cslots)
+	if !ok {
+		t.Fatalf("carried IN did not specialize (compiled to %T)", cc.c)
+	}
+	for _, list := range [][]value.Value{
+		{value.Int(10), value.Int(-5)},
+		{value.Int(30)},
+		nil,
+	} {
+		ctx.MatchEpoch++
+		crow[1] = value.List(list)
+		for _, id := range ids {
+			crow[0] = value.Node(graph.NodeID(id))
+			// Pred first: ITS refresh must do the epoch rebuild.
+			got := cp(ctx, crow, graph.NodeID(id))
+			want := cc.Eval(ctx, crow, cslots).IsTruthy()
+			if got != want {
+				t.Fatalf("carried IN %v node %d: pred %v, eval %v", list, id, got, want)
 			}
 		}
 	}
@@ -70,12 +98,12 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 	// non-comparison roots.
 	for _, src := range []string{"n.i + 1 > 2", "n.i = n.f"} {
 		c := New(ctx, exprOf(t, src), slots, g)
-		if _, ok := CandidatePred(c, 0); ok {
+		if _, ok := CandidatePred(c, 0, slots); ok {
 			t.Fatalf("%q must not specialize", src)
 		}
 	}
 	c := New(ctx, exprOf(t, "n.i = 20"), slots, g)
-	if _, ok := CandidatePred(c, 3); ok {
+	if _, ok := CandidatePred(c, 3, slots); ok {
 		t.Fatal("wrong slot must not specialize")
 	}
 }

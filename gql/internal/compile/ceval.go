@@ -89,23 +89,7 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		}
 		return n.m.resultFor(v)
 	case *cInCarried:
-		// Re-evaluate the list once per match-call epoch; rebuild the
-		// membership index only when the list is a different value than
-		// last epoch's (a segment-stable slot skips every rebuild).
-		if !n.built || n.epoch != ctx.MatchEpoch {
-			lv := ceval(ctx, n.list, g, row, slots)
-			if xs, ok := lv.AsList(); ok {
-				if !n.built || n.notList || !value.SameBacking(lv, n.lastList) {
-					n.m = buildMembership(xs)
-					n.lastList = lv
-				}
-				n.notList = false
-			} else {
-				n.notList = true
-			}
-			n.built = true
-			n.epoch = ctx.MatchEpoch
-		}
+		n.refresh(ctx, g, row, slots)
 		v := ceval(ctx, n.e, g, row, slots)
 		if v.IsNull() || n.notList {
 			return value.Null()
@@ -175,6 +159,28 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		return eval.Eval(ctx, n.e, row, slots)
 	}
 	return value.Null()
+}
+
+// refresh re-evaluates a carried IN's list once per match-call epoch,
+// rebuilding the membership index only when the list is a different value
+// than last epoch's (a segment-stable slot skips every rebuild). Shared
+// by the tree evaluation and the per-candidate specialized form.
+func (n *cInCarried) refresh(ctx *eval.Ctx, g *chickpeas.Snapshot, row []value.Value, slots map[string]int) {
+	if n.built && n.epoch == ctx.MatchEpoch {
+		return
+	}
+	lv := ceval(ctx, n.list, g, row, slots)
+	if xs, ok := lv.AsList(); ok {
+		if !n.built || n.notList || !value.SameBacking(lv, n.lastList) {
+			n.m = buildMembership(xs)
+			n.lastList = lv
+		}
+		n.notList = false
+	} else {
+		n.notList = true
+	}
+	n.built = true
+	n.epoch = ctx.MatchEpoch
 }
 
 // packNodeKey packs the correlated slots of a subquery into a single
