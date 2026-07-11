@@ -37,3 +37,15 @@ Every optimization round ends with the parity gate green (currently 78/78
 gql MATCH, 89/89 native; the manifest grows as the ldbc session authors
 queries) -- the gate is what proves a fast path never diverges from the
 general path.
+
+## Share insights with rustychickpeas when applicable
+
+When an optimization or technique lands here that plausibly ports to the
+Rust sibling (rustychickpeas), file a cross-project ask in its ledger
+(`taskman file rustychickpeas "..."`) describing the technique, the
+measured numbers, where the reference implementation lives here, and the
+verification pattern that made it safe. The two engines share the .rcpg
+format and the ldbc benchmark suite; wins should flow both directions
+(precedent: task 264, the load-throughput techniques that took Go past
+the Rust floor). Never edit the sibling's code directly -- the ledger ask
+is the channel.
