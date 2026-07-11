@@ -5,7 +5,7 @@
 package compile
 
 import (
-	"github.com/RoaringBitmap/roaring/v2"
+	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
@@ -30,8 +30,11 @@ const (
 // representation by element type; all three are value-identical to the
 // plain IN evaluation.
 type inMembership struct {
-	kind    memKind
-	nodes   *roaring.Bitmap
+	kind memKind
+	// nodes is a sorted deduplicated id slice: IN lists are usually
+	// small-to-moderate, so a contiguous binary search beats a
+	// compressed-set container walk per probe.
+	nodes   []uint32
 	hash    map[string]struct{}
 	linear  []value.Value
 	hasNull bool
@@ -71,12 +74,13 @@ func buildMembership(items []value.Value) inMembership {
 		}
 	}
 	if allNodes {
-		bm := roaring.New()
-		for _, v := range items {
+		ids := make([]uint32, len(items))
+		for i, v := range items {
 			id, _ := v.AsNode()
-			bm.Add(uint32(id))
+			ids[i] = uint32(id)
 		}
-		return inMembership{kind: memNodes, nodes: bm}
+		slices.Sort(ids)
+		return inMembership{kind: memNodes, nodes: slices.Compact(ids)}
 	}
 	hash := make(map[string]struct{}, len(items))
 	for _, v := range items {
@@ -104,7 +108,7 @@ func (m *inMembership) resultFor(v value.Value) value.Value {
 	switch m.kind {
 	case memNodes:
 		if id, ok := v.AsNode(); ok {
-			hit = m.nodes.Contains(uint32(id))
+			_, hit = slices.BinarySearch(m.nodes, uint32(id))
 		}
 	case memHash:
 		if key, ok := memKey(m.probe[:0], v); ok {
