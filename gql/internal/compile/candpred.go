@@ -25,18 +25,37 @@ type CandPred func(ctx *eval.Ctx, row []value.Value, id graph.NodeID) bool
 
 // CandidatePred specializes c when its only per-candidate dependency is
 // the node at slot and its shape is the fused prop-vs-const comparison or
-// a constant- or carried-list membership over the candidate's property;
-// ok=false keeps the general row evaluation.
+// a constant- or carried-list membership over the candidate's property
+// (or over the candidate itself: a bare-variable element probes the node
+// value directly, no read at all); ok=false keeps the general row
+// evaluation.
 func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool) {
+	// inElem resolves a membership element over slot: a property read, or
+	// the identity (the candidate node itself); nil declines.
+	inElem := func(e cnode) func(id graph.NodeID) value.Value {
+		switch n := e.(type) {
+		case *cProp:
+			if n.slot != slot {
+				return nil
+			}
+			reader := n.reader
+			return reader.readNode
+		case *cSlot:
+			if n.s != slot {
+				return nil
+			}
+			return func(id graph.NodeID) value.Value { return value.Node(id) }
+		}
+		return nil
+	}
 	if in, ok := c.c.(*cInConst); ok {
-		p, isProp := in.e.(*cProp)
-		if !isProp || p.slot != slot {
+		read := inElem(in.e)
+		if read == nil {
 			return nil, false
 		}
-		reader := p.reader
 		m := in.m
 		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
-			v := reader.readNode(id)
+			v := read(id)
 			if v.IsNull() {
 				return false
 			}
@@ -44,18 +63,17 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 		}, true
 	}
 	if in, ok := c.c.(*cInCarried); ok {
-		p, isProp := in.e.(*cProp)
-		if !isProp || p.slot != slot {
+		read := inElem(in.e)
+		if read == nil {
 			return nil, false
 		}
-		reader := p.reader
 		g := c.g
 		return func(ctx *eval.Ctx, row []value.Value, id graph.NodeID) bool {
 			in.refresh(ctx, g, row, slots)
 			if in.notList {
 				return false
 			}
-			v := reader.readNode(id)
+			v := read(id)
 			if v.IsNull() {
 				return false
 			}

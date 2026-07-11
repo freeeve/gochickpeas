@@ -94,6 +94,31 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		}
 	}
 
+	// Bare-variable membership: the element is the candidate itself (the
+	// Q4 `topForum2 IN topForums` shape) -- carried node lists, with an
+	// epoch change and a non-list epoch.
+	np, ok := CandidatePred(HoistCarriedIn(HoistConstIn(ctx, New(ctx, exprOf(t, "n IN xs"), cslots, g), never, nil, cslots), carried), 0, cslots)
+	if !ok {
+		t.Fatal("bare-variable carried IN did not specialize")
+	}
+	for _, list := range []value.Value{
+		value.List([]value.Value{value.Node(graph.NodeID(ids[1])), value.Node(graph.NodeID(ids[4]))}),
+		value.List(nil),
+		value.Int(7), // not a list: three-valued null, prunes
+	} {
+		ctx.MatchEpoch++
+		crow[1] = list
+		ncc := HoistCarriedIn(HoistConstIn(ctx, New(ctx, exprOf(t, "n IN xs"), cslots, g), never, nil, cslots), carried)
+		for _, id := range ids {
+			crow[0] = value.Node(graph.NodeID(id))
+			got := np(ctx, crow, graph.NodeID(id))
+			want := ncc.Eval(ctx, crow, cslots).IsTruthy()
+			if got != want {
+				t.Fatalf("bare IN %v node %d: pred %v, eval %v", list, id, got, want)
+			}
+		}
+	}
+
 	// Non-specializable shapes must decline: two-slot reads, wrong slot,
 	// non-comparison roots.
 	for _, src := range []string{"n.i + 1 > 2", "n.i = n.f"} {
