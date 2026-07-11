@@ -82,22 +82,41 @@ func BuildSPBGraph(triples []rdf.Triple) (*chickpeas.Snapshot, SPBStats) {
 	// collect each subject's rdf:type IRIs, and remember each IRI to
 	// store as the `uri` property. TBox triples are not instance data,
 	// and an rdf:type object names a class, not a node.
-	ids := map[string]chickpeas.NodeID{}
+	// Blank nodes and IRIs intern in separate maps keyed by their own
+	// (percent-decoded) text: the former "B:"/"I:"-prefixed shared key
+	// concatenated a fresh string per probe -- one allocation and a
+	// full-key copy per triple term, the load's dominant mapping cost.
+	// Assignment order (and so every node id) is unchanged.
+	idsIRI := map[string]chickpeas.NodeID{}
+	idsBlank := map[string]chickpeas.NodeID{}
 	types := map[chickpeas.NodeID][]string{}
 	uriOf := map[chickpeas.NodeID]string{}
 	var next chickpeas.NodeID
 	intern := func(t rdf.Term) chickpeas.NodeID {
-		key := spbResourceKey(t)
-		if id, ok := ids[key]; ok {
+		if t.Kind == rdf.Blank {
+			if id, ok := idsBlank[t.Value]; ok {
+				return id
+			}
+			id := next
+			next++
+			idsBlank[t.Value] = id
+			return id
+		}
+		key := spbPercentDecode(t.Value)
+		if id, ok := idsIRI[key]; ok {
 			return id
 		}
 		id := next
 		next++
-		ids[key] = id
-		if t.Kind == rdf.IRI {
-			uriOf[id] = key[2:] // the percent-decoded IRI behind the "I:" prefix
-		}
+		idsIRI[key] = id
+		uriOf[id] = key
 		return id
+	}
+	lookup := func(t rdf.Term) chickpeas.NodeID {
+		if t.Kind == rdf.Blank {
+			return idsBlank[t.Value]
+		}
+		return idsIRI[spbPercentDecode(t.Value)]
 	}
 	for i := range triples {
 		t := &triples[i]
@@ -147,15 +166,31 @@ func BuildSPBGraph(triples []rdf.Triple) (*chickpeas.Snapshot, SPBStats) {
 	// in sorted order for determinism) and first-wins literal properties.
 	stats := SPBStats{Resources: int(next), Triples: len(triples)}
 	seenProp := map[uint64]bool{}
+	// N-Triples documents group triples by subject and repeat a small
+	// predicate vocabulary, so one-entry memos skip most of the map
+	// probes and local-name derivations.
+	var lastSubj rdf.Term
+	var lastSubjID chickpeas.NodeID
+	haveSubj := false
+	var lastPred, lastPredKey string
 	for i := range triples {
 		t := &triples[i]
 		if t.P.Value == rdfTypeIRI || spbIsTBox(t) {
 			continue
 		}
-		subj := ids[spbResourceKey(t.S)]
-		key := spbLocalName(t.P.Value)
+		var subj chickpeas.NodeID
+		if haveSubj && t.S.Kind == lastSubj.Kind && t.S.Value == lastSubj.Value {
+			subj = lastSubjID
+		} else {
+			subj = lookup(t.S)
+			lastSubj, lastSubjID, haveSubj = t.S, subj, true
+		}
+		if t.P.Value != lastPred {
+			lastPred, lastPredKey = t.P.Value, spbLocalName(t.P.Value)
+		}
+		key := lastPredKey
 		if t.O.Kind != rdf.Literal {
-			dst := ids[spbResourceKey(t.O)]
+			dst := lookup(t.O)
 			if _, err := b.AddRel(subj, dst, key); err != nil {
 				panic("spbload: add rel: " + err.Error())
 			}
@@ -237,16 +272,6 @@ func spbCloseTransitively(m map[string]map[string]bool) {
 // for forward-chaining rather than loaded as instance data.
 func spbIsTBox(t *rdf.Triple) bool {
 	return t.P.Value == rdfsSubClassIRI || t.P.Value == rdfsSubPropIRI
-}
-
-// spbResourceKey is the interning identity of a resource term,
-// namespaced so a blank `x` and an IRI `x` never collide; IRIs are
-// percent-decoded so encoded and raw spellings resolve to one node.
-func spbResourceKey(t rdf.Term) string {
-	if t.Kind == rdf.Blank {
-		return "B:" + t.Value
-	}
-	return "I:" + spbPercentDecode(t.Value)
 }
 
 // spbPercentDecode decodes %XX sequences to a canonical IRI form,
