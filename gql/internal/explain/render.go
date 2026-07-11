@@ -124,6 +124,21 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			if s.Where != nil {
 				line(out, ind, "Filter ("+fmtExpr(s.Where)+")", at(opEsts, len(s.Ops)), at(opRows, len(s.Ops)))
 			}
+		case *plan.HashJoinStage:
+			label := fmt.Sprintf("HashJoin (key=%s, probe %s)", nameOf(s.KeySlot, names),
+				fmtHop(nameOf(s.Probe.From, names), s.Probe.Dir, s.Probe.Types, nameOf(s.Probe.To, names), ""))
+			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+			for _, bs := range s.Build {
+				for oi := range bs.Ops {
+					line(out, ind+"  build: ", opLabel(&bs.Ops[oi], names), nil, nil)
+				}
+				if bs.Where != nil {
+					line(out, ind+"  build: ", "Filter ("+fmtExpr(bs.Where)+")", nil, nil)
+				}
+			}
+			if s.Where != nil {
+				line(out, ind, "Filter ("+fmtExpr(s.Where)+")", nil, nil)
+			}
 		case *plan.SpStage:
 			kind := "ShortestPath"
 			if s.All {

@@ -13,21 +13,34 @@ import (
 )
 
 // uniqKey is one used relationship: its canonical endpoint pair, tagged by
-// uniqueness scope.
+// uniqueness scope. dead marks a capture-only entry (see uniqEnv.capture):
+// it is recorded for a later probe-time check but is NOT a live used pair,
+// so used() ignores it. check carries the pushing op's original Check flag
+// for the probe's replay classification.
 type uniqKey struct {
 	scope uint32
 	a, b  graph.NodeID
+	dead  bool
+	check bool
 }
 
-// uniqEnv is the used-pair stack one in-flight row carries.
+// uniqEnv is the used-pair stack one in-flight row carries. capture is the
+// hash-join build mode: an op whose original marking is Check-only (its
+// collisions were against pairs bound OUTSIDE this isolated env) pushes a
+// dead entry so the probe can replay that check against the outer env --
+// the build stack then holds exactly the pairs the original nested order
+// would have, minus the outer branch's, keeping build-internal Check
+// semantics exact.
 type uniqEnv struct {
-	stack []uniqKey
+	stack   []uniqKey
+	capture bool
 }
 
-// used reports whether the scope already bound the pair.
+// used reports whether the scope already bound the pair (live entries
+// only; capture-mode dead entries are bookkeeping, not used pairs).
 func (u *uniqEnv) used(scope uint32, a, b graph.NodeID) bool {
 	for _, k := range u.stack {
-		if k.scope == scope && k.a == a && k.b == b {
+		if !k.dead && k.scope == scope && k.a == a && k.b == b {
 			return true
 		}
 	}

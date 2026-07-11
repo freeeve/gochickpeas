@@ -130,6 +130,9 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 	// After flagDedupEndpoints: a contributing var-expand must keep its
 	// trails distinct, so the marking pass clears that flag where set.
 	markRelUniqueness(stages)
+	// After marking: the hash-join extraction preserves each op's original
+	// uniqueness flags, which the executor's capture/replay depends on.
+	stages = hashJoinStages(stages, slots, inWidth, g)
 
 	if postWhere != nil {
 		if semantics.ExprHasAgg(postWhere) {

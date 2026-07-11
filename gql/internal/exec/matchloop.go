@@ -146,8 +146,11 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 						if ru.Check && uniq.used(ru.Scope, a, b) {
 							continue
 						}
-						if ru.Contribute {
-							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: a, b: b})
+						// Capture mode (hash-join build) also records a
+						// Check-only op's pair as a dead entry, for the
+						// probe's replay against the outer env.
+						if ru.Contribute || (uniq.capture && ru.Check) {
+							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: a, b: b, dead: !ru.Contribute, check: ru.Check})
 							scratch.uniqPushed[cur] = 1
 						}
 					}
@@ -155,7 +158,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 					if ru.Contribute {
 						rng := scratch.candPairRange[cur][p]
 						for _, pr := range scratch.candPairData[cur][rng[0] : rng[0]+rng[1]] {
-							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: pr[0], b: pr[1]})
+							uniq.stack = append(uniq.stack, uniqKey{scope: ru.Scope, a: pr[0], b: pr[1], check: ru.Check})
 						}
 						scratch.uniqPushed[cur] = rng[1]
 					}

@@ -128,6 +128,8 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 			cell.match = ms.opRows
 		}
 		return ms
+	case *plan.HashJoinStage:
+		return newHashJoinSink(ctx, seg, s, next, uniq, single())
 	case *plan.SpStage:
 		return &spSink{ctx: ctx, sp: s, arena: rowArena{width: seg.RowWidth}, next: next, count: single()}
 	case *plan.CallStage:
@@ -181,6 +183,10 @@ func segmentBoundSlots(seg *plan.Segment) []bool {
 			}
 			if s.PathBind != nil {
 				set(s.PathBind.PathSlot)
+			}
+		case *plan.HashJoinStage:
+			for _, p := range s.PayloadSlots {
+				set(p)
 			}
 		case *plan.SpStage:
 			set(s.PathSlot)

@@ -91,6 +91,21 @@ func segEst(seg *Segment, g graph.Graph) SegEst {
 			n := rnd(rows)
 			stages = append(stages, StageEst{Single: &n})
 			notes = append(notes, "")
+		case *HashJoinStage:
+			// Probe hits per row bounded by both the probe expansion's
+			// fan-out and the built branch's size; the moved cross-branch
+			// conjuncts filter like a stage WHERE.
+			bRows := 1.0
+			for _, bs := range s.Build {
+				_, bRows = matchEst(bs, bRows, g)
+			}
+			rows *= math.Min(fanout(s.Probe.Types, s.Probe.Dir, g), math.Max(bRows, 1))
+			if s.Where != nil {
+				rows *= whereSel
+			}
+			n := rnd(rows)
+			stages = append(stages, StageEst{Single: &n})
+			notes = append(notes, "")
 		default:
 			// Shortest path, CALL, CALL subquery: no cardinality model --
 			// carry the running estimate.

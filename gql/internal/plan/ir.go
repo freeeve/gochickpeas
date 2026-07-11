@@ -213,6 +213,32 @@ type PathBindSpec struct {
 	Types    []string
 }
 
+// HashJoinStage joins an independent branch of a MATCH scope by hash
+// probe instead of nested re-execution: Build's chain (which reads only
+// ExtSlots plus its own bindings) runs once per distinct ExtSlots value
+// tuple over a seed row, materializing its rows keyed by KeySlot with each
+// row's relationship-uniqueness pairs captured; then per outer row the
+// Probe expansion (the consumed connecting expand, re-oriented to run from
+// its outer-bound endpoint) generates key candidates whose table hits bind
+// PayloadSlots -- with the captured Check pairs replayed against the outer
+// used-pair env and the captured live pairs pushed for downstream ops, so
+// the row multiset is exactly the nested order's. Where carries the moved
+// cross-branch conjuncts evaluable once the payload binds.
+type HashJoinStage struct {
+	Build        []*MatchStage
+	ExtSlots     []int
+	KeySlot      int
+	PayloadSlots []int
+	// Probe is the connecting expand: From is the outer-bound endpoint, To
+	// is KeySlot. When Reversed, the original pattern hop ran from the
+	// build side (its direction here is already flipped; uniqPair
+	// canonicalization is reversal-invariant) and its target constraints
+	// (Labels/Props) belong to the OUTER endpoint, checked once per row.
+	Probe    BindOp
+	Reversed bool
+	Where    ast.Expr
+}
+
 // SpStage binds PathSlot to the minimum-hop path between the bound
 // endpoint slots From and To. When All, the stage is row-expanding: one
 // row per minimum-hop path.
@@ -343,6 +369,7 @@ type CallSubqueryStage struct {
 type Stage interface{ isStage() }
 
 func (*MatchStage) isStage()        {}
+func (*HashJoinStage) isStage()     {}
 func (*SpStage) isStage()           {}
 func (*CallStage) isStage()         {}
 func (*UnwindStage) isStage()       {}
