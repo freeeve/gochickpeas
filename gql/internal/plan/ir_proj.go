@@ -53,6 +53,11 @@ type Segment struct {
 	// PostWhere filters projected rows (references output columns) -- the
 	// projection boundary's WHERE.
 	PostWhere ast.Expr
+	// ColAgg marks a columnar-aggregate candidate (colagg.go): the
+	// executor may fuse the scan, filters, and aggregation into one
+	// typed column pass, falling back to the general chain when any
+	// expression declines classification.
+	ColAgg bool
 }
 
 // Plan is a compiled query: one segment pipeline per UNION branch, the

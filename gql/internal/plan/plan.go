@@ -105,6 +105,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 	// Early shortest-path row gating runs after every other segment
 	// rewrite so it sees the final stage and boundary shapes.
 	injectSPGates(segments)
+	lowerColumnarAggs(segments)
 	return segments, seg.Proj.Columns, nil
 }
 

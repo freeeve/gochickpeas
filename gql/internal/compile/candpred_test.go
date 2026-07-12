@@ -48,6 +48,8 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		"n.s = ''", "n.s <> ''", // empty constant: absent-fold semantics
 		"n.s = 'never-interned'", "n.s <> 'never-interned'", // constant outside the atom table
 		"n.i IS NULL", "n.i IS NOT NULL", "n.f IS NULL", // typed presence probes
+		"n.i < zoned_datetime('1970-01-01T00:00:01Z')", // temporal const over i64: exact epoch-millis compare
+		"zoned_datetime('1970-01-01T00:00:01Z') >= n.i", "n.i = zoned_datetime('1970-01-01T00:00:00.020Z')",
 		"n.s IS NULL", "n.s IS NOT NULL", // string presence incl. the empty-text absent fold
 		"n.i = 'x'", "n.f > 'y'", // incomparable kinds
 		"n.i IN [10, 30, -5]", "n.s IN ['s0', 's2']", // constant membership

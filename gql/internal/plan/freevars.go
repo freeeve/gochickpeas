@@ -10,6 +10,15 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
+// MentionsVar reports whether e references name anywhere (binder locals
+// included -- over-reporting only declines an optimization, never
+// unsound).
+func MentionsVar(e ast.Expr, name string) bool {
+	out := map[string]bool{}
+	collectAllVars(e, out)
+	return out[name]
+}
+
 // collectAllVars gathers every variable name e mentions, descending into
 // EXISTS/COUNT subquery patterns and inner WHEREs. Unlike CheckRefs it
 // adds binder-introduced locals (a subquery's pattern variables, a

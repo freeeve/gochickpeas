@@ -192,6 +192,31 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			return comparable && keep(o)
 		}, true
 	}
+	// An i64 column against a temporal constant compares exactly as
+	// int64 epoch millis (value.Compare's Temporal/Int case is cmpInt --
+	// exact, always comparable), so the typed closure needs no float
+	// detour.
+	if reader.node.kind == colI64 && konst.Kind() == value.KindTemporal {
+		cms, _, _ := konst.AsTemporal()
+		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+			v, present := reader.node.i64.Get(uint32(id))
+			if !present {
+				return false
+			}
+			a, b := v, cms
+			if rev {
+				a, b = cms, v
+			}
+			var o int
+			switch {
+			case a < b:
+				o = -1
+			case a > b:
+				o = 1
+			}
+			return keep(o)
+		}, true
+	}
 	// String equality against a constant compares interned atom ids: the
 	// constant resolves through the shared atom table once, so a probe is
 	// one column read and an integer compare -- no string resolution, no

@@ -32,6 +32,14 @@ type stageProfCell struct {
 // runSegment runs one segment over its input rows, recording per-operator
 // produced-row counts into prof when profiling (nil = off).
 func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *explain.SegProf) [][]value.Value {
+	// A single-segment columnar-aggregate candidate fuses here (chains
+	// spanning boundaries fuse in runBranch); PROFILE runs keep the
+	// general pipeline so the per-operator counts describe it.
+	if seg.ColAgg && prof == nil {
+		if out, n, ok := tryColumnarAggChain(ctx, []*plan.Segment{seg}, 0, inputs); ok && n == 1 {
+			return out
+		}
+	}
 	bound := segmentBoundSlots(seg)
 	var sample []value.Value
 	if len(inputs) > 0 {

@@ -46,8 +46,20 @@ func ExecuteProfiled(ctx *eval.Ctx, p *plan.Plan) *explain.Profile {
 func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 	rows := [][]value.Value{nil}
 	for i := 0; i < len(segments); {
+		// A columnar-aggregate chain fuses whole: the scan segment, its
+		// LET boundaries, and the aggregated boundary run as one typed
+		// pass; a declined chain falls through to the general runs.
+		if segments[i].ColAgg {
+			if out, n, ok := tryColumnarAggChain(ctx, segments, i, rows); ok {
+				rows = out
+				i += n
+				continue
+			}
+		}
 		j := i
-		for j+1 < len(segments) && streamableBoundary(segments[j]) {
+		// Runs never stream INTO a chain head: the fused pass needs its
+		// materialized seed rows.
+		for j+1 < len(segments) && streamableBoundary(segments[j]) && !segments[j+1].ColAgg {
 			j++
 		}
 		rows = runSegmentRun(ctx, segments[i:j+1], rows)
