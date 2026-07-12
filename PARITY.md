@@ -229,7 +229,7 @@ rustychickpeas `tasks/223_core_builder_thaw_and_removals.md`.
 
 | go symbol | notes |
 |-----------|-------|
-| NewBuilderFromSnapshot | thaw a Snapshot back into a Builder (read-modify-refinalize-swap writes); atom ids preserved; rel restage order is a linear extension of both CSR directions so a no-edit round trip is byte-identical |
+| NewBuilderFromSnapshot | thaw a Snapshot back into a Builder (read-modify-refinalize-swap writes); atom ids preserved; rel restage order is a linear extension of both CSR directions so a no-edit round trip is byte-identical. CONVERGED: rustychickpeas 60a41c1 (223 phase 1) landed GraphBuilder::from_snapshot via the staging APIs with the same Kahn both-CSR restage extension; byte-identity pinned on both sides (their fixture includes 1M-node rank scale), no semantic divergence |
 | Builder.RemoveProp | sweeps all staged occurrences across all four typed columns |
 | Builder.RemoveRelProp / RemoveRelPropAt | rel-prop removal by (u, v, type) or rel index |
 | Builder.RemoveRel | tombstone, never compact; handed-out rel indexes stay stable; Finalize compacts |
