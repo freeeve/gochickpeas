@@ -9,8 +9,6 @@
 package ldbc
 
 import (
-	"sort"
-
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
@@ -338,6 +336,6 @@ func spbA10(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		rows = append(rows, []any{spbURIOf(g, c.id), c.n})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i][0].(string) < rows[j][0].(string) })
+	sortByLess(rows, func(a, b []any) bool { return a[0].(string) < b[0].(string) })
 	return rows, nil
 }

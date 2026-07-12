@@ -10,7 +10,7 @@ package ldbc
 import (
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -101,9 +101,20 @@ func personsOfCountry(g *chickpeas.Snapshot, country chickpeas.NodeID) map[chick
 	return out
 }
 
-// sortTruncate sorts rows by less and keeps the top limit.
+// sortTruncate sorts rows by less and keeps the top limit. The generic
+// sort avoids sort.Slice's reflection-based swapper (a typedmemmove per
+// element move), which dominated hot kernels; less runs at most twice
+// per comparison, still far cheaper than the reflected swaps.
 func sortTruncate(rows [][]any, limit int, less func(a, b []any) bool) [][]any {
-	sort.Slice(rows, func(i, j int) bool { return less(rows[i], rows[j]) })
+	slices.SortFunc(rows, func(a, b []any) int {
+		if less(a, b) {
+			return -1
+		}
+		if less(b, a) {
+			return 1
+		}
+		return 0
+	})
 	if limit > 0 && len(rows) > limit {
 		rows = rows[:limit]
 	}
@@ -155,4 +166,19 @@ func cmpStrAsc(a, b string) int {
 		return 1
 	}
 	return 0
+}
+
+// sortByLess sorts through the generic sort with a less predicate,
+// avoiding sort.Slice's reflection-based swapper (a typedmemmove per
+// element move) -- the shared conversion target for the kernels' sorts.
+func sortByLess[T any](xs []T, less func(a, b T) bool) {
+	slices.SortFunc(xs, func(a, b T) int {
+		if less(a, b) {
+			return -1
+		}
+		if less(b, a) {
+			return 1
+		}
+		return 0
+	})
 }

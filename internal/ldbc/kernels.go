@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -140,14 +139,14 @@ func foldViaRows(g *chickpeas.Snapshot) ([][]int64, error) {
 	for pair, count := range counts {
 		rows = append(rows, []int64{int64(pair.Lo), int64(pair.Hi), int64(count)})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i][2] != rows[j][2] {
-			return rows[i][2] > rows[j][2]
+	sortByLess(rows, func(a, b []int64) bool {
+		if a[2] != b[2] {
+			return a[2] > b[2]
 		}
-		if rows[i][0] != rows[j][0] {
-			return rows[i][0] < rows[j][0]
+		if a[0] != b[0] {
+			return a[0] < b[0]
 		}
-		return rows[i][1] < rows[j][1]
+		return a[1] < b[1]
 	})
 	if len(rows) > 100 {
 		rows = rows[:100]
@@ -173,11 +172,11 @@ func commonNeighborRows(g *chickpeas.Snapshot) ([][]int64, error) {
 		}
 		rows = append(rows, []int64{int64(c.Source), int64(c.Target), int64(c.Count)})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i][0] != rows[j][0] {
-			return rows[i][0] < rows[j][0]
+	sortByLess(rows, func(a, b []int64) bool {
+		if a[0] != b[0] {
+			return a[0] < b[0]
 		}
-		return rows[i][1] < rows[j][1]
+		return a[1] < b[1]
 	})
 	return rows, nil
 }
@@ -190,7 +189,7 @@ func aggRows(res *chickpeas.AggResult) [][]int64 {
 	for i, r := range res.Rows {
 		rows[i] = []int64{r.Key[0], int64(r.Count), *r.Sum}
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
+	sortByLess(rows, func(a, b []int64) bool { return a[0] < b[0] })
 	return rows
 }
 

@@ -11,7 +11,6 @@ package ldbc
 import (
 	"fmt"
 	"slices"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -180,7 +179,7 @@ func spbA24(g *chickpeas.Snapshot) ([][]any, error) {
 	for day, n := range perDay {
 		rows = append(rows, []any{day, n})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i][0].(string) < rows[j][0].(string) })
+	sortByLess(rows, func(a, b []any) bool { return a[0].(string) < b[0].(string) })
 	return rows, nil
 }
 
@@ -222,11 +221,11 @@ func spbA25(g *chickpeas.Snapshot) ([][]any, error) {
 	for who, set := range days {
 		rows = append(rows, row{who, int64(len(set))})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].n != rows[j].n {
-			return rows[i].n > rows[j].n
+	sortByLess(rows, func(a, b row) bool {
+		if a.n != b.n {
+			return a.n > b.n
 		}
-		return rows[i].who < rows[j].who
+		return a.who < b.who
 	})
 	out := make([][]any, len(rows))
 	for i, r := range rows {

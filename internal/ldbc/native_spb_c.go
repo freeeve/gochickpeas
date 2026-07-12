@@ -9,7 +9,6 @@ package ldbc
 
 import (
 	"slices"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -52,11 +51,11 @@ func spbA13(g *chickpeas.Snapshot) ([][]any, error) {
 			pairs = append(pairs, pair{w, t})
 		}
 	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].w != pairs[j].w {
-			return pairs[i].w < pairs[j].w
+	sortByLess(pairs, func(a, b pair) bool {
+		if a.w != b.w {
+			return a.w < b.w
 		}
-		return pairs[i].t < pairs[j].t
+		return a.t < b.t
 	})
 	var rows [][]any
 	var last pair
@@ -184,11 +183,11 @@ func spbA16(g *chickpeas.Snapshot) ([][]any, error) {
 	for k := range seen {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].tag != keys[j].tag {
-			return keys[i].tag < keys[j].tag
+	sortByLess(keys, func(a, b key) bool {
+		if a.tag != b.tag {
+			return a.tag < b.tag
 		}
-		return keys[i].work < keys[j].work
+		return a.work < b.work
 	})
 	rows := make([][]any, len(keys))
 	for i, k := range keys {
@@ -310,14 +309,14 @@ func spbA19(g *chickpeas.Snapshot) ([][]any, error) {
 	for t, a := range acc {
 		rows = append(rows, row{t, a})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].a.ms != rows[j].a.ms {
-			return rows[i].a.ms > rows[j].a.ms
+	sortByLess(rows, func(a, b row) bool {
+		if a.a.ms != b.a.ms {
+			return a.a.ms > b.a.ms
 		}
-		if rows[i].a.count != rows[j].a.count {
-			return rows[i].a.count > rows[j].a.count
+		if a.a.count != b.a.count {
+			return a.a.count > b.a.count
 		}
-		return rows[i].id < rows[j].id
+		return a.id < b.id
 	})
 	out := make([][]any, len(rows))
 	for i, r := range rows {

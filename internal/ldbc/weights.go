@@ -8,7 +8,6 @@ package ldbc
 
 import (
 	"fmt"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/internal/parallel"
@@ -154,11 +153,11 @@ func DeriveWeightRels(g *chickpeas.Snapshot) (map[string][]WeightEdge, error) {
 	for k := range pairSet {
 		pairs = append(pairs, k)
 	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].lo != pairs[j].lo {
-			return pairs[i].lo < pairs[j].lo
+	sortByLess(pairs, func(a, b interactionKey) bool {
+		if a.lo != b.lo {
+			return a.lo < b.lo
 		}
-		return pairs[i].hi < pairs[j].hi
+		return a.hi < b.hi
 	})
 
 	inter := buildInteractionMap(g)

@@ -10,7 +10,6 @@ package ldbc
 import (
 	"fmt"
 	"math"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -102,9 +101,9 @@ type tsRel struct {
 // sortTSRels orders a frontier by timestamp in truncation order.
 func sortTSRels(rels []tsRel, asc bool) {
 	if asc {
-		sort.Slice(rels, func(i, j int) bool { return rels[i].ts < rels[j].ts })
+		sortByLess(rels, func(a, b tsRel) bool { return a.ts < b.ts })
 	} else {
-		sort.Slice(rels, func(i, j int) bool { return rels[i].ts > rels[j].ts })
+		sortByLess(rels, func(a, b tsRel) bool { return a.ts > b.ts })
 	}
 }
 
@@ -432,8 +431,7 @@ func finCR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			dfs(start, math.MinInt64, &path, visited, 0)
 		}
 		// Dedup node sequences (parallel rels collapse to one path).
-		sort.Slice(all, func(i, j int) bool {
-			a, b := all[i], all[j]
+		sortByLess(all, func(a, b []chickpeas.NodeID) bool {
 			for k := 0; k < len(a) && k < len(b); k++ {
 				if a[k] != b[k] {
 					return a[k] < b[k]
@@ -515,7 +513,7 @@ func finCR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 		}
 		if len(inRels) > finTruncLimit {
-			sort.Slice(inRels, func(i, j int) bool { return inRels[i].ts > inRels[j].ts })
+			sortByLess(inRels, func(a, b inRel) bool { return a.ts > b.ts })
 			inRels = inRels[:finTruncLimit]
 		}
 		bySrc := map[chickpeas.NodeID]float64{}

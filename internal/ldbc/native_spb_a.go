@@ -13,7 +13,6 @@ package ldbc
 import (
 	"math"
 	"slices"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -175,11 +174,11 @@ type spbDated struct {
 // spbRankDated orders date descending (ISO-8601 sorts lexicographically)
 // with node id ascending on ties, truncated to limit.
 func spbRankDated(rows []spbDated, limit int) []chickpeas.NodeID {
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].dt != rows[j].dt {
-			return rows[i].dt > rows[j].dt
+	sortByLess(rows, func(a, b spbDated) bool {
+		if a.dt != b.dt {
+			return a.dt > b.dt
 		}
-		return rows[i].id < rows[j].id
+		return a.id < b.id
 	})
 	if limit >= 0 && len(rows) > limit {
 		rows = rows[:limit]
@@ -293,12 +292,12 @@ func spbQ5(g *chickpeas.Snapshot) ([][]any, error) {
 // spbSortKV orders [key, count] rows count descending then key
 // ascending (the aggregate queries' shared ORDER BY).
 func spbSortKV(rows [][]any) {
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i][1].(int64), rows[j][1].(int64)
-		if a != b {
-			return a > b
+	sortByLess(rows, func(a, b []any) bool {
+		av, bv := a[1].(int64), b[1].(int64)
+		if av != bv {
+			return av > bv
 		}
-		return rows[i][0].(string) < rows[j][0].(string)
+		return a[0].(string) < b[0].(string)
 	})
 }
 
@@ -397,12 +396,12 @@ func spbQ9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 			rows = append(rows, []any{spbURIOf(g, o), score2})
 		}
-		sort.Slice(rows, func(i, j int) bool {
-			a, b := rows[i][1].(int64), rows[j][1].(int64)
-			if a != b {
-				return a > b
+		sortByLess(rows, func(a, b []any) bool {
+			av, bv := a[1].(int64), b[1].(int64)
+			if av != bv {
+				return av > bv
 			}
-			return rows[i][0].(string) < rows[j][0].(string)
+			return a[0].(string) < b[0].(string)
 		})
 		return rows, nil
 	}, nil

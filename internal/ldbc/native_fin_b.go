@@ -8,7 +8,6 @@ package ldbc
 import (
 	"fmt"
 	"slices"
-	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
@@ -35,9 +34,9 @@ func truncByTS(rels []tsAmtRel, limit int, asc bool) []tsAmtRel {
 		return rels
 	}
 	if asc {
-		sort.Slice(rels, func(i, j int) bool { return rels[i].ts < rels[j].ts })
+		sortByLess(rels, func(a, b tsAmtRel) bool { return a.ts < b.ts })
 	} else {
-		sort.Slice(rels, func(i, j int) bool { return rels[i].ts > rels[j].ts })
+		sortByLess(rels, func(a, b tsAmtRel) bool { return a.ts > b.ts })
 	}
 	return rels[:limit]
 }
@@ -172,7 +171,7 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				// case-SENSITIVELY ("DESC"), so the harness's "desc"
 				// falls through to the ascending sort -- the lowest
 				// amount claims each node. The refs pin that behavior.
-				sort.Slice(rels, func(i, j int) bool { return rels[i].amt < rels[j].amt })
+				sortByLess(rels, func(a, b amtRel) bool { return a.amt < b.amt })
 				if len(rels) > finTruncLimit {
 					rels = rels[:finTruncLimit]
 				}
@@ -361,7 +360,7 @@ func finCR12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 			if len(transfers) > finTruncLimit {
-				sort.Slice(transfers, func(i, j int) bool { return transfers[i].amt > transfers[j].amt })
+				sortByLess(transfers, func(a, b tsAmtRel) bool { return a.amt > b.amt })
 				transfers = transfers[:finTruncLimit]
 			}
 			for _, t := range transfers {
