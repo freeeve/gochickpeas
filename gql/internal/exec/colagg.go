@@ -14,6 +14,8 @@
 package exec
 
 import (
+	"math"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/compile"
@@ -256,8 +258,31 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		}
 	}
 	if hasLabel {
-		for id := range ids.Iter() {
-			scan(id)
+		// A selective range conjunct flips the enumeration: instead of
+		// every labeled node testing every predicate, walk the range
+		// index's window (exact count, no estimate) and test label
+		// membership -- chosen only when the window is decisively smaller
+		// than the label, so broad ranges keep the cache-linear label
+		// sweep. Every predicate still runs per candidate (the window is
+		// a superset reduction), so results are identical either way.
+		if win := colAggRangeWindow(env, ms.Where, vName, g); win != nil && len(win) < ids.Len()/4 {
+			dense := g.LabelDense(op.Source.Label)
+			for _, id := range win {
+				in := false
+				if dense != nil {
+					w := int(id) >> 6
+					in = w < len(dense) && dense[w]>>(id&63)&1 == 1
+				} else {
+					in = ids.Contains(id)
+				}
+				if in {
+					scan(id)
+				}
+			}
+		} else {
+			for id := range ids.Iter() {
+				scan(id)
+			}
 		}
 	}
 
@@ -529,6 +554,118 @@ func (env *colEnv) classifyKeyFn(e ast.Expr) (colKeyFn, colAggKeyKind, bool) {
 		}, cakInt, true
 	}
 	return nil, 0, false
+}
+
+// colAggRangeWindow finds the tightest single-key range window implied by
+// the scan WHERE's comparison conjuncts over the scanned var: every
+// `v.key CMP const` with an ordered operator and an int/temporal constant
+// narrows the window for its key, and the key with the smallest window
+// wins. nil when no conjunct ranges over an indexed i64 column. The
+// window is a superset of the filtered candidates (the predicates all
+// re-run), so this only ever changes enumeration order and cost.
+func colAggRangeWindow(env *colEnv, where ast.Expr, vName string, g *chickpeas.Snapshot) []uint32 {
+	if where == nil {
+		return nil
+	}
+	type bound struct {
+		lo, hi         int64
+		loIncl, hiIncl bool
+	}
+	bounds := map[string]*bound{}
+	var conjs []ast.Expr
+	plan.SplitAnd(where, &conjs)
+	for _, c := range conjs {
+		bin, ok := c.(*ast.Binary)
+		if !ok {
+			continue
+		}
+		p, isP := bin.LHS.(*ast.Prop)
+		konst := bin.RHS
+		op := bin.Op
+		if !isP {
+			if p, isP = bin.RHS.(*ast.Prop); !isP {
+				continue
+			}
+			konst = bin.LHS
+			op = flipCmp(op)
+		}
+		if p.Var != vName || env.mentionsCandidate(konst) {
+			continue
+		}
+		cv := compileEval(env.ctx, konst, env.synthSlots).Eval(env.ctx, env.synthRow, env.synthSlots)
+		var k int64
+		if i, ok := cv.AsInt(); ok {
+			k = i
+		} else if ms, _, ok := cv.AsTemporal(); ok {
+			k = ms
+		} else {
+			continue
+		}
+		b := bounds[p.Key]
+		if b == nil {
+			b = &bound{lo: math.MinInt64, hi: math.MaxInt64, loIncl: true, hiIncl: true}
+			bounds[p.Key] = b
+		}
+		switch op {
+		case ast.OpLt:
+			if k <= b.hi {
+				b.hi, b.hiIncl = k, false
+			}
+		case ast.OpLte:
+			if k < b.hi {
+				b.hi, b.hiIncl = k, true
+			}
+		case ast.OpGt:
+			if k >= b.lo {
+				b.lo, b.loIncl = k, false
+			}
+		case ast.OpGte:
+			if k > b.lo {
+				b.lo, b.loIncl = k, true
+			}
+		case ast.OpEq:
+			if k > b.lo {
+				b.lo, b.loIncl = k, true
+			}
+			if k < b.hi {
+				b.hi, b.hiIncl = k, true
+			}
+		}
+	}
+	var best []uint32
+	found := false
+	for key, b := range bounds {
+		if b.lo == math.MinInt64 && b.loIncl && b.hi == math.MaxInt64 && b.hiIncl {
+			continue
+		}
+		ri, ok := g.ColRangeIndex(key)
+		if !ok {
+			continue
+		}
+		w := ri.Window(b.lo, b.hi, b.loIncl, b.hiIncl)
+		if !found || len(w) < len(best) {
+			best, found = w, true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return best
+}
+
+// flipCmp mirrors a comparison across swapped operands.
+func flipCmp(op ast.BinOp) ast.BinOp {
+	switch op {
+	case ast.OpLt:
+		return ast.OpGt
+	case ast.OpLte:
+		return ast.OpGte
+	case ast.OpGt:
+		return ast.OpLt
+	case ast.OpGte:
+		return ast.OpLte
+	}
+	return op
 }
 
 // colAggPropValue is a boxed typed read of the scanned var's property

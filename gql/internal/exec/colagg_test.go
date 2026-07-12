@@ -124,6 +124,12 @@ func TestColumnarAggMatchesGeneral(t *testing.T) {
 		`MATCH (m:NoSuchLabel) RETURN count(m) AS c`,
 		// Unknown property key in group: everything under one null key.
 		`MATCH (m:Message) RETURN m.nope AS k, count(m) AS n`,
+		// Selective range: the window enumeration must agree with the
+		// label sweep (narrow band, exclusive/inclusive mix).
+		`MATCH (m:Message) WHERE m.creationDate >= zoned_datetime('1970-01-01') AND m.creationDate < zoned_datetime('1970-01-02')
+		 RETURN count(m) AS c`,
+		`MATCH (m:Message) WHERE m.length > 190 RETURN m.length AS l, count(m) AS n
+		 NEXT RETURN l, n ORDER BY l`,
 	}
 	for i, q := range queries {
 		fused, general := runBoth(t, g, q)

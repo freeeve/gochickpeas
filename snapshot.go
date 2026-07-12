@@ -63,6 +63,8 @@ type Snapshot struct {
 	colPosIndex    map[PropertyKey]posIndex
 	relColPosMu    sync.Mutex
 	relColPosIndex map[PropertyKey]posIndex
+	rangeMu        sync.Mutex
+	rangeIndex     map[PropertyKey]RangeIndex
 
 	// rootsViaIndex caches the forest-root arrays of RootsVia per
 	// (direction, rel type); the returned slices index lock-free.
@@ -126,6 +128,7 @@ func newSnapshot() *Snapshot {
 		propIndex:      map[propIndexKey]map[Value]*nodeset.Set{},
 		colPosIndex:    map[PropertyKey]posIndex{},
 		relColPosIndex: map[PropertyKey]posIndex{},
+		rangeIndex:     map[PropertyKey]RangeIndex{},
 		rootsViaIndex:  map[rootsKey]RootsVia{},
 		functionalVia:  map[rootsKey]bool{},
 		terminalOnly:   map[terminalKey]bool{},
