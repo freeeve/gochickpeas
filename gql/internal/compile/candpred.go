@@ -11,6 +11,8 @@
 package compile
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -48,10 +50,26 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 		}
 		return nil
 	}
+	// bareSlot reports whether the membership element IS the candidate
+	// itself -- then a node-id membership probes the sorted id set with
+	// the raw candidate: no boxing, no resultFor dispatch. (memNodes is
+	// built from an all-node list, so hasNull is impossible; a miss
+	// prunes either way under the predicate's truthy collapse.)
+	bareSlot := func(e cnode) bool {
+		s, ok := e.(*cSlot)
+		return ok && s.s == slot
+	}
 	if in, ok := c.c.(*cInConst); ok {
 		read := inElem(in.e)
 		if read == nil {
 			return nil, false
+		}
+		if bareSlot(in.e) && in.m.kind == memNodes {
+			ids := in.m.nodes
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				_, hit := slices.BinarySearch(ids, uint32(id))
+				return hit
+			}, true
 		}
 		m := in.m
 		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
@@ -67,11 +85,18 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 		if read == nil {
 			return nil, false
 		}
+		bare := bareSlot(in.e)
 		g := c.g
 		return func(ctx *eval.Ctx, row []value.Value, id graph.NodeID) bool {
 			in.refresh(ctx, g, row, slots)
 			if in.notList {
 				return false
+			}
+			// The carried list may change per epoch; re-check the
+			// representation per call (one byte compare).
+			if bare && in.m.kind == memNodes {
+				_, hit := slices.BinarySearch(in.m.nodes, uint32(id))
+				return hit
 			}
 			v := read(id)
 			if v.IsNull() {
