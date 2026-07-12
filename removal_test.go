@@ -1,6 +1,7 @@
 package chickpeas_test
 
 import (
+	"bytes"
 	"errors"
 	"slices"
 	"testing"
@@ -371,5 +372,69 @@ func TestRemovalThawInteraction(t *testing.T) {
 	g3 := chickpeas.NewBuilderFromSnapshot(g2).Finalize()
 	if g3.NodeCount() != g2.NodeCount() || g3.RelCount() != g2.RelCount() {
 		t.Fatal("second thaw drifted")
+	}
+}
+
+// TestEmptiedStagedKeyLeavesNoTrace pins the emptied-key invariant the
+// Rust port tripped over while mirroring this surface (task 075, their
+// 223 phase 2): a sweep that empties a staged pair vec must delete the
+// map entry, never leave an empty one -- a ghost entry could finalize an
+// empty column or, in a codec with numeric unification, widen a same-key
+// survivor to float. Pinned here as: no column artifact survives an
+// all-pairs removal, and an int survivor under a key whose float staging
+// was emptied stays an int. (The written files of a staged-then-emptied
+// builder and a never-staged twin differ only by the retained interner
+// atom -- a documented build-history artifact, checked structurally.)
+func TestEmptiedStagedKeyLeavesNoTrace(t *testing.T) {
+	b := chickpeas.NewBuilder(4, 4)
+	n0, _ := b.AddNode("N")
+	n1, _ := b.AddNode("N")
+	r, err := b.AddRel(n0, n1, "R")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Int survivor on n0; a float staged under the SAME key on n1 and
+	// then removed -- the emptied f64 entry must not shadow or widen it.
+	if err := b.SetProp(n0, "k", int64(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetProp(n1, "k", 2.5); err != nil {
+		t.Fatal(err)
+	}
+	if !b.RemoveProp(n1, "k") {
+		t.Fatal("RemoveProp missed a staged pair")
+	}
+	// A rel key whose only carrier is tombstoned: no column may survive.
+	if err := b.SetRelPropAt(r, "rk", int64(9)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RemoveRel(r); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize()
+
+	if v, ok := g.Prop(n0, "k").I64(); !ok || v != 7 {
+		t.Fatalf("k on n0 = (%v, %v), want int 7 (survivor must not widen or vanish)", v, ok)
+	}
+	if present(g.Prop(n1, "k")) {
+		t.Fatal("removed k on n1 still reads")
+	}
+	if _, ok := g.RelCol("rk"); ok {
+		t.Fatal("rk column survived an all-pairs removal")
+	}
+	// Round trip: the written file must carry no ghost column either.
+	var buf bytes.Buffer
+	if err := g.WriteRCPG(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got, err := chickpeas.ReadRCPG(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got.Prop(n0, "k").I64(); !ok || v != 7 {
+		t.Fatalf("round-tripped k = (%v, %v), want int 7", v, ok)
+	}
+	if _, ok := got.RelCol("rk"); ok {
+		t.Fatal("round-tripped rk column exists")
 	}
 }
