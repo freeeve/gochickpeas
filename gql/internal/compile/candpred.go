@@ -11,6 +11,8 @@
 package compile
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -67,6 +69,22 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 				return m.hasNode(uint32(id))
 			}, true
+		}
+		// A string column probing a constant list compares interned atom
+		// ids: the list's atoms resolve once, a probe is one column read
+		// and a small search -- no string resolution, no encoded hash key.
+		if p, isProp := in.e.(*cProp); isProp && p.reader.node.kind == colStr {
+			if atoms, ok := in.m.atomSet(c.g); ok {
+				sc := p.reader.node.str
+				return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+					aid, ok := sc.ID(uint32(id))
+					if !ok || aid == 0 {
+						return false
+					}
+					_, hit := slices.BinarySearch(atoms, aid)
+					return hit
+				}, true
+			}
 		}
 		m := &in.m
 		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {

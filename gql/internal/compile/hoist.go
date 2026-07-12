@@ -44,6 +44,10 @@ type inMembership struct {
 	hash    map[string]struct{}
 	linear  []value.Value
 	hasNull bool
+	// items retains the evaluated list for representation upgrades that
+	// need the original elements (the atom-id membership over a string
+	// column); IN lists are small, so the retention is negligible.
+	items []value.Value
 	// probe is a reused key buffer for memHash probes: resultFor runs
 	// once per row in a single execution's goroutine, so the encoded key
 	// need not escape between probes. A map lookup on string(probe) does
@@ -112,7 +116,7 @@ func buildMembership(items []value.Value) inMembership {
 			ids[i] = uint32(id)
 		}
 		slices.Sort(ids)
-		return inMembership{kind: memNodes, nodes: slices.Compact(ids)}
+		return inMembership{kind: memNodes, nodes: slices.Compact(ids), items: items}
 	}
 	hash := make(map[string]struct{}, len(items))
 	for _, v := range items {
@@ -126,11 +130,38 @@ func buildMembership(items []value.Value) inMembership {
 					break
 				}
 			}
-			return inMembership{kind: memLinear, linear: items, hasNull: hasNull}
+			return inMembership{kind: memLinear, linear: items, hasNull: hasNull, items: items}
 		}
 		hash[string(key)] = struct{}{}
 	}
-	return inMembership{kind: memHash, hash: hash}
+	return inMembership{kind: memHash, hash: hash, items: items}
+}
+
+// atomSet resolves the membership's string elements to their interned
+// atom ids, sorted -- the probe set for a string-column IN, where a hit
+// is one column read and a small search instead of a string resolution
+// and an encoded hash probe. Empty and never-interned elements are
+// excluded (no stored non-empty text can equal them); non-string
+// elements never equal a string probe and null collapses to a prune
+// under the predicate's truthy fold, so both drop. ok=false when the
+// snapshot interned a non-zero empty atom (the reader folds its text to
+// absent, which the id test cannot see).
+func (m *inMembership) atomSet(g *chickpeas.Snapshot) ([]uint32, bool) {
+	if empty, ok := g.PropertyKey(""); ok && empty != 0 {
+		return nil, false
+	}
+	atoms := make([]uint32, 0, len(m.items))
+	for _, v := range m.items {
+		s, isStr := v.AsStr()
+		if !isStr || s == "" {
+			continue
+		}
+		if a, ok := g.PropertyKey(s); ok && a != 0 {
+			atoms = append(atoms, a)
+		}
+	}
+	slices.Sort(atoms)
+	return slices.Compact(atoms), true
 }
 
 // resultFor is the openCypher IN result for a non-null probe: true on a

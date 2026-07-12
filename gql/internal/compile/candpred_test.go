@@ -52,6 +52,8 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		"n.i = 'x'", "n.f > 'y'", // incomparable kinds
 		"n.i IN [10, 30, -5]", "n.s IN ['s0', 's2']", // constant membership
 		"n.i IN [10, null]", "n.i IN []", // null element / empty list
+		"n.s IN ['s1', 'never-interned', '', 7]", // atom set: unresolvable/empty/non-string elements drop
+		"n.s IN ['s0', null]", "n.s IN []",       // null element / empty list over the string column
 	}
 	never := func(int) bool { return false }
 	for _, src := range exprs {
