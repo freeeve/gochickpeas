@@ -175,14 +175,20 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 		if tc := m.tp.view(true); tc != nil {
 			lo, hi := relRange(tc.offsets, node)
 			dst = append(dst, tc.nbrs[lo:hi]...)
-		} else if tr := m.tp.runs(true); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			dst = append(dst, tr.nbrs[lo:hi]...)
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.outTypes[k]) {
-					dst = append(dst, g.outNbrs[k])
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(true)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				dst = append(dst, tr.nbrs[rlo:rhi]...)
+			} else {
+				for k := lo; k < hi; k++ {
+					if m.matches(g.outTypes[k]) {
+						dst = append(dst, g.outNbrs[k])
+					}
 				}
 			}
 		}
@@ -191,14 +197,20 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 		if tc := m.tp.view(false); tc != nil {
 			lo, hi := relRange(tc.offsets, node)
 			dst = append(dst, tc.nbrs[lo:hi]...)
-		} else if tr := m.tp.runs(false); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			dst = append(dst, tr.nbrs[lo:hi]...)
 		} else {
 			lo, hi := relRange(g.inOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.inTypes[k]) {
-					dst = append(dst, g.inNbrs[k])
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(false)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				dst = append(dst, tr.nbrs[rlo:rhi]...)
+			} else {
+				for k := lo; k < hi; k++ {
+					if m.matches(g.inTypes[k]) {
+						dst = append(dst, g.inNbrs[k])
+					}
 				}
 			}
 		}
@@ -218,18 +230,24 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 					return
 				}
 			}
-		} else if tr := m.tp.runs(true); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			for k := lo; k < hi; k++ {
-				if !yield(tr.nbrs[k]) {
-					return
-				}
-			}
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
-					return
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(true)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				for k := rlo; k < rhi; k++ {
+					if !yield(tr.nbrs[k]) {
+						return
+					}
+				}
+			} else {
+				for k := lo; k < hi; k++ {
+					if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
+						return
+					}
 				}
 			}
 		}
@@ -242,18 +260,24 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 					return
 				}
 			}
-		} else if tr := m.tp.runs(false); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			for k := lo; k < hi; k++ {
-				if !yield(tr.nbrs[k]) {
-					return
-				}
-			}
 		} else {
 			lo, hi := relRange(g.inOffsets, node)
-			for k := lo; k < hi; k++ {
-				if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
-					return
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(false)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				for k := rlo; k < rhi; k++ {
+					if !yield(tr.nbrs[k]) {
+						return
+					}
+				}
+			} else {
+				for k := lo; k < hi; k++ {
+					if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
+						return
+					}
 				}
 			}
 		}
@@ -289,22 +313,28 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					return
 				}
 			}
-		} else if tr := m.tp.runs(true); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			for k := lo; k < hi; k++ {
-				if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Outgoing, Pos: tr.poss[k]}) {
-					return
-				}
-			}
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
-			for k := lo; k < hi; k++ {
-				t := g.outTypes[k]
-				if !m.matches(t) {
-					continue
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(true)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				for k := rlo; k < rhi; k++ {
+					if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Outgoing, Pos: tr.poss[k]}) {
+						return
+					}
 				}
-				if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
-					return
+			} else {
+				for k := lo; k < hi; k++ {
+					t := g.outTypes[k]
+					if !m.matches(t) {
+						continue
+					}
+					if !yield(RelRef{Neighbor: g.outNbrs[k], Type: t, Direction: Outgoing, Pos: uint32(k)}) {
+						return
+					}
 				}
 			}
 		}
@@ -317,27 +347,33 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					return
 				}
 			}
-		} else if tr := m.tp.runs(false); tr != nil {
-			lo, hi := runRange(tr.nodes, node)
-			for k := lo; k < hi; k++ {
-				if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Incoming, Pos: tr.poss[k]}) {
-					return
-				}
-			}
 		} else {
 			lo, hi := relRange(g.inOffsets, node)
-			for k := lo; k < hi; k++ {
-				t := g.inTypes[k]
-				if !m.matches(t) {
-					continue
+			var tr *typedRuns
+			if hi-lo > runScanFloor {
+				tr = m.tp.runs(false)
+			}
+			if tr != nil {
+				rlo, rhi := runRange(tr.nodes, node)
+				for k := rlo; k < rhi; k++ {
+					if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Incoming, Pos: tr.poss[k]}) {
+						return
+					}
 				}
-				// Map the incoming position to where the property is stored.
-				pos := uint32(k)
-				if k < len(g.inToOut) {
-					pos = g.inToOut[k]
-				}
-				if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
-					return
+			} else {
+				for k := lo; k < hi; k++ {
+					t := g.inTypes[k]
+					if !m.matches(t) {
+						continue
+					}
+					// Map the incoming position to where the property is stored.
+					pos := uint32(k)
+					if k < len(g.inToOut) {
+						pos = g.inToOut[k]
+					}
+					if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
+						return
+					}
 				}
 			}
 		}

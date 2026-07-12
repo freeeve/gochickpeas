@@ -149,6 +149,13 @@ func buildTypedRuns(offsets []uint32, nbrs []NodeID, types []RelType, posMap []u
 	return r
 }
 
+// runScanFloor gates the run view per node: at or below this primary-CSR
+// degree the type-tested scan reads the node's whole mixed run in a cache
+// line or two, beating the view's ~log2(E) dependent binary-search probes;
+// above it the filtered contiguous run wins. Callers check the degree
+// before consulting runs().
+const runScanFloor = 64
+
 // runRange is a node's [lo, hi) span in a run view's owner array.
 func runRange(nodes []uint32, node NodeID) (int, int) {
 	lo, _ := slices.BinarySearch(nodes, uint32(node))

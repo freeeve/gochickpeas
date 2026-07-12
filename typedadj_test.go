@@ -114,6 +114,16 @@ func TestTypedAdjacencyMatchesScan(t *testing.T) {
 		}
 	}
 	types := []string{"HOT", "COLD", "WARM"}
+	addRel := func(u, v chickpeas.NodeID, ty string, w int64) {
+		t.Helper()
+		idx, err := b.AddRel(u, v, ty)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetRelPropAt(idx, "w", w); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for i := 0; i < n*6; i++ {
 		u, v := chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n))
 		// HOT dominates so it clears the typed floor; the others stay under.
@@ -121,13 +131,15 @@ func TestTypedAdjacencyMatchesScan(t *testing.T) {
 		if i%7 == 0 {
 			ty = types[1+i%2]
 		}
-		idx, err := b.AddRel(u, v, ty)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := b.SetRelPropAt(idx, "w", int64(i)); err != nil {
-			t.Fatal(err)
-		}
+		addRel(u, v, ty, int64(i))
+	}
+	// Hub nodes push both directions past the run-view degree gate so the
+	// below-floor parity section exercises the run branch, not just the
+	// short-degree scan: node 0's out run and node 1's in run each carry
+	// well over runScanFloor mixed relationships including COLD/WARM.
+	for i := 0; i < 160; i++ {
+		addRel(0, chickpeas.NodeID(2+rng.Intn(n-2)), types[i%3], int64(10_000+i))
+		addRel(chickpeas.NodeID(2+rng.Intn(n-2)), 1, types[i%3], int64(20_000+i))
 	}
 	g := b.Finalize()
 
