@@ -235,3 +235,12 @@ rustychickpeas `tasks/223_core_builder_thaw_and_removals.md`.
 | Builder.RemoveRel | tombstone, never compact; handed-out rel indexes stay stable; Finalize compacts |
 | Builder.RemoveNode | detach-delete; labels/props eager, incident-rel cascade lazy (watermark) with resurrection via any later staging touch |
 | Builder.UpdateProp | now sweeps all four typed columns first, enforcing per-node last-write-wins across value types (behavior change vs the Rust typed update_prop_*) |
+
+## Rust-ahead surface (mirror when needed)
+
+Features shipped in rustychickpeas first; Go counterparts are owed only
+when a consumer needs them (the filing tasks say so explicitly).
+
+| rust symbol | notes |
+|-------------|-------|
+| load_rdf (1f29e8f, their task 066) | semantic RDF load over the N-Triples/N-Quads reader: node labels from rdf:type with the rdfs:subClassOf closure, relationship super-property expansion, first-wins literal semantics, xsd-typed literal parsing. Go has the syntactic N-Quads codec (nquads.go, task 031) and consumer-side mapping (internal/ldbc BuildSPBGraph); the SEMANTIC layer mirrors here when a Go consumer needs RDF proper (gochickpeas task 077 tracks the ask) |
