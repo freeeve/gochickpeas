@@ -29,6 +29,7 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 			_ = b.SetProp(n, "i", int64(-5))
 		case 5:
 			_ = b.SetProp(n, "f", 2.5)
+			_ = b.SetProp(n, "s", "") // empty text: reads as absent
 			// 6, 7: all props missing
 		}
 	}
@@ -43,6 +44,11 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		"n.f < 3.0", "n.f >= 1.5", "3.0 > n.f",
 		"n.i < 2.5", "n.f = 2", // mixed int/float pairings
 		"n.s = 's1'", "n.s < 's2'", "'s3' >= n.s", // string column
+		"n.s <> 's1'", "'s2' = n.s", "'s2' <> n.s", // atom-id equality paths
+		"n.s = ''", "n.s <> ''", // empty constant: absent-fold semantics
+		"n.s = 'never-interned'", "n.s <> 'never-interned'", // constant outside the atom table
+		"n.i IS NULL", "n.i IS NOT NULL", "n.f IS NULL", // typed presence probes
+		"n.s IS NULL", "n.s IS NOT NULL", // string presence incl. the empty-text absent fold
 		"n.i = 'x'", "n.f > 'y'", // incomparable kinds
 		"n.i IN [10, 30, -5]", "n.s IN ['s0', 's2']", // constant membership
 		"n.i IN [10, null]", "n.i IN []", // null element / empty list

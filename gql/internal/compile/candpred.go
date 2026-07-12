@@ -101,6 +101,50 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			return in.m.resultFor(v).IsTruthy()
 		}, true
 	}
+	// IS [NOT] NULL over the candidate's property is a pure presence
+	// probe: one typed column read, no value materialization (the general
+	// path resolves a string column's text just to discard it). The
+	// string form mirrors the reader's empty-means-absent fold by atom
+	// id, declining when a non-zero atom resolves empty (the one case
+	// where the id test could diverge).
+	if isn, ok := c.c.(*cIsNull); ok {
+		p, isProp := isn.e.(*cProp)
+		if !isProp || p.slot != slot {
+			return nil, false
+		}
+		col := p.reader.node
+		neg := isn.negated
+		switch col.kind {
+		case colI64:
+			ic := col.i64
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				_, present := ic.Get(uint32(id))
+				return present == neg
+			}, true
+		case colF64:
+			fc := col.f64
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				_, present := fc.Get(uint32(id))
+				return present == neg
+			}, true
+		case colBool:
+			bc := col.bool
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				_, present := bc.Get(uint32(id))
+				return present == neg
+			}, true
+		case colStr:
+			if empty, ok := c.g.PropertyKey(""); ok && empty != 0 {
+				return nil, false
+			}
+			sc := col.str
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				aid, ok := sc.ID(uint32(id))
+				return (ok && aid != 0) == neg
+			}, true
+		}
+		return nil, false
+	}
 	n, ok := c.c.(*cCmpPropConst)
 	if !ok || n.prop.slot != slot {
 		return nil, false
@@ -128,6 +172,50 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			}
 			o, comparable := cmpFloat(a, b)
 			return comparable && keep(o)
+		}, true
+	}
+	// String equality against a constant compares interned atom ids: the
+	// constant resolves through the shared atom table once, so a probe is
+	// one column read and an integer compare -- no string resolution, no
+	// byte comparison. Only =/<> qualify (atom ids carry no lexicographic
+	// order), and both are operand-order symmetric, so rev is moot. The
+	// general path folds absent, atom 0, and empty text to Null (prune);
+	// equality against a non-empty constant needs no empty check (a
+	// matching atom IS the constant's non-empty text), while inequality
+	// declines when a non-zero atom resolves empty (only then could the
+	// id test diverge from the reader's empty-means-absent fold).
+	if reader.node.kind == colStr && konst.Kind() == value.KindStr &&
+		(n.op == ast.OpEq || n.op == ast.OpNeq) {
+		cs, _ := konst.AsStr()
+		col := reader.node.str
+		want, found := c.g.PropertyKey(cs)
+		if n.op == ast.OpEq {
+			if cs == "" || !found {
+				// No stored non-empty text can equal it: always prune.
+				return func(_ *eval.Ctx, _ []value.Value, _ graph.NodeID) bool {
+					return false
+				}, true
+			}
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				aid, ok := col.ID(uint32(id))
+				return ok && aid == want
+			}, true
+		}
+		if empty, ok := c.g.PropertyKey(""); ok && empty != 0 {
+			// A non-zero empty atom exists: keep the general path, whose
+			// resolve-and-check folds it to absent.
+			return nil, false
+		}
+		if cs == "" || !found {
+			// Present non-empty text is unequal to it by construction.
+			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+				aid, ok := col.ID(uint32(id))
+				return ok && aid != 0
+			}, true
+		}
+		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
+			aid, ok := col.ID(uint32(id))
+			return ok && aid != 0 && aid != want
 		}, true
 	}
 	if reader.node.kind == colF64 && konst.Kind() == value.KindFloat {
