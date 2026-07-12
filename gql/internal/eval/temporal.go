@@ -224,6 +224,12 @@ func Component(millis int64, key string) (int64, bool) {
 // calendar add (day clamped to the target month length, e.g. Jan 31 + 1
 // month = Feb 28); days and millis are absolute.
 func ApplyDuration(tMillis, months, days, dMillis, sign int64) int64 {
+	// A months-free duration is pure tick arithmetic: with months == 0 the
+	// civil round-trip below is the identity (no month carry, no day
+	// clamp), so the result reduces to a single shifted addition.
+	if months == 0 {
+		return tMillis + sign*(days*MSPerDay+dMillis)
+	}
 	baseDays := floorDiv(tMillis, MSPerDay)
 	msOfDay := tMillis - baseDays*MSPerDay
 	y0, m0, d0 := CivilFromDays(baseDays)

@@ -15,15 +15,28 @@ import (
 )
 
 // Compiled is a compiled expression bound to a snapshot; it satisfies the
-// executor's RowEval seam.
+// executor's RowEval seam. fast, when derivable, is the whole-expression
+// monomorphic form (rowfast.go), result-identical to the tree.
 type Compiled struct {
-	c cnode
-	g *chickpeas.Snapshot
+	c    cnode
+	g    *chickpeas.Snapshot
+	fast rowFast
+}
+
+// newCompiled binds a lowered tree, deriving the monomorphic fast form
+// when the root shape supports it. Every construction site (initial
+// lowering and the hoisting rewrites) routes through here so the fast
+// form always reflects the final tree.
+func newCompiled(c cnode, g *chickpeas.Snapshot) *Compiled {
+	return &Compiled{c: c, g: g, fast: deriveRowFast(c, g)}
 }
 
 // Eval evaluates the compiled expression against a row -- identical in
 // result to the interpreter on the source expression.
 func (c *Compiled) Eval(ctx *eval.Ctx, row []value.Value, slots map[string]int) value.Value {
+	if c.fast != nil {
+		return c.fast(ctx, row, slots)
+	}
 	return ceval(ctx, c.c, c.g, row, slots)
 }
 
@@ -137,7 +150,7 @@ func (*cSlow) isC()         {}
 // New compiles e against the segment's slots and snapshot. Parameters
 // resolve at compile time (their values are constant for the execution).
 func New(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot) *Compiled {
-	return &Compiled{c: comp(ctx, e, slots, g), g: g}
+	return newCompiled(comp(ctx, e, slots, g), g)
 }
 
 func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot) cnode {

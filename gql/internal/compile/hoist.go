@@ -200,7 +200,7 @@ func slotsOf(c cnode, out *[]int, hasSlow *bool) {
 // batch (every slot it reads is batch-constant, no slow node) into a baked
 // membership index, evaluated once against a sample row.
 func HoistConstIn(ctx *eval.Ctx, c *Compiled, isConst func(int) bool, sample []value.Value, slots map[string]int) *Compiled {
-	return &Compiled{c: hoistConst(ctx, c.c, c.g, isConst, sample, slots), g: c.g}
+	return newCompiled(hoistConst(ctx, c.c, c.g, isConst, sample, slots), c.g)
 }
 
 func hoistConst(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, isConst func(int) bool, sample []value.Value, slots map[string]int) cnode {
@@ -252,7 +252,7 @@ func hoistConst(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, isConst func(int)
 // into the per-epoch cached form. Applied after HoistConstIn so
 // batch-constant lists keep their cheaper baked set.
 func HoistCarriedIn(c *Compiled, isCarried func(int) bool) *Compiled {
-	return &Compiled{c: hoistCarried(c.c, isCarried), g: c.g}
+	return newCompiled(hoistCarried(c.c, isCarried), c.g)
 }
 
 func hoistCarried(c cnode, isCarried func(int) bool) cnode {
