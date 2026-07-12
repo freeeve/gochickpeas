@@ -11,8 +11,6 @@
 package compile
 
 import (
-	"slices"
-
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -65,13 +63,12 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			return nil, false
 		}
 		if bareSlot(in.e) && in.m.kind == memNodes {
-			ids := in.m.nodes
+			m := &in.m
 			return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
-				_, hit := slices.BinarySearch(ids, uint32(id))
-				return hit
+				return m.hasNode(uint32(id))
 			}, true
 		}
-		m := in.m
+		m := &in.m
 		return func(_ *eval.Ctx, _ []value.Value, id graph.NodeID) bool {
 			v := read(id)
 			if v.IsNull() {
@@ -95,8 +92,7 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 			// The carried list may change per epoch; re-check the
 			// representation per call (one byte compare).
 			if bare && in.m.kind == memNodes {
-				_, hit := slices.BinarySearch(in.m.nodes, uint32(id))
-				return hit
+				return in.m.hasNode(uint32(id))
 			}
 			v := read(id)
 			if v.IsNull() {

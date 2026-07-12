@@ -34,7 +34,13 @@ type inMembership struct {
 	// nodes is a sorted deduplicated id slice: IN lists are usually
 	// small-to-moderate, so a contiguous binary search beats a
 	// compressed-set container walk per probe.
-	nodes   []uint32
+	nodes []uint32
+	// dense is the adaptive node bitmap: past memDenseProbes probes the
+	// binary search flips to an O(1) bit test over the id span -- the
+	// label-test densification pattern, for the membership a filter
+	// probes millions of times per query.
+	dense   []uint64
+	probes  uint32
 	hash    map[string]struct{}
 	linear  []value.Value
 	hasNull bool
@@ -43,6 +49,32 @@ type inMembership struct {
 	// need not escape between probes. A map lookup on string(probe) does
 	// not allocate.
 	probe []byte
+}
+
+// memDenseProbes is the probe count past which a node membership
+// densifies; the bitmap spans up to the largest member id, so the memory
+// (span/8 bytes) is only paid by memberships hot enough to amortize it.
+const memDenseProbes = 1 << 16
+
+// hasNode reports a node id's membership, densifying adaptively. Callers
+// hold the same *inMembership across probes (a single execution's
+// goroutine), so the flip happens at most once per membership.
+func (m *inMembership) hasNode(id uint32) bool {
+	if m.dense == nil {
+		m.probes++
+		if m.probes < memDenseProbes || len(m.nodes) == 0 {
+			_, hit := slices.BinarySearch(m.nodes, id)
+			return hit
+		}
+		span := int(m.nodes[len(m.nodes)-1]) + 1
+		dense := make([]uint64, (span+63)/64)
+		for _, x := range m.nodes {
+			dense[x>>6] |= 1 << (x & 63)
+		}
+		m.dense = dense
+	}
+	w := int(id >> 6)
+	return w < len(m.dense) && m.dense[w]>>(id&63)&1 == 1
 }
 
 // memKey projects a value to its membership key, comma-ok false when it
@@ -108,7 +140,7 @@ func (m *inMembership) resultFor(v value.Value) value.Value {
 	switch m.kind {
 	case memNodes:
 		if id, ok := v.AsNode(); ok {
-			_, hit = slices.BinarySearch(m.nodes, uint32(id))
+			hit = m.hasNode(uint32(id))
 		}
 	case memHash:
 		if key, ok := memKey(m.probe[:0], v); ok {

@@ -132,3 +132,41 @@ func TestCandidatePredMatchesEval(t *testing.T) {
 		t.Fatal("wrong slot must not specialize")
 	}
 }
+
+// TestMembershipDensification pins the adaptive node-membership bitmap:
+// past the probe floor the sorted-slice search flips to the dense form,
+// and every probe answers identically before, at, and after the flip --
+// members, non-members, and ids beyond the bitmap's span.
+func TestMembershipDensification(t *testing.T) {
+	m := buildMembership([]value.Value{
+		value.Node(3), value.Node(64), value.Node(65), value.Node(200),
+	})
+	if m.kind != memNodes {
+		t.Fatalf("kind = %v, want memNodes", m.kind)
+	}
+	check := func(pass string) {
+		t.Helper()
+		for _, c := range []struct {
+			id  uint32
+			hit bool
+		}{{3, true}, {64, true}, {65, true}, {200, true},
+			{0, false}, {4, false}, {199, false}, {201, false}, {5000, false}} {
+			if got := m.hasNode(c.id); got != c.hit {
+				t.Fatalf("%s: hasNode(%d) = %v, want %v (dense=%v)", pass, c.id, got, c.hit, m.dense != nil)
+			}
+		}
+	}
+	check("sparse")
+	for i := uint32(0); i < memDenseProbes+8; i++ {
+		m.hasNode(i % 256)
+	}
+	if m.dense == nil {
+		t.Fatal("membership did not densify past the probe floor")
+	}
+	check("dense")
+	// An empty membership never densifies and never hits.
+	e := buildMembership([]value.Value{})
+	if e.kind == memNodes {
+		t.Fatalf("empty list built memNodes")
+	}
+}
