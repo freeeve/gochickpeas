@@ -379,3 +379,65 @@ func TestAdaptiveLabelDensification(t *testing.T) {
 		t.Fatal("fresh compile did not pick up the cached bitmap")
 	}
 }
+
+// TestFilterMatchedTailMatchesAccepts pins the batch tail filter against
+// per-candidate NodeMatcherAccepts for both matcher shapes (the hoisted
+// dense-label loop and the general labels+props path), with and without a
+// parallel rels array, preserving order, prefix, and parallel pairing.
+func TestFilterMatchedTailMatchesAccepts(t *testing.T) {
+	// A larger fixture so the Person label crosses the dense-bitmap floor.
+	b := chickpeas.NewBuilder(600, 1)
+	var all []chickpeas.NodeID
+	for i := 0; i < 600; i++ {
+		label := "Person"
+		if i%3 == 0 {
+			label = "City" // sparse enough to stay set-backed
+		}
+		n, _ := b.AddNode(label)
+		if i%2 == 0 {
+			_ = b.SetProp(n, "age", int64(i))
+		}
+		all = append(all, n)
+	}
+	s := New(b.Finalize())
+
+	matchers := []*NodeMatcher{
+		s.CompileNodeMatcher([]string{"Person"}, nil),                                         // dense fast path
+		s.CompileNodeMatcher([]string{"City"}, nil),                                           // set-backed general path
+		s.CompileNodeMatcher([]string{"Person"}, []PropSpec{{Key: "age", Val: value.Int(4)}}), // labels+props
+		s.CompileNodeMatcher([]string{"NoSuchLabel"}, nil),                                    // rejects everything
+		s.CompileNodeMatcher(nil, nil),                                                        // accepts everything
+	}
+	for mi, m := range matchers {
+		// Prefix [start=3] must be untouched; tail is every node with a
+		// parallel payload marking its original index.
+		ids := append([]chickpeas.NodeID{999, 998, 997}, all...)
+		rels := make([]uint32, len(all))
+		for i := range rels {
+			rels[i] = uint32(i)
+		}
+		gotIDs, gotRels := s.FilterMatchedTail(m, ids, 3, rels, 0)
+		var wantIDs []chickpeas.NodeID
+		var wantRels []uint32
+		for i, id := range all {
+			if s.NodeMatcherAccepts(m, id) {
+				wantIDs = append(wantIDs, id)
+				wantRels = append(wantRels, uint32(i))
+			}
+		}
+		if len(gotIDs) != 3+len(wantIDs) || gotIDs[0] != 999 || gotIDs[1] != 998 || gotIDs[2] != 997 {
+			t.Fatalf("matcher %d: prefix/len wrong: got %d ids, want %d + prefix", mi, len(gotIDs), len(wantIDs))
+		}
+		for i := range wantIDs {
+			if gotIDs[3+i] != wantIDs[i] || gotRels[i] != wantRels[i] {
+				t.Fatalf("matcher %d entry %d: got (%d, %d), want (%d, %d)", mi, i, gotIDs[3+i], gotRels[i], wantIDs[i], wantRels[i])
+			}
+		}
+		// No-rels form agrees.
+		ids2 := append([]chickpeas.NodeID{}, all...)
+		gotOnly, _ := s.FilterMatchedTail(m, ids2, 0, nil, 0)
+		if len(gotOnly) != len(wantIDs) {
+			t.Fatalf("matcher %d no-rels: %d ids, want %d", mi, len(gotOnly), len(wantIDs))
+		}
+	}
+}

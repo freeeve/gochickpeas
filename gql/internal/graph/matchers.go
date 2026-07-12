@@ -162,6 +162,50 @@ func (s *SnapshotGraph) CompileRelMatcher(types []string) *RelMatcher {
 	return &RelMatcher{m: s.g.Match(types...)}
 }
 
+// FilterMatchedTail compacts ids[start:] in place to the matcher-accepted
+// entries and returns the shortened slice; rels, when non-nil, is a
+// parallel array compacted identically from relStart. Result-identical to
+// testing each candidate with NodeMatcherAccepts -- the batch form exists
+// so a whole expansion tail filters through one call, with the dominant
+// matcher shape (one dense label, no inline properties) reduced to a
+// hoisted word-bitmap loop: no per-candidate dispatch at all. Set-backed
+// labels keep the per-candidate test, whose adaptive densification then
+// upgrades later batches.
+func (s *SnapshotGraph) FilterMatchedTail(m *NodeMatcher, ids []chickpeas.NodeID, start int, rels []uint32, relStart int) ([]chickpeas.NodeID, []uint32) {
+	if len(m.props) == 0 && len(m.labels) == 1 && m.labels[0].bits != nil {
+		bits := m.labels[0].bits
+		w := start
+		for i, id := range ids[start:] {
+			wi := int(id) >> 6
+			if wi < len(bits) && bits[wi]>>(uint32(id)&63)&1 == 1 {
+				ids[w] = id
+				if rels != nil {
+					rels[relStart+(w-start)] = rels[relStart+i]
+				}
+				w++
+			}
+		}
+		if rels != nil {
+			rels = rels[:relStart+(w-start)]
+		}
+		return ids[:w], rels
+	}
+	w := start
+	for i, id := range ids[start:] {
+		if s.NodeMatcherAccepts(m, id) {
+			ids[w] = id
+			if rels != nil {
+				rels[relStart+(w-start)] = rels[relStart+i]
+			}
+			w++
+		}
+	}
+	if rels != nil {
+		rels = rels[:relStart+(w-start)]
+	}
+	return ids[:w], rels
+}
+
 // strColReader reads the stored atom id at a position, folding the dense
 // string column's atom-0-means-missing convention to absent (the raw
 // StrCol.ID does not).

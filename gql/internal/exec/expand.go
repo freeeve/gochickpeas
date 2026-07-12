@@ -32,6 +32,11 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 	keep := func(nid graph.NodeID) bool {
 		return (!haveBound || bound == nid) && ctx.G.NodeMatcherAccepts(m, nid)
 	}
+	// A native graph filters the appended tail through one batch call (the
+	// hot single-dense-label matcher runs as a hoisted bitmap loop with no
+	// per-candidate dispatch); the bound-target compaction stays ahead of
+	// it, and non-native graphs keep the per-candidate closure.
+	sg, native := ctx.G.(*graph.SnapshotGraph)
 	// Batch-append the hop into the pooled buffers, then filter the
 	// appended tail in place (the iter.Seq forms would heap-allocate their
 	// closures on every row -- see Graph.AppendNeighborsMatched). A named
@@ -41,6 +46,22 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 	if op.RelSlot != plan.NoSlot {
 		relStart := len(*rels)
 		*nodes, *rels = ctx.G.AppendRelationshipsMatched(*nodes, *rels, fromID, op.Dir, rm)
+		if native {
+			if haveBound {
+				w := start
+				for i, nb := range (*nodes)[start:] {
+					if nb == bound {
+						(*nodes)[w] = nb
+						(*rels)[relStart+(w-start)] = (*rels)[relStart+i]
+						w++
+					}
+				}
+				*nodes = (*nodes)[:w]
+				*rels = (*rels)[:relStart+(w-start)]
+			}
+			*nodes, *rels = sg.FilterMatchedTail(m, *nodes, start, *rels, relStart)
+			return
+		}
 		w := start
 		for i, nb := range (*nodes)[start:] {
 			if keep(nb) {
@@ -54,6 +75,20 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 		return
 	}
 	*nodes = ctx.G.AppendNeighborsMatched(*nodes, fromID, op.Dir, rm)
+	if native {
+		if haveBound {
+			w := start
+			for _, nid := range (*nodes)[start:] {
+				if nid == bound {
+					(*nodes)[w] = nid
+					w++
+				}
+			}
+			*nodes = (*nodes)[:w]
+		}
+		*nodes, _ = sg.FilterMatchedTail(m, *nodes, start, nil, 0)
+		return
+	}
 	w := start
 	for _, nid := range (*nodes)[start:] {
 		if keep(nid) {
