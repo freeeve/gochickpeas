@@ -115,6 +115,27 @@ func (c I64Col) Slice() ([]int64, bool) {
 	return c.dense, c.dense != nil
 }
 
+// SliceRange is the dense-speed window of a column whose presence is one
+// contiguous position run: values read as vals[pos-start], and a
+// position outside [start, start+len) is absent. LDBC-shaped loaders
+// assign each label a contiguous id block, so a label-scoped column
+// stored sparse still reads at hoisted-slice speed through its window
+// (the rcp twin's as_i64_slice_range, tasks rcp-265/072; a sparse
+// column's pair array is position-sorted, so contiguous presence makes
+// the value array itself the window -- the check is O(1) and nothing is
+// built). ok=false for gapped presence or a non-integer column.
+func (c I64Col) SliceRange() (start uint32, vals []int64, ok bool) {
+	if c.dense != nil {
+		return 0, c.dense, true
+	}
+	s, isSparse := c.col.(sparseI64Col)
+	n := len(s.ids)
+	if !isSparse || n == 0 || int(s.ids[n-1]-s.ids[0])+1 != n {
+		return 0, nil, false
+	}
+	return s.ids[0], s.vals, true
+}
+
 // F64Col is a resolved float column reader.
 type F64Col struct {
 	dense denseF64Col
@@ -140,6 +161,19 @@ func (c F64Col) Get(pos uint32) (float64, bool) {
 // Slice is the dense value slice; ok is false for a sparse column.
 func (c F64Col) Slice() ([]float64, bool) {
 	return c.dense, c.dense != nil
+}
+
+// SliceRange is I64Col.SliceRange for float columns.
+func (c F64Col) SliceRange() (start uint32, vals []float64, ok bool) {
+	if c.dense != nil {
+		return 0, c.dense, true
+	}
+	s, isSparse := c.col.(sparseF64Col)
+	n := len(s.ids)
+	if !isSparse || n == 0 || int(s.ids[n-1]-s.ids[0])+1 != n {
+		return 0, nil, false
+	}
+	return s.ids[0], s.vals, true
 }
 
 // BoolCol is a resolved boolean column reader.
