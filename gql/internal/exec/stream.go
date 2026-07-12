@@ -330,3 +330,43 @@ func (s *spSink) close() {
 	}
 	s.next.close()
 }
+
+// gateSink is an injected early row gate (plan.GateStage): like spSink it
+// buffers its input so the batch path runner keeps its shared-source tree
+// memo, then binds the path into its hidden slot, evaluates the hoisted
+// LET chain, and forwards only rows passing the hoisted filter. Rows it
+// drops are exactly rows the downstream chain would drop (the search is
+// deterministic per endpoint pair), so results are identical -- just
+// cheaper, because survivors alone reach the stages behind it.
+type gateSink struct {
+	ctx     *eval.Ctx
+	gs      *plan.GateStage
+	slots   map[string]int
+	derived []RowEval
+	where   RowEval
+	rows    [][]value.Value
+	arena   rowArena
+	next    rowSink
+	count   *uint64
+}
+
+func (s *gateSink) push(row []value.Value) {
+	s.rows = append(s.rows, s.arena.copyRow(row))
+}
+
+func (s *gateSink) close() {
+	out := runSPStage(s.ctx, &s.gs.Sp, s.rows)
+	for _, r := range out {
+		for i, d := range s.gs.Derived {
+			r[d.Slot] = s.derived[i].Eval(s.ctx, r, s.slots)
+		}
+		if !s.where.Eval(s.ctx, r, s.slots).IsTruthy() {
+			continue
+		}
+		if s.count != nil {
+			*s.count++
+		}
+		s.next.push(r)
+	}
+	s.next.close()
+}

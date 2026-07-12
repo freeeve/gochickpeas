@@ -84,6 +84,11 @@ func hashJoinStages(stages []Stage, slots map[string]int, inWidth int, g graph.G
 			claim(s.OutSlot, si, rows)
 		case *SpStage:
 			claim(s.PathSlot, si, rows)
+		case *GateStage:
+			claim(s.Sp.PathSlot, si, rows)
+			for _, d := range s.Derived {
+				claim(d.Slot, si, rows)
+			}
 		case *CallStage:
 			claim(s.NodeSlot, si, rows)
 			claim(s.ValueSlot, si, rows)

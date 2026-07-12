@@ -366,11 +366,33 @@ type CallSubqueryStage struct {
 }
 
 // Stage is one pipeline stage of a segment.
+// GateStage is an injected early row gate (gate.go): a copy of a later
+// segment's shortest-path stage plus the downstream LET/FILTER chain that
+// depends only on slots bound here, run before this segment's remaining
+// expansion stages so rows the chain would kill never expand. The path and
+// derived values bind to hidden slots past the segment's projected names;
+// the original downstream stages still run unchanged (the path search is
+// deterministic per endpoint pair, so re-running it is result-identical
+// and cheap under the pair memo).
+type GateStage struct {
+	Sp      SpStage
+	Derived []GateDerived
+	Where   ast.Expr
+}
+
+// GateDerived is one hoisted LET column: Expr evaluates against the
+// segment's row (path and earlier derived slots included) into Slot.
+type GateDerived struct {
+	Slot int
+	Expr ast.Expr
+}
+
 type Stage interface{ isStage() }
 
 func (*MatchStage) isStage()        {}
 func (*HashJoinStage) isStage()     {}
 func (*SpStage) isStage()           {}
+func (*GateStage) isStage()         {}
 func (*CallStage) isStage()         {}
 func (*UnwindStage) isStage()       {}
 func (*CallSubqueryStage) isStage() {}

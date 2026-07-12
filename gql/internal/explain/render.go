@@ -148,6 +148,14 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			}
 			label := fmt.Sprintf("%s (%s)-[*]-(%s)", kind, nameOf(s.From, names), nameOf(s.To, names))
 			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+		case *plan.GateStage:
+			kind := "ShortestPath"
+			if s.Sp.Weight != nil {
+				kind = "WeightedShortestPath"
+			}
+			label := fmt.Sprintf("Gate (%s (%s)-[*]-(%s), %s)",
+				kind, nameOf(s.Sp.From, names), nameOf(s.Sp.To, names), fmtExpr(s.Where))
+			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
 		case *plan.CallStage:
 			label := callLabel(&s.Proc)
 			if s.ProcName != "" {

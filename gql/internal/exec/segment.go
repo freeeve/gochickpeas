@@ -132,6 +132,16 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 		return newHashJoinSink(ctx, seg, s, next, uniq, single())
 	case *plan.SpStage:
 		return &spSink{ctx: ctx, sp: s, arena: rowArena{width: seg.RowWidth}, next: next, count: single()}
+	case *plan.GateStage:
+		gs := &gateSink{
+			ctx: ctx, gs: s, slots: seg.Slots, arena: rowArena{width: seg.RowWidth},
+			next: next, count: single(),
+			where: compileEval(ctx, s.Where, seg.Slots),
+		}
+		for _, d := range s.Derived {
+			gs.derived = append(gs.derived, compileEval(ctx, d.Expr, seg.Slots))
+		}
+		return gs
 	case *plan.CallStage:
 		cs := &callSink{ctx: ctx, cs: s, buf: make([]value.Value, seg.RowWidth), next: next, count: single()}
 		if native, ok := ctx.G.(graph.Native); ok {
@@ -190,6 +200,11 @@ func segmentBoundSlots(seg *plan.Segment) []bool {
 			}
 		case *plan.SpStage:
 			set(s.PathSlot)
+		case *plan.GateStage:
+			set(s.Sp.PathSlot)
+			for _, d := range s.Derived {
+				set(d.Slot)
+			}
 		case *plan.CallStage:
 			set(s.NodeSlot)
 			set(s.ValueSlot)
