@@ -175,6 +175,9 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 		if tc := m.tp.view(true); tc != nil {
 			lo, hi := relRange(tc.offsets, node)
 			dst = append(dst, tc.nbrs[lo:hi]...)
+		} else if tr := m.tp.runs(true); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			dst = append(dst, tr.nbrs[lo:hi]...)
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
 			for k := lo; k < hi; k++ {
@@ -188,6 +191,9 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 		if tc := m.tp.view(false); tc != nil {
 			lo, hi := relRange(tc.offsets, node)
 			dst = append(dst, tc.nbrs[lo:hi]...)
+		} else if tr := m.tp.runs(false); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			dst = append(dst, tr.nbrs[lo:hi]...)
 		} else {
 			lo, hi := relRange(g.inOffsets, node)
 			for k := lo; k < hi; k++ {
@@ -212,6 +218,13 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 					return
 				}
 			}
+		} else if tr := m.tp.runs(true); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			for k := lo; k < hi; k++ {
+				if !yield(tr.nbrs[k]) {
+					return
+				}
+			}
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
 			for k := lo; k < hi; k++ {
@@ -226,6 +239,13 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 			lo, hi := relRange(tc.offsets, node)
 			for k := lo; k < hi; k++ {
 				if !yield(tc.nbrs[k]) {
+					return
+				}
+			}
+		} else if tr := m.tp.runs(false); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			for k := lo; k < hi; k++ {
+				if !yield(tr.nbrs[k]) {
 					return
 				}
 			}
@@ -269,6 +289,13 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					return
 				}
 			}
+		} else if tr := m.tp.runs(true); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			for k := lo; k < hi; k++ {
+				if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Outgoing, Pos: tr.poss[k]}) {
+					return
+				}
+			}
 		} else {
 			lo, hi := relRange(g.outOffsets, node)
 			for k := lo; k < hi; k++ {
@@ -287,6 +314,13 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 			lo, hi := relRange(tc.offsets, node)
 			for k := lo; k < hi; k++ {
 				if !yield(RelRef{Neighbor: tc.nbrs[k], Type: m.one, Direction: Incoming, Pos: tc.poss[k]}) {
+					return
+				}
+			}
+		} else if tr := m.tp.runs(false); tr != nil {
+			lo, hi := runRange(tr.nodes, node)
+			for k := lo; k < hi; k++ {
+				if !yield(RelRef{Neighbor: tr.nbrs[k], Type: m.one, Direction: Incoming, Pos: tr.poss[k]}) {
 					return
 				}
 			}

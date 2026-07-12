@@ -6,8 +6,9 @@
 // call); each direction builds on first traversal via its own Once.
 // Per-node relative order matches the primary CSR, so routed results are
 // byte-identical to the scan path. Types below the memory floor never
-// build (their full offsets array would dwarf their payload) and keep the
-// scan path.
+// build the id-space offsets array (it would dwarf their payload); they
+// route through a payload-proportional run view instead (typedRuns), with
+// the type-tested scan remaining the multi-type / MatchAll path.
 
 package chickpeas
 
@@ -26,17 +27,32 @@ type typedCSR struct {
 	poss    []uint32
 }
 
+// typedRuns is one direction's below-floor single-type view: the type's
+// relationships filtered from the primary CSR in original order, with the
+// owning node per entry instead of id-space offsets -- memory proportional
+// to the type's payload. A node's run resolves by binary search on the
+// nondecreasing owner array; per-node relative order matches the primary
+// CSR, so routed results are byte-identical to the scan path.
+type typedRuns struct {
+	nodes []uint32
+	nbrs  []NodeID
+	poss  []uint32
+}
+
 // typedPair lazily holds both directions' views for one type, plus the
-// type's sorted edge-key set -- the below-floor representation for
-// bound-pair probes, sized by the type's payload instead of the id space.
+// type's sorted edge-key set and below-floor run views -- representations
+// sized by the type's payload instead of the id space.
 type typedPair struct {
-	g        *Snapshot
-	t        RelType
-	outOnce  sync.Once
-	inOnce   sync.Once
-	out, in  *typedCSR
-	edgeOnce sync.Once
-	edges    []uint64
+	g               *Snapshot
+	t               RelType
+	outOnce         sync.Once
+	inOnce          sync.Once
+	out, in         *typedCSR
+	edgeOnce        sync.Once
+	edges           []uint64
+	outRunsOnce     sync.Once
+	inRunsOnce      sync.Once
+	outRuns, inRuns *typedRuns
 }
 
 // typedFloor: a type builds its view only when its relationship count is
@@ -73,6 +89,74 @@ func (p *typedPair) view(out bool) *typedCSR {
 		}
 	})
 	return p.in
+}
+
+// runs returns the direction's below-floor run view, building it on first
+// use; nil when the type has a full typed CSR instead (at or above the
+// floor, where view() serves the traversal). Together the two views cover
+// every single-type traversal: contiguous per-type CSR above the floor,
+// payload-proportional filtered runs below it.
+func (p *typedPair) runs(out bool) *typedRuns {
+	if p == nil {
+		return nil
+	}
+	if out {
+		p.outRunsOnce.Do(func() {
+			if !p.g.typedAboveFloor(p.t) {
+				p.outRuns = buildTypedRuns(p.g.outOffsets, p.g.outNbrs, p.g.outTypes, nil, p.t, p.typeCount())
+			}
+		})
+		return p.outRuns
+	}
+	p.inRunsOnce.Do(func() {
+		if !p.g.typedAboveFloor(p.t) {
+			p.inRuns = buildTypedRuns(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.inToOut, p.t, p.typeCount())
+		}
+	})
+	return p.inRuns
+}
+
+// typeCount is the type's relationship count (0 for an unknown type).
+func (p *typedPair) typeCount() int {
+	if set, ok := p.g.typeIndex[p.t]; ok {
+		return set.Len()
+	}
+	return 0
+}
+
+// buildTypedRuns filters one direction's CSR to a single type in one
+// linear pass, keeping the owning node per entry. poss carries each kept
+// relationship's property-read position, mapped like buildTypedCSR's.
+func buildTypedRuns(offsets []uint32, nbrs []NodeID, types []RelType, posMap []uint32, t RelType, count int) *typedRuns {
+	r := &typedRuns{
+		nodes: make([]uint32, 0, count),
+		nbrs:  make([]NodeID, 0, count),
+		poss:  make([]uint32, 0, count),
+	}
+	for u := 0; u+1 < len(offsets); u++ {
+		for k := int(offsets[u]); k < int(offsets[u+1]); k++ {
+			if types[k] == t {
+				pos := uint32(k)
+				if k < len(posMap) {
+					pos = posMap[k]
+				}
+				r.nodes = append(r.nodes, uint32(u))
+				r.nbrs = append(r.nbrs, nbrs[k])
+				r.poss = append(r.poss, pos)
+			}
+		}
+	}
+	return r
+}
+
+// runRange is a node's [lo, hi) span in a run view's owner array.
+func runRange(nodes []uint32, node NodeID) (int, int) {
+	lo, _ := slices.BinarySearch(nodes, uint32(node))
+	hi := lo
+	for hi < len(nodes) && nodes[hi] == uint32(node) {
+		hi++
+	}
+	return lo, hi
 }
 
 // typedSlotsLen is the dense-id fast path's span: rel-type atoms below it

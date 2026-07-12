@@ -200,17 +200,53 @@ func TestTypedAdjacencyMatchesScan(t *testing.T) {
 		}
 	}
 
-	// Below-floor types keep the scan path but stay correct through Match.
+	// Below-floor types route through the payload-proportional run view;
+	// neighbors, order, types, directions, and property positions must all
+	// match the scan exactly (MatchType never carries the holder).
 	for _, ty := range []string{"COLD", "WARM"} {
 		m := g.Match(ty)
 		tt, _ := g.RelType(ty)
 		sm := chickpeas.MatchType(tt)
-		for id := 0; id < n; id++ {
-			var a, bb []chickpeas.NodeID
-			a = g.AppendNeighborsMatch(a, chickpeas.NodeID(id), chickpeas.Both, sm)
-			bb = g.AppendNeighborsMatch(bb, chickpeas.NodeID(id), chickpeas.Both, m)
-			if len(a) != len(bb) {
-				t.Fatalf("%s node %d: %d vs %d", ty, id, len(a), len(bb))
+		for _, dir := range []chickpeas.Direction{chickpeas.Outgoing, chickpeas.Incoming, chickpeas.Both} {
+			for id := 0; id < n; id++ {
+				node := chickpeas.NodeID(id)
+				var a, bb []chickpeas.NodeID
+				a = g.AppendNeighborsMatch(a, node, dir, sm)
+				bb = g.AppendNeighborsMatch(bb, node, dir, m)
+				if len(a) != len(bb) {
+					t.Fatalf("%s node %d: %d vs %d", ty, id, len(a), len(bb))
+				}
+				ea := g.AppendNeighborsEach(nil, node, dir, sm)
+				eb := g.AppendNeighborsEach(nil, node, dir, m)
+				if len(ea) != len(eb) {
+					t.Fatalf("%s dir %v node %d each: %d vs %d", ty, dir, id, len(ea), len(eb))
+				}
+				for i := range ea {
+					if ea[i] != eb[i] {
+						t.Fatalf("%s dir %v node %d each %d: %d vs %d", ty, dir, id, i, ea[i], eb[i])
+					}
+				}
+				type ref struct {
+					nb  chickpeas.NodeID
+					ty  chickpeas.RelType
+					d   chickpeas.Direction
+					pos uint32
+				}
+				var ra, rb []ref
+				for r := range g.RelsMatch(node, dir, sm) {
+					ra = append(ra, ref{r.Neighbor, r.Type, r.Direction, r.Pos})
+				}
+				for r := range g.RelsMatch(node, dir, m) {
+					rb = append(rb, ref{r.Neighbor, r.Type, r.Direction, r.Pos})
+				}
+				if len(ra) != len(rb) {
+					t.Fatalf("%s dir %v node %d: %d vs %d rels", ty, dir, id, len(ra), len(rb))
+				}
+				for i := range ra {
+					if ra[i] != rb[i] {
+						t.Fatalf("%s dir %v node %d rel %d: %+v vs %+v", ty, dir, id, i, ra[i], rb[i])
+					}
+				}
 			}
 		}
 	}
