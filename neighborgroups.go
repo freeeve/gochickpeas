@@ -6,7 +6,8 @@
 package chickpeas
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/freeeve/gochickpeas/internal/parallel"
 )
@@ -116,11 +117,13 @@ func (n *NeighborGroups) TopBySize(count int, tieKey string) []SourceSize {
 		for i, s := range sizes {
 			rows[i] = keyed{s: s, tie: ties[i]}
 		}
-		sort.SliceStable(rows, func(i, j int) bool {
-			if rows[i].s.Size != rows[j].s.Size {
-				return rows[i].s.Size > rows[j].s.Size
+		// Generic stable sort: sort.SliceStable's reflection-based
+		// swapper dominated hot kernels (typedmemmove per swap).
+		slices.SortStableFunc(rows, func(a, b keyed) int {
+			if a.s.Size != b.s.Size {
+				return cmp.Compare(b.s.Size, a.s.Size)
 			}
-			return rows[i].tie < rows[j].tie
+			return cmp.Compare(a.tie, b.tie)
 		})
 		out := make([]SourceSize, 0, min(count, len(rows)))
 		for _, r := range rows[:min(count, len(rows))] {
@@ -128,11 +131,11 @@ func (n *NeighborGroups) TopBySize(count int, tieKey string) []SourceSize {
 		}
 		return out
 	}
-	sort.SliceStable(sizes, func(i, j int) bool {
-		if sizes[i].Size != sizes[j].Size {
-			return sizes[i].Size > sizes[j].Size
+	slices.SortStableFunc(sizes, func(a, b SourceSize) int {
+		if a.Size != b.Size {
+			return cmp.Compare(b.Size, a.Size)
 		}
-		return sizes[i].Source < sizes[j].Source
+		return cmp.Compare(a.Source, b.Source)
 	})
 	return sizes[:min(count, len(sizes))]
 }
