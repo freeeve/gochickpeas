@@ -54,6 +54,12 @@ func Corpus() []Case {
 		{Name: "all_columns", Graph: allColumnsGraph(), WriteOptions: rcpg.DefaultWriteOptions()},
 		{Name: "multi_label_types", Graph: multiLabelTypesGraph(), WriteOptions: rcpg.DefaultWriteOptions()},
 		{Name: "big", Graph: bigGraph(), WriteOptions: rcpg.DefaultWriteOptions()},
+		// The small graph re-emitted with the optional section-7 atom
+		// index: readers must validate a present index (a malformed one
+		// is corrupt -- see the negative corpus) and route by block;
+		// writers must reproduce it byte-identically (block_len 1024,
+		// offsets relative to the atoms section body, entry 0 = 4).
+		{Name: "small_atom_indexed", Graph: smallGraph(), WriteOptions: rcpg.WriteOptions{NodeColumns: true, RelColumns: true, AtomIndex: true}},
 	}
 }
 

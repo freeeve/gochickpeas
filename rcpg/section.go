@@ -69,6 +69,22 @@ type GraphSection struct {
 
 	// Atoms is the string table; index 0 is always "".
 	Atoms []string
+
+	// AtomIndex is the optional section-7 block index over the atoms
+	// section, present only when the file carried one: lazy readers route
+	// an atom id straight to its block instead of scanning the section's
+	// length prefixes. Nil on a hand-built graph; the writer derives it
+	// from the atoms at encode time, so it carries no independent
+	// information.
+	AtomIndex *AtomBlockIndex
+}
+
+// AtomBlockIndex is a parsed section-7 body: Offsets[k] is the byte offset,
+// relative to the atoms section body start, of atom k*BlockLen's length
+// prefix (entry 0 is always 4, past the section's count word).
+type AtomBlockIndex struct {
+	BlockLen uint32
+	Offsets  []uint64
 }
 
 // CSRIDSpace is the size of the CSR ID space (max node ID + 1 for non-empty
@@ -158,6 +174,89 @@ func decodeAtoms(body []byte) ([]string, error) {
 		atoms = append(atoms, blob[c.pos-n-base:c.pos-base])
 	}
 	return atoms, nil
+}
+
+// --- atom index (section 7) ----------------------------------------------
+
+// encodeAtomIndex encodes the optional block index over the atoms section:
+// block_len u32 + reserved u32 + count u32 + count x u64 offsets, where
+// offsets[k] is the atoms-section-body-relative offset of atom
+// k*blockLen's length prefix (entry 0 is always 4, past the count word).
+func encodeAtomIndex(atoms []string, blockLen uint32) ([]byte, error) {
+	var buf bytes.Buffer
+	wU32(&buf, blockLen)
+	wU32(&buf, 0) // reserved
+	count := (len(atoms) + int(blockLen) - 1) / int(blockLen)
+	wU32(&buf, uint32(count))
+	running := uint64(4) // past the atoms section's count word
+	for i, s := range atoms {
+		if i%int(blockLen) == 0 {
+			wU64(&buf, running)
+		}
+		running += 4 + uint64(len(s))
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeAtomIndex(body []byte) (*AtomBlockIndex, error) {
+	c := newCursor(body)
+	blockLen, err := c.u32()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.u32(); err != nil { // reserved
+		return nil, err
+	}
+	count, err := c.lenPrefix(8)
+	if err != nil {
+		return nil, err
+	}
+	offsets := make([]uint64, 0, preallocCap(count))
+	prev := uint64(0)
+	havePrev := false
+	for range count {
+		off, err := c.u64()
+		if err != nil {
+			return nil, err
+		}
+		// Strictly ascending by construction; enforce here so a consumer
+		// can trust it.
+		if havePrev && off <= prev {
+			return nil, corruptf("atom index: offsets not strictly ascending")
+		}
+		prev, havePrev = off, true
+		offsets = append(offsets, off)
+	}
+	return &AtomBlockIndex{BlockLen: blockLen, Offsets: offsets}, nil
+}
+
+// validateAtomIndex checks a PRESENT atom index against the decoded atoms:
+// a malformed index is corrupt, never a silent fall-back to the scan path
+// (a lazy remote reader falling back would re-transfer the whole atoms
+// section). Files without the section skip this entirely.
+func validateAtomIndex(index *AtomBlockIndex, atoms []string) error {
+	if index.BlockLen == 0 {
+		return corruptf("atom index: block_len is zero")
+	}
+	expected := (len(atoms) + int(index.BlockLen) - 1) / int(index.BlockLen)
+	if len(index.Offsets) != expected {
+		return corruptf("atom index: offset count does not match the atom count")
+	}
+	// Recompute each block-start offset from the atoms themselves: 4
+	// (count word) + 4 per preceding length prefix + preceding UTF-8
+	// bytes.
+	running := uint64(4)
+	block := 0
+	for i, s := range atoms {
+		if i%int(index.BlockLen) == 0 {
+			if index.Offsets[block] != running {
+				return corruptf("atom index: offset does not point at its block's length prefix")
+			}
+			block++
+		}
+		running += 4 + uint64(len(s))
+	}
+	return nil
 }
 
 // --- meta --------------------------------------------------------------------

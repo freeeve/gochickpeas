@@ -10,8 +10,9 @@
 //	sections:       at the directory offsets (relative to file start)
 //
 // Section IDs: 1 atoms, 2 meta, 3 nodes, 4 relationships, 5 node columns,
-// 6 relationship columns. Unknown section IDs are ignored on read so the
-// format can grow; files with a version above 1 are rejected.
+// 6 relationship columns, 7 optional atom block index. Unknown section IDs
+// are ignored on read so the format can grow; files with a version above 1
+// are rejected.
 package rcpg
 
 import (
@@ -26,13 +27,19 @@ var Magic = [4]byte{'R', 'C', 'P', 'G'}
 const Version uint16 = 1
 
 const (
-	sectionAtoms    uint32 = 1
-	sectionMeta     uint32 = 2
-	sectionNodes    uint32 = 3
-	sectionRels     uint32 = 4
-	sectionNodeCols uint32 = 5
-	sectionRelCols  uint32 = 6
+	sectionAtoms     uint32 = 1
+	sectionMeta      uint32 = 2
+	sectionNodes     uint32 = 3
+	sectionRels      uint32 = 4
+	sectionNodeCols  uint32 = 5
+	sectionRelCols   uint32 = 6
+	sectionAtomIndex uint32 = 7
 )
+
+// atomIndexBlockLen is the writer default for the section-7 atom index's
+// atoms-per-block: ~4 KB of u64 offsets per million atoms, small enough to
+// hold resident on a lazy reader.
+const atomIndexBlockLen = 1024
 
 const (
 	headerLen   = 16
@@ -46,6 +53,10 @@ const (
 type WriteOptions struct {
 	NodeColumns bool
 	RelColumns  bool
+	// AtomIndex emits the optional section-7 atom block index. Default
+	// off, so existing byte-identity guarantees (and the vendored
+	// conformance corpus) are unchanged unless a writer opts in.
+	AtomIndex bool
 }
 
 // DefaultWriteOptions emits every section.
@@ -119,6 +130,7 @@ func WriteWith(g *GraphSection, w io.Writer, opts WriteOptions) error {
 		{sectionRels, func() ([]byte, error) { return encodeRels(g) }, true},
 		{sectionNodeCols, func() ([]byte, error) { return encodeColumns(g.NodeColumns) }, opts.NodeColumns},
 		{sectionRelCols, func() ([]byte, error) { return encodeColumns(g.RelColumns) }, opts.RelColumns},
+		{sectionAtomIndex, func() ([]byte, error) { return encodeAtomIndex(g.Atoms, atomIndexBlockLen) }, opts.AtomIndex},
 	} {
 		if !enc.enabled {
 			continue
@@ -185,6 +197,15 @@ func ParseWith(b []byte, opts ParseOptions) (*GraphSection, error) {
 			return nil, err
 		}
 	}
+	// A PRESENT atom index must be correct -- a malformed one is corrupt,
+	// never a silent fall-back to the scan path. Deep validation needs the
+	// materialized atoms; a SkipAtoms parse keeps the structurally-decoded
+	// index and leaves the per-block check to the consumer (AtomReader).
+	if g.AtomIndex != nil && !opts.SkipAtoms {
+		if err := validateAtomIndex(g.AtomIndex, g.Atoms); err != nil {
+			return nil, err
+		}
+	}
 	return g, nil
 }
 
@@ -207,6 +228,8 @@ func decodeSection(id uint32, body []byte, opts ParseOptions, g *GraphSection) e
 		g.NodeColumns, err = decodeColumns(body)
 	case id == sectionRelCols && opts.RelColumns:
 		g.RelColumns, err = decodeColumns(body)
+	case id == sectionAtomIndex:
+		g.AtomIndex, err = decodeAtomIndex(body)
 	default:
 		// Present-but-skipped columns, or forward compatibility: ignore
 		// unknown sections.
@@ -221,7 +244,7 @@ func sectionWanted(id uint32, opts ParseOptions) bool {
 	switch id {
 	case sectionAtoms:
 		return !opts.SkipAtoms
-	case sectionMeta, sectionNodes, sectionRels:
+	case sectionMeta, sectionNodes, sectionRels, sectionAtomIndex:
 		return true
 	case sectionNodeCols:
 		return opts.NodeColumns

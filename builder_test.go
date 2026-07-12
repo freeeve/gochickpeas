@@ -143,7 +143,7 @@ func TestFinalizeMatchesGoldenBytes(t *testing.T) {
 		dfVals := []float64{
 			0.0, math.Copysign(0, -1), math.Inf(1), math.Inf(-1), rustNaN,
 			nanPayload, 1.5, -2.5, math.Float64frombits(0x0010_0000_0000_0000),
-			math.MaxFloat64, math.Float64frombits(0x3CB0_0000_0000_0000), 3.14, -1e-300,
+			math.MaxFloat64, math.Float64frombits(0x3CB0_0000_0000_0000), 3.25, -1e-300,
 		}
 		dbTrue := []chickpeas.NodeID{0, 2, 3, 5, 7, 11, 12}
 		dsVals := []uint32{11, 0, 11, 0, 0, 11, 0, 11, 11, 0, 11, 0, 11}

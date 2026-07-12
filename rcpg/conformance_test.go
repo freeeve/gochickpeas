@@ -212,6 +212,8 @@ func TestCorpusRewriteIsByteIdentical(t *testing.T) {
 					opts.NodeColumns = true
 				case 6:
 					opts.RelColumns = true
+				case 7:
+					opts.AtomIndex = true
 				case 1, 2, 3, 4:
 				default:
 					unknown = true

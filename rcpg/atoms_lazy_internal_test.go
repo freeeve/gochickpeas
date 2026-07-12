@@ -196,3 +196,92 @@ func TestAtomReaderNoAtomsSection(t *testing.T) {
 		t.Fatalf("missing atoms section: got %v, want ErrCorrupt", err)
 	}
 }
+
+// indexedAtomsFixture writes a graph carrying the section-7 atom index.
+func indexedAtomsFixture(t *testing.T, atoms []string) ([]byte, *Directory) {
+	t.Helper()
+	var buf bytes.Buffer
+	opts := DefaultWriteOptions()
+	opts.AtomIndex = true
+	if err := WriteWith(&GraphSection{Atoms: atoms}, &buf, opts); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := ParseDirectory(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes(), dir
+}
+
+// TestAtomReaderAdoptsIndex pins the section-7 consumption: a reader over an
+// indexed file resolves every atom identically to the scan path, never runs
+// the forward prefix scan (no fetch beyond the count header, the index body,
+// and the probed blocks), and adopts the FILE's block length.
+func TestAtomReaderAdoptsIndex(t *testing.T) {
+	atoms := variedAtoms(3000) // ~3 blocks at the writer's 1024
+	raw, dir := indexedAtomsFixture(t, atoms)
+	cf := &countingFetch{m: MemoryFetch(raw)}
+	r, err := NewAtomReader(cf, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.scanned != uint32(len(atoms)) || len(r.starts) != 3 || r.blockLen != atomIndexBlockLen {
+		t.Fatalf("index not adopted: scanned=%d starts=%d blockLen=%d", r.scanned, len(r.starts), r.blockLen)
+	}
+	// A late atom must cost exactly one further fetch (its block), with no
+	// scan fetches in between.
+	before := cf.calls
+	got, err := r.Atom(uint32(len(atoms) - 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != atoms[len(atoms)-1] {
+		t.Fatalf("late atom: got %q, want %q", got, atoms[len(atoms)-1])
+	}
+	if cf.calls != before+1 {
+		t.Fatalf("late atom cost %d fetches, want 1", cf.calls-before)
+	}
+	// Full parity across all atoms.
+	for i, want := range atoms {
+		s, err := r.Atom(uint32(i))
+		if err != nil {
+			t.Fatalf("atom %d: %v", i, err)
+		}
+		if s != want {
+			t.Fatalf("atom %d: got %q, want %q", i, s, want)
+		}
+	}
+}
+
+// TestAtomReaderRejectsBadIndex pins the no-silent-fallback contract: a
+// present index that fails validation is corrupt at reader construction.
+func TestAtomReaderRejectsBadIndex(t *testing.T) {
+	atoms := variedAtoms(2500)
+	raw, dir := indexedAtomsFixture(t, atoms)
+	var idx DirEntry
+	for _, e := range dir.Entries() {
+		if e.ID == sectionAtomIndex {
+			idx = e
+		}
+	}
+	corrupt := func(mutate func(b []byte)) error {
+		bad := append([]byte(nil), raw...)
+		mutate(bad[idx.Offset : idx.Offset+idx.Length])
+		badDir, err := ParseDirectory(bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = NewAtomReader(MemoryFetch(bad), badDir)
+		return err
+	}
+	for name, mutate := range map[string]func(b []byte){
+		"zero block_len":  func(b []byte) { binary.LittleEndian.PutUint32(b[0:], 0) },
+		"wrong count":     func(b []byte) { binary.LittleEndian.PutUint32(b[8:], 1) },
+		"entry0 not 4":    func(b []byte) { binary.LittleEndian.PutUint64(b[12:], 5) },
+		"offset past end": func(b []byte) { binary.LittleEndian.PutUint64(b[12+16:], 1<<40) },
+	} {
+		if err := corrupt(mutate); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("%s: got %v, want ErrCorrupt", name, err)
+		}
+	}
+}

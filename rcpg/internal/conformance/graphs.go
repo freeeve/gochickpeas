@@ -58,7 +58,7 @@ func allColumnsGraph() *rcpg.GraphSection {
 		{Key: 4, Data: rcpg.DenseF64{
 			0.0, math.Copysign(0, -1), math.Inf(1), math.Inf(-1), rustNaN,
 			nanPayload, 1.5, -2.5, minPositive(), math.MaxFloat64,
-			eps(), 3.14, -1e-300,
+			eps(), 3.25, -1e-300,
 		}},
 		{Key: 5, Data: db},
 		// atom 0 entries = missing values in a dense str column.

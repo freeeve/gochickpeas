@@ -68,11 +68,14 @@ func newAtomReader(f SectionFetch, dir *Directory, blockLen uint32, scanChunk ui
 	// Last matching entry wins, mirroring the eager path (each decode
 	// overwrites, so a duplicate section's final occurrence is the one a
 	// full parse materializes).
-	var entry DirEntry
-	found := false
+	var entry, idxEntry DirEntry
+	found, idxFound := false, false
 	for _, e := range dir.Entries() {
-		if e.ID == sectionAtoms {
+		switch e.ID {
+		case sectionAtoms:
 			entry, found = e, true
+		case sectionAtomIndex:
+			idxEntry, idxFound = e, true
 		}
 	}
 	if !found {
@@ -93,7 +96,7 @@ func newAtomReader(f SectionFetch, dir *Directory, blockLen uint32, scanChunk ui
 	// Floors keep the machinery sound at any tuning: a chunk must hold at
 	// least a length prefix (the stall detector relies on it) and the FIFO
 	// needs one slot to bound residency.
-	return &AtomReader{
+	r := &AtomReader{
 		f:         f,
 		off:       entry.Offset,
 		size:      entry.Length,
@@ -104,7 +107,52 @@ func newAtomReader(f SectionFetch, dir *Directory, blockLen uint32, scanChunk ui
 		starts:    []uint64{4},
 		frontier:  4,
 		cache:     map[uint32][]string{},
-	}, nil
+	}
+	if idxFound {
+		if err := r.adoptIndex(idxEntry, count); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// adoptIndex consumes a present section-7 atom block index: the router is
+// the file's own offsets (at the file's block length), so no forward
+// prefix scan ever runs -- the exact O(1) routing the index exists for. A
+// present index must be structurally sound; any violation is corrupt, never
+// a silent fall-back to the scan path (the fall-back would quietly
+// re-transfer the whole atoms section). Per-block content is still
+// validated when a block decodes, exactly like the scan path.
+func (r *AtomReader) adoptIndex(entry DirEntry, count uint32) error {
+	body, err := r.f.Fetch(entry.Offset, entry.Length)
+	if err != nil {
+		return err
+	}
+	idx, err := decodeAtomIndex(body)
+	if err != nil {
+		return err
+	}
+	if idx.BlockLen == 0 {
+		return corruptf("atom index: block_len is zero")
+	}
+	expected := (int(count) + int(idx.BlockLen) - 1) / int(idx.BlockLen)
+	if len(idx.Offsets) != expected {
+		return corruptf("atom index: offset count does not match the atom count")
+	}
+	if expected > 0 {
+		if idx.Offsets[0] != 4 {
+			return corruptf("atom index: entry 0 is not 4")
+		}
+		if idx.Offsets[len(idx.Offsets)-1] >= r.size {
+			return corruptf("atom index: offset past the atoms section (%d >= %d)",
+				idx.Offsets[len(idx.Offsets)-1], r.size)
+		}
+	}
+	r.blockLen = idx.BlockLen
+	r.starts = idx.Offsets
+	r.scanned = count
+	r.frontier = r.size
+	return nil
 }
 
 // Count is the number of atoms in the table.
