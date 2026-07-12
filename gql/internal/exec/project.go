@@ -9,6 +9,7 @@ package exec
 
 import (
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -430,6 +431,51 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 		}
 		return a - b
 	}
+	// When every key column is typed, the key vector packs into
+	// order-preserving uint64 words -- numeric through the IEEE-754
+	// totalOrder monotone encoding (the same relation TotalOrderF64
+	// computes per comparison, applied once per key instead), entity ids
+	// directly, descending baked in by complement -- so the comparator is
+	// pure word compares. Result order is identical to the typed
+	// comparator above by monotonicity of the encodings.
+	allTyped := len(outs) > 0
+	for k := range nk {
+		if colClass[k] == colGeneric {
+			allTyped = false
+			break
+		}
+	}
+	if allTyped {
+		words := make([]uint64, len(outs)*nk)
+		for k := range nk {
+			desc := proj.OrderBy[k].Desc
+			for i := range outs {
+				var w uint64
+				if colClass[k] == colNumeric {
+					w = packSortWordF64(fkeys[i*nk+k])
+				} else {
+					w = ukeys[i*nk+k]
+				}
+				if desc {
+					w = ^w
+				}
+				words[i*nk+k] = w
+			}
+		}
+		cmp = func(a, b int) int {
+			ka, kb := a*nk, b*nk
+			for k := 0; k < nk; k++ {
+				x, y := words[ka+k], words[kb+k]
+				if x != y {
+					if x < y {
+						return -1
+					}
+					return 1
+				}
+			}
+			return a - b
+		}
+	}
 	// Under ORDER BY + LIMIT, pagination consumes only the leading
 	// skip+limit rows: select those with a bounded heap (one comparison
 	// per rejected row) instead of sorting everything.
@@ -442,6 +488,18 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 		sorted[i] = outs[j]
 	}
 	return sorted
+}
+
+// packSortWordF64 is the IEEE-754 totalOrder monotone uint64 encoding:
+// unsigned comparison of the encoded words equals value.TotalOrderF64 on
+// the raw floats (negatives complement fully; non-negatives set the sign
+// bit), so a packed key column sorts through plain word compares.
+func packSortWordF64(f float64) uint64 {
+	w := math.Float64bits(f)
+	if w&(1<<63) != 0 {
+		return ^w
+	}
+	return w | 1<<63
 }
 
 // orderBound is the row count pagination can consume after an ordered
