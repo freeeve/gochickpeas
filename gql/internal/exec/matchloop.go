@@ -39,6 +39,8 @@ type genScratch struct {
 	// the freshly filled candidate buffer (the fill-time sweep), so the
 	// pop loop skips them and counts bindings from the sweep's credit.
 	swept []bool
+	// keep is the sweep's columnar mask, reused across levels.
+	keep []bool
 	// chainRoots / chainFunc cache each var-expand op's chain-collapse
 	// and functionality resolutions for this execution (presence =
 	// checked). Plan ops are shared across cached executions, so the
@@ -247,12 +249,29 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 // counting -- so tracked ops keep the pop-time path (reported false).
 func sweepLevel(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, cur int, row []value.Value, scratch *genScratch, opRows []uint64) bool {
 	preds := sc.levelPreds[cur]
-	if len(preds) == 0 || op.Uniq != nil {
+	batch := sc.levelBatch[cur]
+	if (len(preds) == 0 && len(batch) == 0) || op.Uniq != nil {
 		return false
 	}
 	cand := scratch.cand[cur]
 	if opRows != nil {
 		opRows[cur] += uint64(len(cand))
+	}
+	// Columnar conjuncts first: each sweeps the whole buffer as one
+	// typed pass over a keep mask, then a single compaction applies the
+	// remaining per-candidate predicates to the survivors.
+	var keep []bool
+	if len(batch) > 0 {
+		if cap(scratch.keep) < len(cand) {
+			scratch.keep = make([]bool, len(cand))
+		}
+		keep = scratch.keep[:len(cand)]
+		for i := range keep {
+			keep[i] = true
+		}
+		for _, b := range batch {
+			b(ctx, row, cand, keep)
+		}
 	}
 	rel := scratch.candRel[cur]
 	rng := scratch.candRange[cur]
@@ -260,6 +279,9 @@ func sweepLevel(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, cur int, row []va
 	rngPar := len(rng) == len(cand)
 	kept := 0
 	for i, id := range cand {
+		if keep != nil && !keep[i] {
+			continue
+		}
 		ok := true
 		for _, p := range preds {
 			if !p(ctx, row, id) {

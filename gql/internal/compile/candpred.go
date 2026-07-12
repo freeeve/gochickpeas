@@ -159,6 +159,59 @@ func CandidatePred(c *Compiled, slot int, slots map[string]int) (CandPred, bool)
 	}, true
 }
 
+// CandBatch sweeps a whole candidate buffer for one conjunct: it clears
+// keep[i] for every candidate that fails, touching only still-kept
+// entries. The batch form exists for shapes whose per-candidate work is
+// pure array arithmetic -- no closure call, no dispatch per element.
+type CandBatch func(ctx *eval.Ctx, row []value.Value, cand []graph.NodeID, keep []bool)
+
+// CandidateBatch specializes c to a buffer sweep when its shape allows
+// the columnar form: today the fused prop-vs-const comparison over an
+// i64 column with a contiguous-presence window (SliceRange), where the
+// filter reduces to vals[id-start] compared against a pre-encoded
+// constant -- the dominant pushed-down filter shape over LDBC-style
+// label-block columns. Semantics mirror the scalar predicate exactly
+// (value.Compare's float64 partial order; out-of-window = absent =
+// prune). ok=false keeps the scalar path.
+func CandidateBatch(c *Compiled, slot int) (CandBatch, bool) {
+	n, ok := c.c.(*cCmpPropConst)
+	if !ok || n.prop.slot != slot {
+		return nil, false
+	}
+	col := n.prop.reader.node
+	if col.kind != colI64 || n.c.Kind() != value.KindInt {
+		return nil, false
+	}
+	start, vals, windowed := col.i64.SliceRange()
+	if !windowed {
+		return nil, false
+	}
+	ci, _ := n.c.AsInt()
+	cf := float64(ci)
+	keepOrd := opKeep(n.op)
+	rev := n.rev
+	return func(_ *eval.Ctx, _ []value.Value, cand []graph.NodeID, keep []bool) {
+		for i, id := range cand {
+			if !keep[i] {
+				continue
+			}
+			w := uint32(id) - start
+			if w >= uint32(len(vals)) {
+				keep[i] = false
+				continue
+			}
+			a, b := float64(vals[w]), cf
+			if rev {
+				a, b = cf, float64(vals[w])
+			}
+			o, comparable := cmpFloat(a, b)
+			if !comparable || !keepOrd(o) {
+				keep[i] = false
+			}
+		}
+	}, true
+}
+
 // opKeep is the six comparison operators' order acceptance.
 func opKeep(op ast.BinOp) func(int) bool {
 	switch op {

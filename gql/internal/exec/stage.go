@@ -20,6 +20,7 @@ type stageComp struct {
 	relMatchers  []*graph.RelMatcher
 	levelFilters [][]RowEval
 	levelPreds   [][]compile.CandPred
+	levelBatch   [][]compile.CandBatch
 	hopGates     []hopGate
 	semijoins    []semiCache
 	// seedRel/seedNode are per-op per-chain per-hop matchers for
@@ -33,12 +34,13 @@ type stageComp struct {
 // contains + column reads. constIn reports segment-wide hoisting-constant
 // slots; sample is a seeded input row carrying their values.
 func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) *stageComp {
-	filters, preds := buildLevelFilters(ctx, stage, slots, constIn, sample)
+	filters, preds, batch := buildLevelFilters(ctx, stage, slots, constIn, sample)
 	sc := &stageComp{
 		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
 		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
 		levelFilters: filters,
 		levelPreds:   preds,
+		levelBatch:   batch,
 		hopGates:     buildHopGates(ctx, stage.Ops),
 		semijoins:    buildSemijoins(stage.Ops),
 	}
@@ -74,21 +76,23 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 // bound; graph-touching conjuncts keep last-level timing. A conjunct then
 // prunes a candidate the moment it can fail instead of after the whole
 // pattern binds. A conjunct whose only row dependency is its level's own
-// node slot and whose shape specializes (compile.CandidatePred) lands in
-// the preds buckets instead -- evaluated per candidate id with no row
-// binding, tree dispatch, or boxing.
-func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) ([][]RowEval, [][]compile.CandPred) {
+// node slot and whose shape specializes lands in the batch buckets
+// (compile.CandidateBatch: one columnar pass over the whole candidate
+// buffer) or the preds buckets (compile.CandidatePred: per-candidate
+// closure) instead of the general row evaluation.
+func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) ([][]RowEval, [][]compile.CandPred, [][]compile.CandBatch) {
 	n := max(len(stage.Ops), 1)
 	buckets := make([][]RowEval, n)
 	preds := make([][]compile.CandPred, n)
+	batch := make([][]compile.CandBatch, n)
 	if stage.Where == nil {
-		return buckets, preds
+		return buckets, preds, batch
 	}
 	// A named-path bind assembles p only AFTER the walk, so its WHERE runs
 	// as a post-path filter instead (a level filter over the still-null
 	// path slot would silently drop every row).
 	if stage.PathBind != nil {
-		return buckets, preds
+		return buckets, preds, batch
 	}
 	slotLevel := make(map[int]int, len(stage.Ops))
 	for i := range stage.Ops {
@@ -126,6 +130,14 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 		}
 		lvl := min(level, n-1)
 		if bare, isCompiled := cc.(*compile.Compiled); isCompiled && lvl < len(stage.Ops) {
+			// A uniqueness-tracked level never fill-sweeps, so its
+			// conjuncts stay per-candidate (CandidatePred below).
+			if stage.Ops[lvl].Uniq == nil {
+				if b, ok := compile.CandidateBatch(bare, slotOf(&stage.Ops[lvl])); ok {
+					batch[lvl] = append(batch[lvl], b)
+					continue
+				}
+			}
 			if p, ok := compile.CandidatePred(bare, slotOf(&stage.Ops[lvl]), slots); ok {
 				preds[lvl] = append(preds[lvl], p)
 				continue
@@ -133,7 +145,7 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 		}
 		buckets[lvl] = append(buckets[lvl], cc)
 	}
-	return buckets, preds
+	return buckets, preds, batch
 }
 
 // slotAgrees reports whether slot holds an identical value on every row of
