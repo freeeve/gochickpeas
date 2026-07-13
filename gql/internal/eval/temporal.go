@@ -4,10 +4,53 @@
 // compare. Pure integer math (port of the Rust temporal.rs).
 package eval
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // MSPerDay is the milliseconds in a civil day.
 const MSPerDay int64 = 86_400_000
+
+// maxCivilYear bounds a civil year to the epoch-millis representable range
+// (i64 milliseconds span roughly +/-292 million years). Beyond it the era
+// term in DaysFromCivil (era*146_097) or the later millisecond scaling
+// overflows silently, so temporal construction is bounded here first and
+// yields Null rather than a wrapped nonsense instant.
+const maxCivilYear int64 = 300_000_000
+
+// addChk / mulChk are checked int64 add / multiply (comma-ok), the temporal
+// path's guard against silent wrap -- overflow becomes Null, matching the
+// engine's integer-overflow policy.
+func addChk(a, b int64) (int64, bool) {
+	c := a + b
+	return c, (c > a) == (b > 0) || b == 0
+}
+
+func mulChk(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	if (a == math.MinInt64 && b == -1) || (b == math.MinInt64 && a == -1) {
+		return 0, false
+	}
+	c := a * b
+	return c, c/b == a
+}
+
+// civilMillis converts a civil (year, month, day) plus a sub-day millisecond
+// offset to epoch millis, ok=false when the year is out of range or the
+// scaling overflows -- so a constructed temporal never wraps.
+func civilMillis(y int64, m, d uint32, msOfDay int64) (int64, bool) {
+	if y < -maxCivilYear || y > maxCivilYear {
+		return 0, false
+	}
+	ms, ok := mulChk(DaysFromCivil(y, m, d), MSPerDay)
+	if !ok {
+		return 0, false
+	}
+	return addChk(ms, msOfDay)
+}
 
 // DaysFromCivil is days since 1970-01-01 for a civil (year, month, day) --
 // Howard Hinnant's algorithm.
@@ -91,7 +134,7 @@ func ParseISO(s string) (int64, bool) {
 	if !ok1 || !ok2 || !ok3 || mo < 1 || mo > 12 || d < 1 || d > 31 {
 		return 0, false
 	}
-	millis := DaysFromCivil(y, uint32(mo), uint32(d)) * MSPerDay
+	var msOfDay int64
 	if timePart != "" {
 		t := strings.TrimSuffix(timePart, "Z")
 		if i := strings.IndexByte(t, '+'); i >= 0 {
@@ -126,9 +169,11 @@ func ParseISO(s string) (int64, bool) {
 				ms, _ = parseI64(f)
 			}
 		}
-		millis += h*3_600_000 + mi*60_000 + sec*1000 + ms
+		msOfDay = h*3_600_000 + mi*60_000 + sec*1000 + ms
 	}
-	return millis, true
+	// An absurd year overflows the era term / millisecond scaling; bound it
+	// so a constructed instant never silently wraps.
+	return civilMillis(y, uint32(mo), uint32(d), msOfDay)
 }
 
 // ParseISODuration parses an ISO-8601 duration string (PnYnMnWnD[TnHnMnS],
@@ -142,6 +187,10 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 	}
 	inTime := false
 	num := int64(-1)
+	// A field that overflows its unit conversion or the running total is a
+	// wrapped nonsense duration; decline it (Null) rather than build one.
+	add := func(acc, delta int64) (int64, bool) { return addChk(acc, delta) }
+	scale := func(n, k int64) (int64, bool) { return mulChk(n, k) }
 	for i := 1; i < len(s); i++ {
 		c := s[i]
 		switch {
@@ -149,7 +198,13 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 			if num < 0 {
 				num = 0
 			}
-			num = num*10 + int64(c-'0')
+			t, ok := scale(num, 10)
+			if !ok {
+				return 0, 0, 0, false
+			}
+			if num, ok = add(t, int64(c-'0')); !ok {
+				return 0, 0, 0, false
+			}
 		case c == 'T' || c == 't':
 			if num >= 0 || inTime {
 				return 0, 0, 0, false
@@ -159,24 +214,43 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 			if num < 0 {
 				return 0, 0, 0, false
 			}
+			var okc bool
 			switch {
 			case !inTime && (c == 'Y' || c == 'y'):
-				months += num * 12
+				var t int64
+				if t, okc = scale(num, 12); okc {
+					months, okc = add(months, t)
+				}
 			case c == 'M' || c == 'm':
 				if inTime {
-					ms += num * 60_000
+					var t int64
+					if t, okc = scale(num, 60_000); okc {
+						ms, okc = add(ms, t)
+					}
 				} else {
-					months += num
+					months, okc = add(months, num)
 				}
 			case !inTime && (c == 'W' || c == 'w'):
-				days += num * 7
+				var t int64
+				if t, okc = scale(num, 7); okc {
+					days, okc = add(days, t)
+				}
 			case !inTime && (c == 'D' || c == 'd'):
-				days += num
+				days, okc = add(days, num)
 			case inTime && (c == 'H' || c == 'h'):
-				ms += num * 3_600_000
+				var t int64
+				if t, okc = scale(num, 3_600_000); okc {
+					ms, okc = add(ms, t)
+				}
 			case inTime && (c == 'S' || c == 's'):
-				ms += num * 1000
+				var t int64
+				if t, okc = scale(num, 1000); okc {
+					ms, okc = add(ms, t)
+				}
 			default:
+				return 0, 0, 0, false
+			}
+			if !okc {
 				return 0, 0, 0, false
 			}
 			num = -1
@@ -222,26 +296,71 @@ func Component(millis int64, key string) (int64, bool) {
 // ApplyDuration applies a duration (months, days, millis) to an
 // epoch-millis temporal, sign = +1 (add) or -1 (subtract). Months are a
 // calendar add (day clamped to the target month length, e.g. Jan 31 + 1
-// month = Feb 28); days and millis are absolute.
-func ApplyDuration(tMillis, months, days, dMillis, sign int64) int64 {
+// month = Feb 28); days and millis are absolute. Every step is checked:
+// ok=false on overflow, so the caller yields Null rather than a wrapped
+// nonsense instant. Note the boundary -- shifting a recent instant by
+// i64-scale milliseconds to a very negative-but-representable value is exact
+// and stays ok; only a genuine overflow declines.
+func ApplyDuration(tMillis, months, days, dMillis, sign int64) (int64, bool) {
 	// A months-free duration is pure tick arithmetic: with months == 0 the
 	// civil round-trip below is the identity (no month carry, no day
 	// clamp), so the result reduces to a single shifted addition.
 	if months == 0 {
-		return tMillis + sign*(days*MSPerDay+dMillis)
+		tick, ok := mulChk(days, MSPerDay)
+		if !ok {
+			return 0, false
+		}
+		if tick, ok = addChk(tick, dMillis); !ok {
+			return 0, false
+		}
+		if tick, ok = mulChk(sign, tick); !ok {
+			return 0, false
+		}
+		return addChk(tMillis, tick)
 	}
 	baseDays := floorDiv(tMillis, MSPerDay)
 	msOfDay := tMillis - baseDays*MSPerDay
 	y0, m0, d0 := CivilFromDays(baseDays)
-	total := int64(m0) - 1 + sign*months
+	sm, ok := mulChk(sign, months)
+	if !ok {
+		return 0, false
+	}
+	total, ok := addChk(int64(m0)-1, sm)
+	if !ok {
+		return 0, false
+	}
+	// y0 is bounded (a representable instant) and floorDiv(total, 12) fits,
+	// so this sum cannot overflow; the range guard below rejects an absurd
+	// year before DaysFromCivil's era term can overflow.
 	y := y0 + floorDiv(total, 12)
+	if y < -maxCivilYear || y > maxCivilYear {
+		return 0, false
+	}
 	m := uint32(floorMod(total, 12) + 1)
 	d := d0
 	if dim := DaysInMonth(y, m); d > dim {
 		d = dim
 	}
-	newDays := DaysFromCivil(y, m, d) + sign*days
-	return newDays*MSPerDay + msOfDay + sign*dMillis
+	sd, ok := mulChk(sign, days)
+	if !ok {
+		return 0, false
+	}
+	newDays, ok := addChk(DaysFromCivil(y, m, d), sd)
+	if !ok {
+		return 0, false
+	}
+	r, ok := mulChk(newDays, MSPerDay)
+	if !ok {
+		return 0, false
+	}
+	if r, ok = addChk(r, msOfDay); !ok {
+		return 0, false
+	}
+	sdm, ok := mulChk(sign, dMillis)
+	if !ok {
+		return 0, false
+	}
+	return addChk(r, sdm)
 }
 
 // floorDiv is Euclidean-style division rounding toward negative infinity

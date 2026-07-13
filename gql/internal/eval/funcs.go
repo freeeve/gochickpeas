@@ -490,8 +490,16 @@ func buildDatetime(v value.Value, kind value.TemporalKind) value.Value {
 				}
 				return dflt
 			}
-			ms := DaysFromCivil(y, uint32(c("month", 1)), uint32(c("day", 1)))*MSPerDay +
-				c("hour", 0)*3_600_000 + c("minute", 0)*60_000 + c("second", 0)*1000 + c("millisecond", 0)
+			msOfDay, ok := sumScaled(
+				[2]int64{c("hour", 0), 3_600_000}, [2]int64{c("minute", 0), 60_000},
+				[2]int64{c("second", 0), 1000}, [2]int64{c("millisecond", 0), 1})
+			if !ok {
+				return value.Null()
+			}
+			ms, ok := civilMillis(y, uint32(c("month", 1)), uint32(c("day", 1)), msOfDay)
+			if !ok {
+				return value.Null()
+			}
 			return value.Temporal(ms, kind)
 		}
 	}
@@ -507,11 +515,41 @@ func buildDuration(m []value.MapEntry) value.Value {
 		}
 		return 0
 	}
-	return value.Duration(
-		get("years")*12+get("months"),
-		get("weeks")*7+get("days"),
-		get("hours")*3_600_000+get("minutes")*60_000+get("seconds")*1000+get("milliseconds"),
-	)
+	// Unit conversions overflow at build time, before any temporal is
+	// touched; a wrapped duration would silently corrupt every later add.
+	months, ok1 := addMul(get("years"), 12, get("months"))
+	days, ok2 := addMul(get("weeks"), 7, get("days"))
+	ms, ok3 := sumScaled(
+		[2]int64{get("hours"), 3_600_000}, [2]int64{get("minutes"), 60_000},
+		[2]int64{get("seconds"), 1000}, [2]int64{get("milliseconds"), 1})
+	if !ok1 || !ok2 || !ok3 {
+		return value.Null()
+	}
+	return value.Duration(months, days, ms)
+}
+
+// addMul is checked a*k + b, comma-ok.
+func addMul(a, k, b int64) (int64, bool) {
+	p, ok := mulChk(a, k)
+	if !ok {
+		return 0, false
+	}
+	return addChk(p, b)
+}
+
+// sumScaled is the checked sum of value*scale terms, comma-ok.
+func sumScaled(terms ...[2]int64) (int64, bool) {
+	var sum int64
+	for _, t := range terms {
+		p, ok := mulChk(t[0], t[1])
+		if !ok {
+			return 0, false
+		}
+		if sum, ok = addChk(sum, p); !ok {
+			return 0, false
+		}
+	}
+	return sum, true
 }
 
 // StrPred is a string predicate (STARTS WITH / ENDS WITH / CONTAINS):
@@ -663,10 +701,18 @@ func applyDur(t, d value.Value, op ast.BinOp) value.Value {
 	}
 	if t.Kind() == value.KindInt {
 		ms, _ := t.AsInt()
-		return value.Int(ApplyDuration(ms, months, days, dms, sign))
+		r, ok := ApplyDuration(ms, months, days, dms, sign)
+		if !ok {
+			return value.Null()
+		}
+		return value.Int(r)
 	}
 	ms, kind, _ := t.AsTemporal()
-	return value.Temporal(ApplyDuration(ms, months, days, dms, sign), kind)
+	r, ok := ApplyDuration(ms, months, days, dms, sign)
+	if !ok {
+		return value.Null()
+	}
+	return value.Temporal(r, kind)
 }
 
 // combineInt is checked int64 addition/subtraction, comma-ok.

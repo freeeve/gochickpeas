@@ -10,11 +10,32 @@
 package compile
 
 import (
+	"math"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// addChecked / mulChecked are checked int64 add / multiply (comma-ok),
+// mirroring eval's temporal guard so the specialization's constant fold
+// declines exactly when the interpreter would overflow to Null.
+func addChecked(a, b int64) (int64, bool) {
+	c := a + b
+	return c, (c > a) == (b > 0) || b == 0
+}
+
+func mulChecked(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	if (a == math.MinInt64 && b == -1) || (b == math.MinInt64 && a == -1) {
+		return 0, false
+	}
+	c := a * b
+	return c, c/b == a
+}
 
 // rowFast is a monomorphic whole-expression evaluator, result-identical
 // to ceval on the same tree.
@@ -69,7 +90,13 @@ func (t *i64Term) read(row []value.Value) (int64, uint8) {
 	}
 	switch t.mode {
 	case termDur:
-		return v + t.off, readOK
+		// Months-free tick add, checked like eval's fixed ApplyDuration:
+		// overflow is Null (the interpreter produces the same Null).
+		c := v + t.off
+		if (c > v) == (t.off > 0) || t.off == 0 {
+			return c, readOK
+		}
+		return 0, readNull
 	case termInt:
 		// Mirror eval's checked int arithmetic exactly: overflow is Null.
 		if t.sub {
@@ -165,8 +192,21 @@ func i64TermOf(c cnode) (i64Term, bool) {
 			if months != 0 {
 				return i64Term{}, false
 			}
-			off := days*eval.MSPerDay + ms
+			// Fold the months-free duration to a tick offset, checked: if the
+			// constant itself overflows, decline the specialization so the
+			// row falls to the tree, whose fixed ApplyDuration yields Null.
+			tick, ok := mulChecked(days, eval.MSPerDay)
+			if !ok {
+				return i64Term{}, false
+			}
+			off, ok := addChecked(tick, ms)
+			if !ok {
+				return i64Term{}, false
+			}
 			if n.op == ast.OpSub {
+				if off == math.MinInt64 {
+					return i64Term{}, false
+				}
 				off = -off
 			}
 			t.mode, t.off = termDur, off
