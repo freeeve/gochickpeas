@@ -25,8 +25,14 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// disableColAgg pins differential tests to the general path.
-var disableColAgg = false
+// disableColAgg pins differential tests to the general path;
+// colAggFired counts successful fusions so tests can assert the fused
+// arm actually took the fused path (a silent double-general run would
+// pass any differential vacuously).
+var (
+	disableColAgg = false
+	colAggFired   int
+)
 
 // colAggMaxKeys is the fused group key width (a fixed-size comparable map
 // key); wider groupings keep the general path.
@@ -135,23 +141,19 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		}
 		env.addCarried(nm, v)
 	}
-	// Boundaries: the head's own projection, then each pass-through
-	// segment's, resolving every output column.
-	for j := i; j < i+n-1 || (n == 1 && j == i); j++ {
+	// Boundaries: the head's projection and each interior pass-through
+	// re-map the env; the aggregated boundary itself is consumed by the
+	// key/argument classification below, never re-mapped (its returns
+	// are the aggregate outputs). A single-segment chain applies no
+	// boundary at all -- its keys and arguments resolve over the head's
+	// own inputs.
+	for j := i; j < i+n-1; j++ {
 		if !env.applyBoundary(&segments[j].Proj) {
 			return nil, 0, false
-		}
-		if n == 1 {
-			break
 		}
 	}
 	last := segments[i+n-1]
 	proj := &last.Proj
-	if n > 1 {
-		// Interior boundaries were applied above (head..last-1); the
-		// aggregated boundary itself is consumed below, not re-mapped.
-		_ = proj
-	}
 
 	// Group keys and aggregate arguments resolve against the final env.
 	var keys []colEntry
@@ -348,6 +350,7 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 	if last.PostWhere != nil {
 		applyPostWhere(ctx, last, &out)
 	}
+	colAggFired++
 	return out, n, true
 }
 

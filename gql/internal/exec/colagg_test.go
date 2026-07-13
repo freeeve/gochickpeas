@@ -132,9 +132,13 @@ func TestColumnarAggMatchesGeneral(t *testing.T) {
 		 NEXT RETURN l, n ORDER BY l`,
 	}
 	for i, q := range queries {
+		before := colAggFired
 		fused, general := runBoth(t, g, q)
 		if fmt.Sprint(fused) != fmt.Sprint(general) {
 			t.Errorf("query %d diverged:\nfused:   %v\ngeneral: %v", i, fused, general)
+		}
+		if colAggFired == before {
+			t.Errorf("query %d never took the fused path (vacuous differential)", i)
 		}
 	}
 }
