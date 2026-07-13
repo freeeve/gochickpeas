@@ -391,13 +391,12 @@ func TestCallProcYield(t *testing.T) {
 		call.Yields[1] != (ast.YieldItem{Field: "component", Alias: "c"}) {
 		t.Fatalf("yields = %+v", call.Yields)
 	}
-	// Dotted names; a negative numeric arg parses as a unary negation the
-	// planner folds back to a constant.
+	// Dotted names; a negative numeric arg folds to a constant literal at
+	// parse time (rcp b6a17c8), the same shape a positive arg already takes.
 	q2 := mustParse(t, "CALL geo.withinRadius('Place', 48.8, -2.35, 5.0) YIELD node RETURN node")
 	call2 := q2.Parts[0].Clauses[0].(*ast.CallProc)
-	neg, okNeg := call2.Args[2].(*ast.Unary)
-	if call2.Proc != "geo.withinRadius" || !okNeg || neg.Op != ast.Neg ||
-		neg.Expr.(*ast.Lit).Value != ast.FloatLit(2.35) {
+	lit2, okLit := call2.Args[2].(*ast.Lit)
+	if call2.Proc != "geo.withinRadius" || !okLit || lit2.Value != ast.FloatLit(-2.35) {
 		t.Fatalf("call2 = %+v", call2)
 	}
 }

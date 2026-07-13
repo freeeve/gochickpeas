@@ -80,8 +80,20 @@ func TestUnaryMinusAndArithmetic(t *testing.T) {
 	if mul.Op != ast.OpMul {
 		t.Fatalf("lhs = %#v", add.LHS)
 	}
-	if neg, ok := mul.LHS.(*ast.Unary); !ok || neg.Op != ast.Neg {
-		t.Fatalf("mul lhs = %#v", mul.LHS)
+	// A minus over a numeric literal folds into the literal at parse time so
+	// the constant-matching paths (prop seek, autoparam) see it (rcp b6a17c8).
+	if lit, ok := mul.LHS.(*ast.Lit); !ok || lit.Value != ast.IntLit(-1) {
+		t.Fatalf("mul lhs = %#v, want folded Lit(-1)", mul.LHS)
+	}
+	// A minus over a non-literal operand stays a runtime Unary, and still
+	// binds tighter than * -- so precedence is observable there.
+	e2 := retExpr(t, "RETURN -a.x * 2 AS y")
+	mul2 := e2.(*ast.Binary)
+	if mul2.Op != ast.OpMul {
+		t.Fatalf("root2 = %#v", e2)
+	}
+	if neg, ok := mul2.LHS.(*ast.Unary); !ok || neg.Op != ast.Neg {
+		t.Fatalf("mul2 lhs = %#v, want Unary Neg", mul2.LHS)
 	}
 }
 

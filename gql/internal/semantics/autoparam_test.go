@@ -96,6 +96,24 @@ func TestLiftsBoolAndFloatInlineProps(t *testing.T) {
 	wantLifted(t, "MATCH (a {active: true, score: 1.5}) RETURN a", "btrue", "f1.5")
 }
 
+// A minus over a numeric literal folds at parse time, so a negative inline
+// prop, rel prop, and WHERE bound (int or float) lift exactly like their
+// positive twins. Before the fold these parsed as Unary{Neg,Lit} and the
+// literal-matching paths declined every one, lifting nothing (rcp b6a17c8).
+func TestLiftsNegativeConstants(t *testing.T) {
+	wantLifted(t,
+		"MATCH (a:Acct {balance: -50})-[r {delta: -2}]->(b) "+
+			"WHERE a.score < -5 AND b.lat = -2.35 RETURN a",
+		"i-50", "i-2", "i-5", "f-2.35")
+}
+
+// The fold must not newly lift a constant deliberately baked into a
+// projection/CASE (those shape the plan). A negative CASE threshold and its
+// negative results stay put -- the expression walker skips literals.
+func TestNegativeCaseConstantsStayBaked(t *testing.T) {
+	wantLifted(t, "MATCH (a) RETURN CASE WHEN a.x < -5 THEN -1 ELSE -2 END AS c")
+}
+
 func TestLiftsExistsInProjectionPosition(t *testing.T) {
 	// An EXISTS in a projection lifts through the expression walker (not
 	// the WHERE walker).

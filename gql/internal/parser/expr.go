@@ -48,14 +48,7 @@ func (p *parser) parseBP(minBP int) (ast.Expr, error) {
 		if oerr != nil {
 			return nil, oerr
 		}
-		// Fold a unary minus over the MinInt64 magnitude into the literal
-		// so it doesn't re-overflow at eval; every other negation stays a
-		// normal Unary (mirrors the Rust parser).
-		if lit, ok := operand.(*ast.Lit); ok && lit.Value.Kind == ast.LitInt && lit.Value.I == math.MinInt64 {
-			lhs = lit
-		} else {
-			lhs = &ast.Unary{Op: ast.Neg, Expr: operand}
-		}
+		lhs = foldNeg(operand)
 	default:
 		lhs, err = p.parsePrimary()
 		if err != nil {
@@ -81,6 +74,33 @@ func (p *parser) parseBP(minBP int) (ast.Expr, error) {
 		} else {
 			lhs = &ast.Binary{Op: op, LHS: lhs, RHS: rhs}
 		}
+	}
+}
+
+// foldNeg folds a unary minus over a numeric literal into the literal, so
+// the constant-matching paths see a negative value as one Lit rather than a
+// Unary they decline: an inline prop {balance: -50} classifies as a Props
+// seek instead of a desugared post-scan filter, and a WHERE bound a.x < -5
+// auto-parameterizes into the shared plan template. Non-literal operands
+// (-a.x, -(a + 1), -$p) stay a runtime Unary. The MinInt64 magnitude also
+// stays folded to its recovered literal rather than re-negated: -(2^63) is
+// MinInt64 exactly, and negating MinInt64 would overflow, so it is left to
+// the overflow-to-null eval policy (mirrors the Rust parser).
+func foldNeg(operand ast.Expr) ast.Expr {
+	lit, ok := operand.(*ast.Lit)
+	if !ok {
+		return &ast.Unary{Op: ast.Neg, Expr: operand}
+	}
+	switch lit.Value.Kind {
+	case ast.LitInt:
+		if lit.Value.I == math.MinInt64 {
+			return lit
+		}
+		return &ast.Lit{Value: ast.IntLit(-lit.Value.I)}
+	case ast.LitFloat:
+		return &ast.Lit{Value: ast.FloatLit(-lit.Value.F)}
+	default:
+		return &ast.Unary{Op: ast.Neg, Expr: operand}
 	}
 }
 
