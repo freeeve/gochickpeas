@@ -118,9 +118,16 @@ func (s *aggState) finalize() value.Value {
 // behavior. The three maps are created lazily, so a uniform distinct column
 // (the common case) holds exactly one.
 type distinctSet struct {
-	nodes map[uint32]struct{}
-	rels  map[uint32]struct{}
-	other map[string]struct{}
+	// small is the inline node-id form: most DISTINCT groups hold a
+	// handful of entities, and a map per group is the dominant
+	// aggregation allocation on entity-heavy groupings. Linear membership
+	// over the inline array is faster than a map at this size; the first
+	// overflow spills into the map form with identical semantics.
+	nSmall uint8
+	small  [8]uint32
+	nodes  map[uint32]struct{}
+	rels   map[uint32]struct{}
+	other  map[string]struct{}
 }
 
 // add reports whether v is newly seen (and records it), reusing scratch for
@@ -133,7 +140,20 @@ func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 	case value.KindNode:
 		id, _ := v.AsNode()
 		if d.nodes == nil {
-			d.nodes = map[uint32]struct{}{}
+			for _, s := range d.small[:d.nSmall] {
+				if s == uint32(id) {
+					return false
+				}
+			}
+			if int(d.nSmall) < len(d.small) {
+				d.small[d.nSmall] = uint32(id)
+				d.nSmall++
+				return true
+			}
+			d.nodes = make(map[uint32]struct{}, 2*len(d.small))
+			for _, s := range d.small[:d.nSmall] {
+				d.nodes[s] = struct{}{}
+			}
 		}
 		if _, dup := d.nodes[uint32(id)]; dup {
 			return false
