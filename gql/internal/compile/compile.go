@@ -197,6 +197,15 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		return foldLits(ctx, &cIsNull{e: c, negated: n.Negated}, g, c)
 	case *ast.Exists:
 		ms, ok := correlatedSlots(n.Pattern, n.Where, slots)
+		// A single fixed hop with both endpoints outer-bound and no WHERE
+		// answers in near-constant time (a bound-pair relationship count
+		// off the edge-key sets), so memoizing it costs more than it
+		// saves: the memo map for a large outer row set dwarfs every
+		// other execution allocation while each hit barely beats the
+		// probe it caches.
+		if ok && cheapExistsProbe(n.Pattern, n.Where, slots) {
+			ok = false
+		}
 		return &cSubquery{pattern: n.Pattern, where: n.Where, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
 	case *ast.CountSub:
 		ms, ok := correlatedSlots(n.Pattern, n.Where, slots)
@@ -385,6 +394,23 @@ func foldFunc(op eval.FuncOp, args []cnode) cnode {
 		argv[i] = lit.v
 	}
 	return &cLit{v: eval.ApplyFunc(op, argv)}
+}
+
+// cheapExistsProbe reports the subquery shape whose evaluation is a
+// near-constant-time bound-pair probe: one fixed-length hop, both
+// endpoint variables bound in the outer scope, no inner WHERE.
+func cheapExistsProbe(p *ast.Pattern, where ast.Expr, slots map[string]int) bool {
+	if where != nil || len(p.Hops) != 1 || p.Hops[0].Rel.Length != nil {
+		return false
+	}
+	startBound := p.Start.Var != "" && hasSlot(slots, p.Start.Var)
+	endBound := p.Hops[0].Node.Var != "" && hasSlot(slots, p.Hops[0].Node.Var)
+	return startBound && endBound
+}
+
+func hasSlot(m map[string]int, k string) bool {
+	_, ok := m[k]
+	return ok
 }
 
 // correlatedSlots is the outer slots a correlated subquery reads -- its
