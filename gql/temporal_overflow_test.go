@@ -46,6 +46,35 @@ func TestDurationOverflowYieldsNull(t *testing.T) {
 	}
 }
 
+// toString on a KindTemporal (datetime / localdatetime) renders ISO-8601
+// (rcp twin a8a13e9): previously it fell through applyToString's catch-all
+// and returned a silent Null in the projection. A calendar shift keeps the
+// kind, so the shifted instant stringifies too. Duration stays Null.
+func TestToStringTemporal(t *testing.T) {
+	g := socialGraph(t)
+	anchor := "MATCH (p:Person {name: 'Alice'}) RETURN "
+	cases := []struct{ q, want string }{
+		{anchor + "toString(datetime('2020-01-01T13:45:30')) AS s", "2020-01-01T13:45:30"},
+		{anchor + "toString(datetime('2020-01-01T00:00:00') + duration({days: 31})) AS s", "2020-02-01T00:00:00"},
+		{anchor + "toString(localdatetime('2020-06-15T08:30:00.250')) AS s", "2020-06-15T08:30:00.250"},
+		{anchor + "toString(datetime('2020-01-01')) AS s", "2020-01-01T00:00:00"},
+	}
+	for _, c := range cases {
+		v, n := scalarVal(t, g, c.q, "s")
+		if n != 1 {
+			t.Fatalf("%s: %d rows", c.q, n)
+		}
+		if s, _ := v.AsStr(); s != c.want {
+			t.Fatalf("%s = %q, want %q", c.q, s, c.want)
+		}
+	}
+	// A duration has no single string form here, so it stays Null (a
+	// deliberate divergence point from the sibling engine, noted in 080).
+	if v, _ := scalarVal(t, g, anchor+"toString(duration({days: 5})) AS s", "s"); !v.IsNull() {
+		t.Fatalf("toString(duration) = %v, want Null", v)
+	}
+}
+
 // eventGraph carries two epoch-millis columns so a comparison shifted by a
 // duration takes the whole-row i64 fast path.
 func eventGraph(t *testing.T) *chickpeas.Snapshot {

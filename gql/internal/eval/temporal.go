@@ -5,8 +5,11 @@
 package eval
 
 import (
+	"fmt"
 	"math"
 	"strings"
+
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 // MSPerDay is the milliseconds in a civil day.
@@ -174,6 +177,28 @@ func ParseISO(s string) (int64, bool) {
 	// An absurd year overflows the era term / millisecond scaling; bound it
 	// so a constructed instant never silently wraps.
 	return civilMillis(y, uint32(mo), uint32(d), msOfDay)
+}
+
+// ISOString renders an epoch-millis temporal as ISO-8601, the inverse of
+// ParseISO: 'YYYY-MM-DD' for a Date; 'YYYY-MM-DDTHH:MM:SS' for the datetime
+// kinds, with '.mmm' appended only when the sub-second remainder is
+// non-zero. This is the single temporal string formatter -- any other
+// surface that stringifies a temporal should delegate here so the forms
+// cannot drift.
+func ISOString(millis int64, kind value.TemporalKind) string {
+	days := floorDiv(millis, MSPerDay)
+	msOfDay := millis - days*MSPerDay
+	y, mo, d := CivilFromDays(days)
+	if kind == value.Date {
+		return fmt.Sprintf("%04d-%02d-%02d", y, mo, d)
+	}
+	h := msOfDay / 3_600_000
+	mi := (msOfDay / 60_000) % 60
+	s := (msOfDay / 1000) % 60
+	if frac := msOfDay % 1000; frac != 0 {
+		return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03d", y, mo, d, h, mi, s, frac)
+	}
+	return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d", y, mo, d, h, mi, s)
 }
 
 // ParseISODuration parses an ISO-8601 duration string (PnYnMnWnD[TnHnMnS],

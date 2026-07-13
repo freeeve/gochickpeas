@@ -6,7 +6,40 @@ package eval
 import (
 	"math"
 	"testing"
+
+	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// ISOString renders each kind and round-trips through ParseISO, including
+// pre-1970 (floor msOfDay), a sub-second fraction, and a midnight datetime
+// (no fraction suffix).
+func TestISOStringFormats(t *testing.T) {
+	cases := []struct {
+		iso  string
+		kind value.TemporalKind
+		want string
+	}{
+		{"2020-02-01", value.Date, "2020-02-01"},
+		{"1969-12-31", value.Date, "1969-12-31"},
+		{"2020-02-01", value.DateTime, "2020-02-01T00:00:00"},
+		{"2020-02-01T13:45:30", value.DateTime, "2020-02-01T13:45:30"},
+		{"2020-02-01T13:45:30.123", value.LocalDateTime, "2020-02-01T13:45:30.123"},
+		{"1969-12-31T23:59:59.500", value.DateTime, "1969-12-31T23:59:59.500"},
+	}
+	for _, c := range cases {
+		ms, ok := ParseISO(c.iso)
+		if !ok {
+			t.Fatalf("ParseISO(%q) failed", c.iso)
+		}
+		if got := ISOString(ms, c.kind); got != c.want {
+			t.Fatalf("ISOString(%q, %d) = %q, want %q", c.iso, c.kind, got, c.want)
+		}
+		// Round trip: the rendered string parses back to the same instant.
+		if back, ok := ParseISO(c.want); !ok || back != ms {
+			t.Fatalf("round trip %q -> %q -> %d (want %d)", c.iso, c.want, back, ms)
+		}
+	}
+}
 
 func TestCivilRoundTrip(t *testing.T) {
 	cases := []struct {

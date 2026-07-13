@@ -442,7 +442,13 @@ func applyToString(v value.Value) value.Value {
 		return value.Str(strconv.FormatBool(b))
 	case value.KindStr:
 		return v
+	case value.KindTemporal:
+		ms, kind, _ := v.AsTemporal()
+		return value.Str(ISOString(ms, kind))
 	}
+	// A duration has no single established string form here (the wasm/Python
+	// surfaces emit the {months, days, millis} component form, not a string),
+	// so toString(duration) stays Null rather than bake an arbitrary choice.
 	return value.Null()
 }
 
