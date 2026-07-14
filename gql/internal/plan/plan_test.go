@@ -550,6 +550,59 @@ func TestDedupEndpointsUnderDistinct(t *testing.T) {
 	}
 }
 
+// firstVarExpandDedup returns the DedupEndpoints flag of the first var-expand
+// op in the first match stage.
+func firstVarExpandDedup(t *testing.T, p *Plan) bool {
+	t.Helper()
+	ms := firstMatch(t, p)
+	for i := range ms.Ops {
+		if ms.Ops[i].Kind == OpVarExpand {
+			return ms.Ops[i].DedupEndpoints
+		}
+	}
+	t.Fatal("no var-expand op in first match stage")
+	return false
+}
+
+// TestAggEndpointCollapseGate (092): a bounded var-expand binding no relationship
+// collapses per-trail rows to one row per endpoint exactly when the projection
+// cannot see a duplicate row -- a plain DISTINCT, or a grouped aggregation whose
+// every aggregate is multiplicity-insensitive (min/max, or DISTINCT count/sum/
+// avg). It must NOT collapse when any aggregate grows with a duplicate row
+// (count(*), non-distinct count/sum/avg, collect, collect(DISTINCT)). Collapsing
+// an unsound shape silently returns wrong answers -- invisible to a planner
+// differential, since both planners run the collapse -- so the gate is pinned
+// here directly.
+func TestAggEndpointCollapseGate(t *testing.T) {
+	g := buildFixture(t)
+	base := "MATCH (p:Person {pid: 0})-[:KNOWS]->{1,2}(f:Person) RETURN "
+	for _, ret := range []string{
+		"DISTINCT f.pid AS x",
+		"min(f.pid) AS m",
+		"max(f.pid) AS m",
+		"count(DISTINCT f) AS n",
+		"sum(DISTINCT f.pid) AS s",
+		"avg(DISTINCT f.pid) AS a",
+	} {
+		if p := mustPlan(t, g, base+ret); !firstVarExpandDedup(t, p) {
+			t.Errorf("%q: expected endpoint collapse (projection is duplicate-blind)", ret)
+		}
+	}
+	for _, ret := range []string{
+		"f.pid AS x",                   // no DISTINCT, no aggregate
+		"count(*) AS n",                // grows per duplicate row
+		"count(f) AS n",                // non-distinct count
+		"sum(f.pid) AS s",              // non-distinct sum
+		"avg(f.pid) AS a",              // non-distinct avg
+		"collect(f.pid) AS c",          // order- and multiplicity-bearing
+		"collect(DISTINCT f.pid) AS c", // set-equal but order-bearing
+	} {
+		if p := mustPlan(t, g, base+ret); firstVarExpandDedup(t, p) {
+			t.Errorf("%q: must NOT collapse (multiplicity-sensitive projection)", ret)
+		}
+	}
+}
+
 // TestWherePropEqualitySeeksIndex (106): a WHERE-form equality on an indexed
 // property must seek the index, exactly like the inline {name: ...} spelling --
 // not fall back to a full label scan + post-filter.

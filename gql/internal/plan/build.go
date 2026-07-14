@@ -120,11 +120,12 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		return nil, err
 	}
 
-	// When the segment projects DISTINCT (non-aggregated), a bounded
-	// var-expand whose relationships/path are unused can bind each
+	// When the projection cannot see a repeated row -- a plain DISTINCT, or a
+	// grouped aggregation whose every aggregate is multiplicity-insensitive --
+	// a bounded var-expand whose relationships/path are unused can bind each
 	// distinct endpoint once instead of one row per trail (the pruning
 	// var-expand -- duplicate-endpoint rows would collapse anyway).
-	if proj.Distinct && !proj.Aggregated {
+	if projCannotSeeDuplicateRows(&proj) {
 		flagDedupEndpoints(stages, &proj, slots)
 	}
 	// After flagDedupEndpoints: a contributing var-expand must keep its
@@ -555,6 +556,47 @@ func seedChainOf(p *ast.Pattern, sv string, slots map[string]int, bound map[int]
 // ops with no rel slot in a stage with no path bind, where no projected
 // expression or ORDER BY key references a rel variable (none can -- the
 // rel slot is unbound), qualify.
+// projCannotSeeDuplicateRows reports whether the projection's output is
+// invariant under dropping an EXACT-duplicate row (every column identical) --
+// the precondition for collapsing a var-expand's per-trail rows to one row per
+// endpoint. True for a plain DISTINCT, and for a grouped aggregation whose
+// every aggregate is multiplicity-insensitive: a duplicate row lands in the
+// same group (its keys are the same row) and contributes nothing new. Nested
+// aggregate wrappers (Post) are declined conservatively -- the direct-aggregate
+// case (e.g. LDBC IC6's count(DISTINCT ...)) is the one that matters.
+func projCannotSeeDuplicateRows(proj *ProjPlan) bool {
+	if proj.Distinct && !proj.Aggregated {
+		return true
+	}
+	if !proj.Aggregated || len(proj.Aggs) == 0 || len(proj.Post) > 0 {
+		return false
+	}
+	for i := range proj.Aggs {
+		if !aggIgnoresRowMultiplicity(&proj.Aggs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// aggIgnoresRowMultiplicity reports whether an aggregate's result is unchanged
+// by dropping an exact-duplicate row. min/max are idempotent under duplicates;
+// a DISTINCT count/sum/avg already ignores value multiplicity, so a same-value
+// duplicate contributes nothing. count(*) / count(x) / sum / avg without
+// DISTINCT grow with each duplicate, and collect is order-bearing even with
+// DISTINCT (the list carries encounter order, which the collapse changes) --
+// none of those are eligible.
+func aggIgnoresRowMultiplicity(a *AggCol) bool {
+	switch a.Kind {
+	case AggMin, AggMax:
+		return true
+	case AggCollect:
+		return false
+	default: // AggCount, AggSum, AggAvg
+		return a.Distinct
+	}
+}
+
 func flagDedupEndpoints(stages []Stage, proj *ProjPlan, slots map[string]int) {
 	_ = proj
 	_ = slots
