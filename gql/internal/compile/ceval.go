@@ -98,6 +98,11 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 	case *cIsNull:
 		return value.Bool(ceval(ctx, n.e, g, row, slots).IsNull() != n.negated)
 	case *cSubquery:
+		if n.decorOK && !n.decorOff {
+			if c, ok := decorCount(ctx, n, row, slots); ok {
+				return value.Int(int64(c))
+			}
+		}
 		var count int
 		switch {
 		case n.hasMemo:
@@ -204,6 +209,79 @@ func packNodeKey(slots []int, row []value.Value) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// decorFanoutCap bounds the anchor-selection degree probe: distinguishing a
+// hub endpoint from a leaf needs only enough of a count to compare, and the
+// probe runs once, on the first non-null row of a hot query.
+const decorFanoutCap = 1 << 16
+
+// astDirToGraph maps a pattern direction to the graph traversal direction.
+func astDirToGraph(d ast.Dir) chickpeas.Direction {
+	switch d {
+	case ast.DirOut:
+		return chickpeas.Outgoing
+	case ast.DirIn:
+		return chickpeas.Incoming
+	}
+	return chickpeas.Both
+}
+
+// decorFanout counts node's typed neighbors in dir, capped: a hub only needs
+// to out-count a leaf, not be measured exactly.
+func decorFanout(ctx *eval.Ctx, node chickpeas.NodeID, dir chickpeas.Direction, types []string) int {
+	n := 0
+	for range ctx.G.NeighborsByType(node, dir, types) {
+		if n++; n >= decorFanoutCap {
+			break
+		}
+	}
+	return n
+}
+
+// decorCount answers a decorrelatable COUNT{} from a per-anchor side table
+// (task 084): the subquery is evaluated ONCE per distinct anchor node (grouped
+// by the other endpoint) and each row is an O(1) map read. The anchor endpoint
+// -- the hubbier end by typed first-hop degree -- is chosen once and reused;
+// correctness is anchor-independent, so only the amortization depends on it.
+// ok=false hands the row back to the per-row memo/DFS path: a null endpoint,
+// or too many distinct anchors (the anchor is not amortizing, so decor is
+// switched off for the rest of the run).
+func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string]int) (int, bool) {
+	startNode, ok1 := row[n.decorStartSlot].AsNode()
+	endNode, ok2 := row[n.decorEndSlot].AsNode()
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+	hops := n.pattern.Hops
+	if !n.decorAnchorDecided {
+		startDeg := decorFanout(ctx, startNode, astDirToGraph(hops[0].Rel.Dir), hops[0].Rel.Types)
+		last := hops[len(hops)-1]
+		endDeg := decorFanout(ctx, endNode, astDirToGraph(last.Rel.Dir).Reverse(), last.Rel.Types)
+		n.decorAnchorIsEnd = endDeg > startDeg
+		n.decorAnchorDecided = true
+	}
+	anchorVar, groupVar := n.decorStartVar, n.decorEndVar
+	anchorNode, groupNode := startNode, endNode
+	if n.decorAnchorIsEnd {
+		anchorVar, groupVar = n.decorEndVar, n.decorStartVar
+		anchorNode, groupNode = endNode, startNode
+	}
+	key := uint64(uint32(anchorNode))
+	tbl, hit := n.decorTables[key]
+	if !hit {
+		if len(n.decorTables) >= decorAnchorCap {
+			n.decorOff = true
+			return 0, false
+		}
+		tbl = eval.SubqueryGroupCount(ctx, n.pattern, n.where, row, slots, anchorVar, groupVar)
+		if n.decorTables == nil {
+			n.decorTables = map[uint64]map[chickpeas.NodeID]int{}
+		}
+		n.decorTables[key] = tbl
+		n.decorBuilds++
+	}
+	return tbl[groupNode], true
 }
 
 // cevalBin mirrors the interpreter's binary dispatch over compiled

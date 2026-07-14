@@ -114,3 +114,44 @@ func TestSubqueryGroupCountMatchesPerEntity(t *testing.T) {
 		})
 	}
 }
+
+// TestSubqueryGroupCountParallelEdges guards the multiplicity invariant: naive
+// SubqueryCount with the group endpoint bound counts matching relationships
+// (parallel edges count separately), while the decorrelated form leaves that
+// endpoint free and enumerates it. Both are per-relationship, so they must
+// still agree when a final-hop edge is duplicated.
+func TestSubqueryGroupCountParallelEdges(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	tag, err := b.AddNode("Tag")
+	must(err)
+	p, err := b.AddNode("Person")
+	must(err)
+	m, err := b.AddNode("Message")
+	must(err)
+	_, err = b.AddRel(m, tag, "HAS_TAG")
+	must(err)
+	// Two parallel HAS_CREATOR edges from the same message to the same person.
+	_, err = b.AddRel(m, p, "HAS_CREATOR")
+	must(err)
+	_, err = b.AddRel(m, p, "HAS_CREATOR")
+	must(err)
+	ctx := &Ctx{G: graph.New(b.Finalize("parallel"))}
+
+	slots := map[string]int{"t": 0, "p": 1}
+	pat, where := countSub(t, "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) }")
+	perRow := []value.Value{value.Node(tag), value.Node(p)}
+	naive := SubqueryCount(ctx, pat, where, perRow, slots, false)
+	table := SubqueryGroupCount(ctx, pat, where, perRow, slots, "t", "p")
+	if naive != 2 {
+		t.Fatalf("naive count over two parallel HAS_CREATOR edges = %d, want 2", naive)
+	}
+	if got := table[graph.NodeID(p)]; got != naive {
+		t.Fatalf("decorrelated count = %d, naive = %d (parallel-edge multiplicity must match)", got, naive)
+	}
+}

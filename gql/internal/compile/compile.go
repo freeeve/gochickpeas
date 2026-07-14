@@ -102,7 +102,36 @@ type cSubquery struct {
 	// key is the reusable memo-key buffer: lookups probe string(key)
 	// without allocating; only a miss's insert converts.
 	key []byte
+	// decor holds the decorrelation plan for a COUNT{} over a linear chain
+	// with BOTH endpoints bound to outer variables (task 084): instead of a
+	// DFS per outer row, evaluate the subquery ONCE per distinct anchor value
+	// (grouped by the other endpoint) and answer each row with an O(1) map
+	// read. decorOK is set at compile time; the remaining fields are
+	// per-execution scratch (the compiled tree is rebuilt each run, so their
+	// zero values reset correctly). Nil pattern/absent decorOK leaves the
+	// existing memo/DFS path untouched.
+	decorOK                      bool
+	decorStartVar, decorEndVar   string
+	decorStartSlot, decorEndSlot int
+	// decorAnchorDecided pins which endpoint anchors the single scan (the
+	// hubbier end, decided once by typed first-hop degree); correctness is
+	// anchor-independent, only speed depends on it.
+	decorAnchorDecided bool
+	decorAnchorIsEnd   bool
+	// decorTables memoizes one node-id->count table per resolved anchor node,
+	// for this execution. decorBuilds counts table builds (asserted in tests:
+	// a shared anchor builds ONCE). decorOff falls back to the DFS path once
+	// too many distinct anchors prove the anchor is not amortizing.
+	decorTables map[uint64]map[chickpeas.NodeID]int
+	decorBuilds int
+	decorOff    bool
 }
+
+// decorAnchorCap bounds the distinct anchor tables built before decorrelation
+// concedes the anchor is high-cardinality (not amortizing) and falls back to
+// the per-row path. Bounds worst-case wasted builds; correctness holds either
+// way.
+const decorAnchorCap = 64
 
 type cCase struct {
 	operand cnode
@@ -209,7 +238,9 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		return &cSubquery{pattern: n.Pattern, where: n.Where, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
 	case *ast.CountSub:
 		ms, ok := correlatedSlots(n.Pattern, n.Where, slots)
-		return &cSubquery{pattern: n.Pattern, where: n.Where, isCount: true, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
+		cs := &cSubquery{pattern: n.Pattern, where: n.Where, isCount: true, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
+		setupDecor(cs, n.Pattern, n.Where, slots)
+		return cs
 	case *ast.Case:
 		c := &cCase{whens: make([][2]cnode, len(n.Whens))}
 		if n.Operand != nil {
@@ -460,6 +491,70 @@ func correlatedSlots(p *ast.Pattern, where ast.Expr, slots map[string]int) ([]in
 		return nil, false
 	}
 	return out, true
+}
+
+// setupDecor marks cs decorrelatable and records its endpoints when the
+// COUNT{} is a linear chain whose two endpoints are BOTH bound to outer
+// variables and whose only outer dependencies are those endpoints. Such a
+// subquery is a per-endpoint aggregate over an anchored set: it can be
+// evaluated once per distinct anchor value (grouped by the other endpoint)
+// instead of a DFS per outer row (task 084). Conservative -- any structure the
+// single-scan rewrite would not reproduce exactly (an inner node that is
+// itself an outer variable, a bound relationship variable, a variable-length
+// hop, or a WHERE that reads an outer variable other than the two endpoints)
+// leaves cs on the existing per-row path.
+func setupDecor(cs *cSubquery, p *ast.Pattern, where ast.Expr, slots map[string]int) {
+	if len(p.Hops) < 1 {
+		return
+	}
+	startVar := p.Start.Var
+	endVar := p.EndNode().Var
+	if startVar == "" || endVar == "" || startVar == endVar {
+		return
+	}
+	ss, ok1 := slots[startVar]
+	es, ok2 := slots[endVar]
+	if !ok1 || !ok2 {
+		return
+	}
+	// Inner nodes must be subquery-local, and no relationship variable may be
+	// outer-bound: the single grouped scan enumerates every inner element, so
+	// an outer-anchored inner would change which matches it produces.
+	for i := range p.Hops {
+		if p.Hops[i].Rel.Length != nil {
+			return // variable-length hop: v1 handles fixed chains only
+		}
+		if v := p.Hops[i].Rel.Var; v != "" {
+			if _, outer := slots[v]; outer {
+				return
+			}
+		}
+		if i < len(p.Hops)-1 { // inner node (not the end endpoint)
+			if v := p.Hops[i].Node.Var; v != "" {
+				if _, outer := slots[v]; outer {
+					return
+				}
+			}
+		}
+	}
+	// The WHERE may read only the two endpoints (and inner, subquery-local
+	// variables). Any other outer variable would make the table depend on a
+	// value not captured by the anchor key, so it could not be shared across
+	// rows. collectOuterSlots reports false for an unenumerable dependency.
+	if where != nil {
+		bad := false
+		ok := collectOuterSlots(where, slots, func(v string) {
+			if s, isOuter := slots[v]; isOuter && s != ss && s != es {
+				bad = true
+			}
+		})
+		if !ok || bad {
+			return
+		}
+	}
+	cs.decorOK = true
+	cs.decorStartVar, cs.decorEndVar = startVar, endVar
+	cs.decorStartSlot, cs.decorEndSlot = ss, es
 }
 
 // collectOuterSlots adds the outer slots e references; returns false when
