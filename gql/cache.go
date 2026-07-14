@@ -134,7 +134,83 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 // matching the Rust engine).
 func (c *PlanCache) execCached(gr *graph.SnapshotGraph, cp *cachedPlan, lifted []value.Value, named map[string]value.Value) (*Rows, error) {
 	ctx := &eval.Ctx{G: gr, Params: lifted, Named: named, ForceInterp: forceInterp}
-	return execPlan(gr, cp.plan, cp.mode, 0, ctx)
+	return execPlan(gr, chooseAdaptivePlan(cp.plan, ctx, gr), cp.mode, 0, ctx)
+}
+
+// chooseAdaptivePlan resolves an auto-parameterized anchor tie now that the
+// parameters are bound: it scores the primary plan and its flipped sibling by
+// each anchor's REAL first-hop fan-out and runs whichever seeds from the
+// lower-degree end. Returns the primary unchanged when there is no sibling,
+// the query is a UNION, or either anchor cannot be scored cheaply (declining
+// keeps the per-execution probe bounded on a hot cached query). This is where
+// the value the planner could not see -- a hub vs a selective seek behind the
+// same param slot -- finally decides the plan, without baking the value into
+// the cache key.
+func chooseAdaptivePlan(p *plan.Plan, ctx *eval.Ctx, gr graph.Graph) *plan.Plan {
+	if p.Alt == nil || len(p.Branches) != 1 {
+		return p
+	}
+	dp, okp := anchorFanout(p, ctx, gr)
+	da, oka := anchorFanout(p.Alt, ctx, gr)
+	if !okp || !oka {
+		return p
+	}
+	if da < dp {
+		return p.Alt
+	}
+	return p
+}
+
+// anchorFanout is the summed real first-hop degree of a plan's parameter-seek
+// anchor over the nodes the bound parameter now resolves to. ok is false when
+// the plan's first stage isn't a property-seek anchor followed by an expand,
+// or the resolved anchor set exceeds 64 nodes (the probe runs on every
+// execution of a cached query, so it must stay O(1)-ish).
+func anchorFanout(p *plan.Plan, ctx *eval.Ctx, gr graph.Graph) (uint64, bool) {
+	ms := firstMatchStage(p)
+	if ms == nil || len(ms.Ops) < 2 {
+		return 0, false
+	}
+	scan, hop := ms.Ops[0], ms.Ops[1]
+	if scan.Kind != plan.OpScan || scan.Source.Kind != plan.ScanProperty || hop.Kind != plan.OpExpand {
+		return 0, false
+	}
+	set := gr.NodesWithProperty(scan.Source.Label, scan.Source.Key, eval.LitValue(ctx, scan.Source.Value))
+	if set == nil {
+		return 0, true
+	}
+	if set.Len() > 64 {
+		return 0, false
+	}
+	// The real first-hop fan-out is the TYPED degree over the hop's relation
+	// types, not the node's untyped degree -- an anchor can carry many edges
+	// of other types (a Country's IS_LOCATED_IN dwarf its IS_PART_OF) that the
+	// first hop never traverses. Count is capped at a work budget so the
+	// per-execution probe stays bounded even against a hub: reaching the cap
+	// only means "at least this large", which is all the comparison needs.
+	const budget = 4096
+	var total uint64
+	for id := range set.Iter() {
+		for range gr.NeighborsByType(chickpeas.NodeID(id), hop.Dir, hop.Types) {
+			total++
+			if total >= budget {
+				return total, true
+			}
+		}
+	}
+	return total, true
+}
+
+// firstMatchStage is a plan's first MatchStage in its single branch, or nil.
+func firstMatchStage(p *plan.Plan) *plan.MatchStage {
+	for _, seg := range p.Branches[0] {
+		for _, st := range seg.Stages {
+			if ms, ok := st.(*plan.MatchStage); ok {
+				return ms
+			}
+		}
+	}
+	return nil
 }
 
 // l1Lookup returns the verbatim entry's shared plan and lifted values,

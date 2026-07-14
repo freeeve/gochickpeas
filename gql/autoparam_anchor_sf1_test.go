@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -53,9 +54,11 @@ func firstAnchorLabel(p *plan.Plan) string {
 	return ""
 }
 
-// TestAutoParamAnchorHazardOnBIQ3 proves the auto-parameterization anchor
-// hazard is real on a shipped LDBC query, not only the synthetic within-label
-// hub (task 082; rustychickpeas twin 82a11df / task 085).
+// TestAutoParamAnchorHazardOnBIQ3 proves both the hazard and its fix on a
+// shipped LDBC query: the static auto-param plan is value-blind (anchors the
+// TagClass hub), but task 082's runtime-adaptive anchor builds a Country-
+// anchored sibling and the cached executor resolves the bound Burma/
+// MusicalArtist params to it (rustychickpeas twin 82a11df / task 085).
 func TestAutoParamAnchorHazardOnBIQ3(t *testing.T) {
 	path := os.Getenv("GOCHICKPEAS_SF1_RCPG")
 	if path == "" {
@@ -81,7 +84,7 @@ func TestAutoParamAnchorHazardOnBIQ3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	semantics.AutoParameterize(paramQ)
+	lifted := semantics.AutoParameterize(paramQ)
 	paramPlan, err := plan.Build(paramQ, gr)
 	if err != nil {
 		t.Fatalf("build auto-param: %v", err)
@@ -93,16 +96,24 @@ func TestAutoParamAnchorHazardOnBIQ3(t *testing.T) {
 	if litAnchor != "Country" {
 		t.Fatalf("literal anchor = %q, want Country (the selective end)", litAnchor)
 	}
-	// Current (unfixed) behavior: auto-parameterization blinds the degree
-	// probe, the fallback anchors on the TagClass hub. When task 082's
-	// runtime-adaptive anchor lands, this must become "Country" (converge on
-	// the literal plan) -- flip the assertion then; it is the tripwire that
-	// the fix actually reached this query.
-	if paramAnchor == "Country" {
-		t.Fatalf("auto-param anchor is Country -- the adaptive-anchor fix appears to have landed; " +
-			"flip this test to assert convergence (both anchor Country) and update task 082")
-	}
+	// The STATIC auto-param plan still anchors the TagClass hub -- the planner
+	// cannot see the value. That is by design; the fix is runtime-adaptive, not
+	// a different static plan.
 	if paramAnchor != "TagClass" {
-		t.Fatalf("auto-param anchor = %q, want TagClass (the hub -- the characterized hazard)", paramAnchor)
+		t.Fatalf("static auto-param anchor = %q, want TagClass (planner is value-blind)", paramAnchor)
+	}
+	// The fix (task 082): a flipped sibling was built, anchoring the selective
+	// Country end...
+	if paramPlan.Alt == nil {
+		t.Fatal("expected a flipped sibling plan (Plan.Alt) for BI Q3's param-seek tie")
+	}
+	if alt := firstAnchorLabel(paramPlan.Alt); alt != "Country" {
+		t.Fatalf("sibling anchor = %q, want Country (the flipped orientation)", alt)
+	}
+	// ...and with Burma/MusicalArtist now bound, the cached executor resolves
+	// the choice to the Country-anchored plan -- the hazard is closed at exec.
+	ctx := &eval.Ctx{G: gr, Params: lifted}
+	if chosen := firstAnchorLabel(chooseAdaptivePlan(paramPlan, ctx, gr)); chosen != "Country" {
+		t.Fatalf("adaptive choice anchored %q, want Country (Burma resolves to 11 first-hop rels vs TagClass's 899)", chosen)
 	}
 }

@@ -12,6 +12,18 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 )
 
+// planCtx carries adaptive-anchor state across a planning pass. On the
+// primary pass `ties` collects the patterns whose anchor orientation was a
+// both-endpoints-unbound-param-seek tie the planner could only break with
+// value-independent average degree -- exactly the auto-parameterization
+// hazard. When exactly one such tie exists, a second pass with
+// `forceReverse` set to that pattern re-plans it the other way, yielding the
+// sibling Plan the cached executor chooses between per execution.
+type planCtx struct {
+	ties         []*ast.Pattern
+	forceReverse *ast.Pattern
+}
+
 // Build desugars and plans a query against g's statistics.
 func Build(q *ast.Query, g graph.Graph) (*Plan, error) {
 	// Normalize before planning: non-literal inline pattern properties
@@ -20,17 +32,36 @@ func Build(q *ast.Query, g graph.Graph) (*Plan, error) {
 	if err := semantics.Desugar(q); err != nil {
 		return nil, err
 	}
-	return BuildWithInCols(q, nil, g)
+	pc := &planCtx{}
+	p, err := buildWithInColsCtx(q, nil, g, pc)
+	if err != nil {
+		return nil, err
+	}
+	// Exactly one qualifying auto-param anchor tie -> build the sibling with
+	// that pattern's orientation flipped. More than one would need a plan per
+	// combination; we leave those on the static (average-degree) fallback.
+	if len(pc.ties) == 1 {
+		alt, err := buildWithInColsCtx(q, nil, g, &planCtx{forceReverse: pc.ties[0]})
+		if err == nil && alt != nil {
+			p.Alt = alt
+		}
+	}
+	return p, nil
 }
 
 // BuildWithInCols plans a query whose branches each begin with inCols
 // already bound, carried in from an outer scope (a CALL {} subquery plans
-// its body with inCols = its import list).
+// its body with inCols = its import list). Adaptive anchoring is scoped to
+// the top-level Build pass; a subquery body plans on the static fallback.
 func BuildWithInCols(q *ast.Query, inCols []string, g graph.Graph) (*Plan, error) {
+	return buildWithInColsCtx(q, inCols, g, &planCtx{})
+}
+
+func buildWithInColsCtx(q *ast.Query, inCols []string, g graph.Graph, pc *planCtx) (*Plan, error) {
 	branches := make([][]*Segment, 0, len(q.Parts))
 	var columns []string
 	for pi := range q.Parts {
-		segments, cols, err := planPart(&q.Parts[pi], inCols, g)
+		segments, cols, err := planPart(&q.Parts[pi], inCols, g, pc)
 		if err != nil {
 			return nil, err
 		}
@@ -48,7 +79,7 @@ func BuildWithInCols(q *ast.Query, inCols []string, g graph.Graph) (*Plan, error
 
 // planPart plans one UNION branch into its segment pipeline, returning the
 // segments and the branch's output column names.
-func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segment, []string, error) {
+func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planCtx) ([]*Segment, []string, error) {
 	var segments []*Segment
 	var cur []stageSpec
 	inCols := initInCols
@@ -83,7 +114,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 		case *ast.CallSubquery:
 			cur = append(cur, stageSpec{kind: specCallSubquery, query: &c.Query, imports: c.Imports})
 		case *ast.With:
-			seg, err := buildSegment(cur, c.Proj, c.Where, inCols, g)
+			seg, err := buildSegment(cur, c.Proj, c.Where, inCols, g, pc)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -92,7 +123,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph) ([]*Segme
 			segments = append(segments, seg)
 		}
 	}
-	seg, err := buildSegment(cur, part.Ret, nil, inCols, g)
+	seg, err := buildSegment(cur, part.Ret, nil, inCols, g, pc)
 	if err != nil {
 		return nil, nil, err
 	}

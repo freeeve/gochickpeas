@@ -9,7 +9,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 )
 
-func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr, inCols []string, g graph.Graph) (*Segment, error) {
+func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr, inCols []string, g graph.Graph, pc *planCtx) (*Segment, error) {
 	// Cost pre-passes, before slot assignment, all result-identical:
 	// split a linear pattern at its selective INTERIOR node, reorder the
 	// join to start from the most selective pattern, then split again
@@ -41,7 +41,7 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		spec := &specs[si]
 		switch spec.kind {
 		case specMatch:
-			stage, err := buildMatchStage(spec, slots, bound, &nextSlot, &matchWheres, g)
+			stage, err := buildMatchStage(spec, slots, bound, &nextSlot, &matchWheres, g, pc)
 			if err != nil {
 				return nil, err
 			}
@@ -207,7 +207,7 @@ func checkPatternVarKinds(specs []stageSpec) error {
 	return nil
 }
 
-func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nextSlot *int, matchWheres *[]ast.Expr, g graph.Graph) (*MatchStage, error) {
+func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, nextSlot *int, matchWheres *[]ast.Expr, g graph.Graph, pc *planCtx) (*MatchStage, error) {
 	pattern := spec.pattern
 	where := spec.where
 	// A named-path bind is limited to a single relationship hop (Tier 1)
@@ -253,6 +253,18 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 		if re != rs {
 			takeReversed = re > rs
 		} else {
+			// Both ends same rank. If both are unbound PARAM seeks, the entire
+			// tie-break below -- exact leaf cardinality, then resolved first-hop
+			// degree, then average degree -- is value-BLIND: for a param seek
+			// they all fall back to label-wide statistics, yet the real anchor
+			// is whichever the bound param resolves to the smaller degree, known
+			// only at execution. This is the auto-parameterization anchor
+			// hazard; record it so Build produces a flipped sibling and the
+			// cached executor decides by the real bound-param degrees. (A
+			// label-only tie has no value arriving later, so does not qualify.)
+			if bothEndsUnboundParamSeek(pattern, slots, bound) {
+				pc.ties = append(pc.ties, spec.pattern)
+			}
 			cs := anchorCard(&pattern.Start, where, slots, bound, g)
 			ce := anchorCard(pattern.EndNode(), where, slots, bound, g)
 			if ce != cs {
@@ -270,6 +282,11 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 					takeReversed = pathCost(&rev, g) < pathCost(pattern, g)
 				}
 			}
+		}
+		// Sibling pass: flip exactly the qualifying tie's orientation so the
+		// two plans seed from opposite ends; the executor chooses per row set.
+		if pc.forceReverse == spec.pattern {
+			takeReversed = !takeReversed
 		}
 		if takeReversed {
 			pattern = &rev

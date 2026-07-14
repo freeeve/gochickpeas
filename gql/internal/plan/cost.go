@@ -103,6 +103,43 @@ func resolvedFirstHopDegree(p *ast.Pattern, where ast.Expr, slots map[string]int
 	return total, true
 }
 
+// bothEndsUnboundParamSeek reports whether both of a hop pattern's endpoints
+// are labelled, unbound, and seeked only by a parameter-valued property --
+// the shape whose real anchor degree is unknown at plan time (the param has
+// no value yet) but known at execution. A concrete property on an endpoint
+// would let the degree probe resolve it, so it is NOT this case; a label-only
+// endpoint is a genuine unknown with no value arriving later, so also not.
+func bothEndsUnboundParamSeek(p *ast.Pattern, slots map[string]int, bound map[int]bool) bool {
+	return isUnboundParamSeek(&p.Start, slots, bound) && isUnboundParamSeek(p.EndNode(), slots, bound)
+}
+
+// isUnboundParamSeek reports whether n is a labelled, not-yet-bound node whose
+// only concrete seek is a parameter-valued property (no literal property that
+// would resolve at plan time).
+func isUnboundParamSeek(n *ast.NodePat, slots map[string]int, bound map[int]bool) bool {
+	if n.Var != "" {
+		if s, ok := slots[n.Var]; ok && bound[s] {
+			return false
+		}
+	}
+	if len(n.Labels) == 0 {
+		return false
+	}
+	hasParam := false
+	for i := range n.Props {
+		switch n.Props[i].Val.Kind {
+		case ast.LitParam, ast.LitNamedParam:
+			hasParam = true
+		case ast.LitNull:
+			// structural, ignore
+		default:
+			// A concrete literal property resolves at plan time -> not this case.
+			return false
+		}
+	}
+	return hasParam
+}
+
 // countNeighbors counts a node's neighbors over dir restricted to types.
 func countNeighbors(g graph.Graph, node graph.NodeID, dir graph.Direction, types []string) uint64 {
 	var n uint64

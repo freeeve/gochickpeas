@@ -67,6 +67,16 @@ type Plan struct {
 	Branches [][]*Segment
 	Union    []ast.UnionKind
 	Columns  []string
+	// Alt is a sibling plan identical to this one except that a single
+	// auto-parameterized anchor tie (both endpoints unbound param seeks,
+	// whose real degrees the planner cannot see) is oriented the opposite
+	// way. It is a FULL second planning pass, so every rewrite/recognizer
+	// pass ran over it too -- never a spare op chain hidden inside a stage.
+	// The cached executor resolves both anchors from the now-bound params
+	// and runs whichever seeds from the lower-degree end; nil when the query
+	// has no qualifying tie (the common case). Alt itself never carries an
+	// Alt.
+	Alt *Plan
 }
 
 // specKind discriminates a stageSpec.
