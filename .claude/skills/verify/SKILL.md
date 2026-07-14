@@ -30,7 +30,18 @@ engineCommit.
   golden with `-plans-golden-capture` and commit it in the same change. Do a
   planner change WITHOUT this and a regression that stays row-correct lands
   invisibly.
-- Run heavy invocations under `taskman lock run local-cpu` (shared box).
+- Run heavy invocations under the shared-box lock -- and not just the gate:
+  full builds, full test runs, fuzz runs, and benchmarks are exactly the
+  multi-core work that lands on top of an ldbc sweep mid-measurement.
+
+  ```bash
+  taskman lock run -ttl 20m -wait 30m -reason "<what>" local-cpu -- go build ./...
+  taskman lock run -ttl 20m -wait 30m -reason "<what>" local-cpu -- go test ./...
+  ```
+
+  Incremental builds, `go vet`, and editor-driven builds are fine unlocked.
+  A non-zero exit from `lock run` means another session holds the box: wait
+  or do unrelated work -- never run the job anyway.
 
 ## 2. Sample drive through the public export
 
@@ -49,9 +60,12 @@ VarExpand lines to see whether a pushdown fired). Probe near-miss
 phrasings and malformed input; errors should be clean plan/bind errors.
 
 Gotchas:
-- Timing on this machine is very noisy; only alloc counts (gqlbench
-  profiles output) are a trustworthy A/B signal. Interleave A/B runs
-  and keep the machine quiet.
+- Timing on this machine is very noisy; alloc counts (gqlbench profiles
+  output) are the most trustworthy A/B signal. For timing A/Bs, run the
+  whole comparison inside ONE `taskman lock run local-cpu` session in
+  ABBA order (new-old-old-new): interleaving alone does not cancel a
+  load trend, only ABBA does. A run whose TIMING is the product must
+  also pass `-max-load 2` and must not publish on a non-zero exit.
 - `gqlbench` must run from the repo root (HeadStamp shells to git);
   point -out/-plans-out/-profiles-out at the scratchpad.
 - 45s of `go test ./gql -fuzz FuzzQuery -fuzztime 45s` is cheap
