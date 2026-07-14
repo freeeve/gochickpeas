@@ -71,10 +71,18 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 	}
 	// The weighted form compiles its per-edge weight once for the stage
 	// and runs the Dijkstra per row (no tree memo: the weighted search
-	// early-exits per target).
+	// early-exits per target). A constant weight (or one degraded to unit
+	// weights) makes every path's cost proportional to its hop count, so
+	// the minimum-cost path IS a minimum-hop path: those route to the BFS
+	// forms below -- a constant-weight Dijkstra pays a heap push and pop
+	// plus map probes per relationship to rediscover the ordering a BFS
+	// frontier yields for free. Reachability, path length, and the hop cap
+	// are identical; among equal-length paths ANY SHORTEST may bind any.
 	var pw *pathWeight
 	if sp.Weight != nil {
-		pw = buildPathWeight(ctx, sp)
+		if pw = buildPathWeight(ctx, sp); pw.kind == weightConstant || pw.kind == weightMissing {
+			pw = nil
+		}
 	}
 	memo := map[graph.NodeID]*spTree{}
 	// paths memoizes the fully MATERIALIZED path per (source, target)

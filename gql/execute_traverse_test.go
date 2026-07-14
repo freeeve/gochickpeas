@@ -340,6 +340,92 @@ func TestAnyShortestCostErrors(t *testing.T) {
 	}
 }
 
+// TestConstantCostMatchesUnweighted pins the constant-weight dispatch: a
+// constant (or degraded-to-unit) COST makes every path's cost proportional
+// to its hops, so the search must agree with the plain minimum-hop form on
+// existence and length -- for every constant, including zero and an
+// invalid negative (which degrades to unit weights).
+func TestConstantCostMatchesUnweighted(t *testing.T) {
+	g := weightedTriangle(t)
+	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
+	lengthOf := func(q string) int64 {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no path: %s", q)
+		}
+		v, _ := r.Get("l")
+		l, _ := v.AsInt()
+		return l
+	}
+	want := lengthOf(ends + "MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) RETURN length(p) AS l")
+	for _, cost := range []string{"COST 5", "COST 0", "COST -1"} {
+		q := ends + "MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) " + cost + " RETURN length(p) AS l"
+		if l := lengthOf(q); l != want {
+			t.Fatalf("%s: length %d, want %d (the unweighted answer)", cost, l, want)
+		}
+	}
+}
+
+// TestShortestHopBoundExcludes pins the hop cap for both search kinds: a
+// target strictly beyond the bound must yield NO path -- not a truncated
+// one -- and the OPTIONAL form must keep the row with a null path. The
+// cheap detour makes the weighted answer 2 hops, so a {1,1} cap excludes
+// the pair for the property-weighted search exactly when it prefers the
+// longer route.
+func TestShortestHopBoundExcludes(t *testing.T) {
+	// chain: s -> m -> t (no direct edge), so t sits 2 hops from s.
+	b := chickpeas.NewBuilder(4, 4)
+	for _, n := range []string{"s", "m", "t"} {
+		id, _ := b.AddNode("N")
+		_ = b.SetProp(id, "name", n)
+	}
+	for _, e := range [][2]chickpeas.NodeID{{0, 1}, {1, 2}} {
+		if _, err := b.AddRel(e[0], e[1], "R"); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetRelProp(e[0], e[1], "R", "w", 1.0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize("name")
+	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
+	for _, form := range []string{
+		"MATCH p = ANY SHORTEST (a)-[:R]->{1,1}(b) RETURN length(p) AS l",
+		"MATCH p = ANY SHORTEST (a)-[r:R]->{1,1}(b) COST r.w RETURN length(p) AS l",
+		"MATCH p = ALL SHORTEST (a)-[:R]->{1,1}(b) RETURN length(p) AS l",
+	} {
+		rows := runBoth(t, g, ends+form)
+		if r, ok := rows.Next(); ok {
+			t.Fatalf("beyond-bound target produced a row %v: %s", r.Values(), form)
+		}
+	}
+	// OPTIONAL keeps the row, path null.
+	rows := runBoth(t, g, ends+"OPTIONAL MATCH p = ANY SHORTEST (a)-[:R]->{1,1}(b) RETURN p")
+	r, ok := rows.Next()
+	if !ok {
+		t.Fatal("OPTIONAL beyond-bound dropped the row")
+	}
+	if v, _ := r.Get("p"); !v.IsNull() {
+		t.Fatalf("OPTIONAL beyond-bound path = %v, want null", v)
+	}
+	// Within the bound, both kinds find the 2-hop path.
+	for _, form := range []string{
+		"MATCH p = ANY SHORTEST (a)-[:R]->{1,2}(b) RETURN length(p) AS l",
+		"MATCH p = ANY SHORTEST (a)-[r:R]->{1,2}(b) COST r.w RETURN length(p) AS l",
+	} {
+		rows := runBoth(t, g, ends+form)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("within-bound target found no path: %s", form)
+		}
+		if v, _ := r.Get("l"); !value.Equal(v, value.Int(2)) {
+			t.Fatalf("within-bound length = %v, want 2: %s", v, form)
+		}
+	}
+}
+
 func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
 	g := replyForest(t)
 	// Undirected {1,2} from a: root and c at 1 hop; b (via root) and the
