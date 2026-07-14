@@ -115,6 +115,11 @@ func (s *SnapshotGraph) RelEndpoints(pos uint32) (source, target chickpeas.NodeI
 	return s.g.RelEndpoints(pos)
 }
 
+// RelTypeAt is the type name of the relationship at pos.
+func (s *SnapshotGraph) RelTypeAt(pos uint32) (string, bool) {
+	return s.g.RelTypeAt(pos)
+}
+
 // Neighbors iterates node's neighbors over dir, any type.
 func (s *SnapshotGraph) Neighbors(node chickpeas.NodeID, dir chickpeas.Direction) iter.Seq[chickpeas.NodeID] {
 	return s.g.Neighbors(node, dir)

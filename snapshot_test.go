@@ -191,6 +191,39 @@ func TestRelEndpoints(t *testing.T) {
 	}
 }
 
+func TestRelTypeAt(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	mk := func(label string) chickpeas.NodeID {
+		n, err := b.AddNode(label)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	a, bn, c, d := mk("N"), mk("N"), mk("N"), mk("N")
+	if _, err := b.AddRel(a, bn, "KNOWS"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddRel(c, d, "LIKES"); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize("reltype")
+	// Outgoing-CSR positions group by ascending source id: a's edge is pos 0,
+	// c's is pos 1.
+	for _, tc := range []struct {
+		pos  uint32
+		want string
+	}{{0, "KNOWS"}, {1, "LIKES"}} {
+		if name, ok := g.RelTypeAt(tc.pos); !ok || name != tc.want {
+			t.Errorf("RelTypeAt(%d) = (%q, %v), want %q", tc.pos, name, ok, tc.want)
+		}
+	}
+	// The bool is a bounds guard: an out-of-range position resolves false.
+	if _, ok := g.RelTypeAt(2); ok {
+		t.Fatal("RelTypeAt on an out-of-range position must report false")
+	}
+}
+
 func TestSchemaIntrospection(t *testing.T) {
 	g := fixture(t, "multi_label_types")
 	if got := g.Labels(); !slices.Equal(got, []string{"A", "B"}) {

@@ -63,6 +63,20 @@ func (g *Snapshot) RelEndpoints(pos uint32) (source, target NodeID, ok bool) {
 	return NodeID(i - 1), target, true
 }
 
+// RelTypeAt returns the type name of the relationship at outgoing-CSR
+// position pos (backs the query engine's type(r)). Every relationship has
+// exactly one type, so ok is a BOUNDS guard only -- false means "pos does
+// not index a relationship", never "this relationship has no type" -- which
+// is why it mirrors RelEndpoints rather than the semantically-fallible
+// RelProp. O(1): a direct index into the outgoing-CSR type array, then the
+// atom table resolves the id to its interned name.
+func (g *Snapshot) RelTypeAt(pos uint32) (string, bool) {
+	if int(pos) >= len(g.outTypes) {
+		return "", false
+	}
+	return g.atoms.Resolve(uint32(g.outTypes[pos]))
+}
+
 // Col resolves a reader for the node property key; ok is false when no such
 // column exists. Narrow with I64/F64/Bool/Str and hoist out of a hot loop
 // instead of calling Prop per node.

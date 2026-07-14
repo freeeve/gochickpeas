@@ -67,6 +67,9 @@ type Graph interface {
 	// RelEndpoints is the (source, target) of the relationship at CSR
 	// position pos, backing startNode(r)/endNode(r).
 	RelEndpoints(pos uint32) (source, target chickpeas.NodeID, ok bool)
+	// RelTypeAt is the type name of the relationship at CSR position pos,
+	// backing type(r); ok is a bounds guard only (every rel has one type).
+	RelTypeAt(pos uint32) (string, bool)
 
 	// Neighbors iterates node's neighbors over dir, any relationship type.
 	Neighbors(node chickpeas.NodeID, dir chickpeas.Direction) iter.Seq[chickpeas.NodeID]

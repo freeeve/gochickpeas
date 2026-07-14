@@ -117,7 +117,7 @@ func IsKnownScalarFunc(name string) bool {
 		return true
 	}
 	l := strings.ToLower(name)
-	return l == "startnode" || l == "endnode"
+	return l == "startnode" || l == "endnode" || l == "type"
 }
 
 // evalScalarFunc evaluates a non-aggregate function call. Aggregates never
@@ -130,8 +130,8 @@ func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]i
 			argv[i] = Eval(ctx, a, row, slots)
 		}
 	}
-	// startNode(r)/endNode(r) need the graph to resolve a relationship's
-	// endpoints from its CSR position, so they resolve here rather than in
+	// startNode(r)/endNode(r)/type(r) need the graph to resolve a
+	// relationship from its CSR position, so they resolve here rather than in
 	// the graph-less ApplyFunc.
 	switch strings.ToLower(e.Name) {
 	case "startnode", "endnode":
@@ -142,6 +142,15 @@ func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]i
 						return value.Node(src)
 					}
 					return value.Node(dst)
+				}
+			}
+		}
+		return value.Null()
+	case "type":
+		if len(argv) > 0 {
+			if pos, ok := argv[0].AsRel(); ok {
+				if name, ok := ctx.G.RelTypeAt(pos); ok {
+					return value.Str(name)
 				}
 			}
 		}
