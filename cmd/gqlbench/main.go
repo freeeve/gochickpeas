@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -127,6 +128,93 @@ func stripVolatilePlanLines(plan string) string {
 	return strings.Join(kept, "\n")
 }
 
+// goldenEntry is one query's canonical plan-shape snapshot in the golden.
+type goldenEntry struct {
+	id   string
+	plan string
+}
+
+const goldenSep = "=== "
+
+// formatGolden renders the golden file: a header, then one diff-friendly
+// section per query (its id and canonical plan lines), in capture order. Plain
+// text (not JSONL) so a planner change shows the moved plan lines directly in a
+// git diff -- the review prompt is the point.
+func formatGolden(entries []goldenEntry) string {
+	var b strings.Builder
+	b.WriteString("# gochickpeas canonical plan-shape golden.\n")
+	b.WriteString("# Regenerate deliberately after an intended planner change:\n")
+	b.WriteString("#   gqlbench -manifest <...> -plans-golden <this file> -plans-golden-capture\n")
+	b.WriteString("# A diff here is a review prompt: the planner moved a plan.\n")
+	for _, e := range entries {
+		b.WriteString("\n")
+		b.WriteString(goldenSep)
+		b.WriteString(e.id)
+		b.WriteString("\n")
+		b.WriteString(e.plan)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// parseGolden reads a golden file back into id -> plan. It is the exact inverse
+// of formatGolden for the section body (comment/blank lines outside a section
+// are ignored), so a capture then parse round-trips.
+func parseGolden(text string) map[string]string {
+	out := map[string]string{}
+	id := ""
+	var body []string
+	flush := func() {
+		if id != "" {
+			// Drop the single trailing blank line formatGolden writes.
+			for len(body) > 0 && body[len(body)-1] == "" {
+				body = body[:len(body)-1]
+			}
+			out[id] = strings.Join(body, "\n")
+		}
+	}
+	for _, ln := range strings.Split(text, "\n") {
+		if strings.HasPrefix(ln, goldenSep) {
+			flush()
+			id = strings.TrimSpace(strings.TrimPrefix(ln, goldenSep))
+			body = nil
+			continue
+		}
+		if id == "" {
+			continue // header/comment preamble before the first section
+		}
+		body = append(body, ln)
+	}
+	flush()
+	return out
+}
+
+// diffGolden compares the current canonical plans against the golden, returning
+// one drift line per query whose plan changed, is new, or went missing -- sorted
+// for a stable report. Empty means the plans are unchanged.
+func diffGolden(golden map[string]string, current []goldenEntry) []string {
+	var drift []string
+	seen := map[string]bool{}
+	for _, e := range current {
+		seen[e.id] = true
+		want, ok := golden[e.id]
+		if !ok {
+			drift = append(drift, e.id+": new query, not in golden")
+			continue
+		}
+		if want != e.plan {
+			drift = append(drift, e.id+": plan shape changed")
+		}
+	}
+	for id := range golden {
+		if !seen[id] {
+			drift = append(drift, id+": in golden but absent from this run")
+		}
+	}
+	sort.Strings(drift)
+	return drift
+}
+
 // cpuProfiling tracks the lazily-started -cpuprofile capture, begun at the
 // first timed run so graph loads and parity checks stay out of the
 // profile.
@@ -159,6 +247,8 @@ func run() error {
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
 	cachedParity := flag.Bool("cached-parity", false, "also run each query through the PlanCache (auto-parameterized) path and verify it matches the same reference hash; catches divergence between the literal and cached plans")
 	planStability := flag.Int("plan-stability", 0, "if >1, plan each matched query this many times in-process and fail the run for any query whose plan text is not identical across all plannings (catches map-order-dependent plan nondeterminism); needs no quiet box, and unstable queries are never emitted a timing")
+	plansGolden := flag.String("plans-golden", "", "path to a canonical plan-shape golden; verify each matched query's plan against it and fail the run on drift (a diff is a review prompt that a planner change moved a plan -- invisible to row-level parity). Needs no quiet box")
+	plansGoldenCapture := flag.Bool("plans-golden-capture", false, "with -plans-golden, (re)write the golden from the current plans instead of verifying -- the deliberate regeneration step after an intended planner change")
 	gqlVersion := flag.String("gql-version", "v0.2.0", "gql engine version stamped into meta")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile covering the timed runs")
 	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
@@ -212,6 +302,8 @@ func run() error {
 	caches := map[string]*gql.PlanCache{}
 	var outcomes []outcome
 	var unstable []string
+	var golden []goldenEntry
+	var planDrift []string
 	emitted := 0
 	for _, row := range rows {
 		g, ok := graphs[row.Graph]
@@ -290,6 +382,18 @@ func run() error {
 				fmt.Printf("%-16s CDIFF %s\n", id, cdiff)
 				continue
 			}
+		}
+
+		// Plan-shape golden: snapshot the canonical plan for the corpus. Guards
+		// plan QUALITY, which the row-level parity above cannot see -- a planner
+		// regression that stays correct is invisible to it. Collected here for a
+		// MATCHed query; written or diffed after the loop.
+		if *plansGolden != "" {
+			canon, cerr := gql.ExplainCanonical(g, row.GQL)
+			if cerr != nil {
+				return fmt.Errorf("%s (plans-golden): %w", id, cerr)
+			}
+			golden = append(golden, goldenEntry{id: id, plan: canon})
 		}
 
 		// Plan-stability: a timing means nothing if the plan behind it varies
@@ -397,6 +501,25 @@ func run() error {
 	if len(unstable) > 0 {
 		fmt.Printf("%d plan-unstable: %s\n", len(unstable), strings.Join(unstable, "; "))
 	}
+	if *plansGolden != "" {
+		if *plansGoldenCapture {
+			if err := os.WriteFile(*plansGolden, []byte(formatGolden(golden)), 0o644); err != nil {
+				return fmt.Errorf("writing plan-shape golden: %w", err)
+			}
+			fmt.Printf("captured %d canonical plan-shapes to %s\n", len(golden), *plansGolden)
+		} else {
+			data, rerr := os.ReadFile(*plansGolden)
+			if rerr != nil {
+				return fmt.Errorf("reading plan-shape golden (capture it first with -plans-golden-capture): %w", rerr)
+			}
+			planDrift = diffGolden(parseGolden(string(data)), golden)
+			if len(planDrift) > 0 {
+				fmt.Printf("%d plan-shape drift vs golden:\n  %s\n", len(planDrift), strings.Join(planDrift, "\n  "))
+			} else {
+				fmt.Printf("plan-shape golden: %d queries unchanged\n", len(golden))
+			}
+		}
+	}
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
 	}
@@ -405,6 +528,9 @@ func run() error {
 	}
 	if len(unstable) > 0 {
 		return fmt.Errorf("%d queries produced nondeterministic plans across plannings", len(unstable))
+	}
+	if len(planDrift) > 0 {
+		return fmt.Errorf("%d queries drifted from the plan-shape golden (review, then regenerate with -plans-golden-capture)", len(planDrift))
 	}
 	return nil
 }

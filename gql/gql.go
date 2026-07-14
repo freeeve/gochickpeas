@@ -66,6 +66,21 @@ func Explain(g *chickpeas.Snapshot, query string) (string, error) {
 	return strings.Join(explain.Render(p, nil, planTime, plan.Estimate(p, gr)), "\n"), nil
 }
 
+// ExplainCanonical renders the query's plan as a stable, canonical shape string
+// for golden plan-regression snapshots: operator order, scan sources, hop
+// patterns, the recognizers that fired, and the chosen anchor -- with the
+// volatile parts (wall-clock planning time, the numeric estimates, the anchor
+// note's magnitudes) excluded. Unlike Explain the output is deterministic across
+// plannings, so a diff between two commits is a review prompt that a planner
+// change moved the plan, invisible to a row-level differential.
+func ExplainCanonical(g *chickpeas.Snapshot, query string) (string, error) {
+	_, gr, p, _, err := prepare(g, query)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(explain.Canonical(p, plan.Estimate(p, gr)), "\n"), nil
+}
+
 // prepare runs the shared front half: parse, desugar, plan -- timing the
 // planning for the EXPLAIN/PROFILE header.
 func prepare(g *chickpeas.Snapshot, query string) (*ast.Query, *graph.SnapshotGraph, *plan.Plan, time.Duration, error) {
