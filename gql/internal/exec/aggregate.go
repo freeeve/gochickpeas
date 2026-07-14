@@ -14,13 +14,13 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// aggState is one aggregate accumulator. Fields are ordered wide-to-narrow
-// so the four booleans pack into one tail word instead of each forcing its
-// own padding slot -- the struct is allocated once per group per aggregate,
-// so shaving its padding scales with the group count.
+// aggState is one aggregate accumulator, allocated once per group per
+// aggregate. It carries only the count/sum/avg scalars -- the kind-specific
+// heavy state (a min/max extremum value.Value, a collect []value.Value) lives
+// in slabs allocated on the aggregator only when those kinds are present, so
+// the overwhelmingly common count/sum/avg grouping pays neither. Fields are
+// ordered wide-to-narrow so the booleans pack into one tail word.
 type aggState struct {
-	minmax  value.Value
-	items   []value.Value
 	sumI    acc128
 	count   int64
 	sumF    float64
@@ -29,7 +29,6 @@ type aggState struct {
 	kind    plan.AggKind
 	isFloat bool
 	any     bool
-	hasMM   bool
 }
 
 // update folds one argument in (arg absent means count(*)).
@@ -54,23 +53,9 @@ func (s *aggState) update(arg value.Value, present bool) {
 			s.avgSum += f
 			s.avgN++
 		}
-	case plan.AggMin, plan.AggMax:
-		if arg.IsNull() {
-			return
-		}
-		if !s.hasMM {
-			s.minmax, s.hasMM = arg, true
-			return
-		}
-		if c, ok := value.Compare(arg, s.minmax); ok &&
-			((s.kind == plan.AggMin && c < 0) || (s.kind == plan.AggMax && c > 0)) {
-			s.minmax = arg
-		}
-	case plan.AggCollect:
-		if !arg.IsNull() {
-			s.items = append(s.items, arg)
-		}
 	}
+	// AggMin/AggMax/AggCollect are folded on the aggregator's overflow slabs,
+	// not here (their heavy state is off the per-group struct).
 }
 
 // finalize emits the accumulator's value.
@@ -97,14 +82,9 @@ func (s *aggState) finalize() value.Value {
 			return value.Null()
 		}
 		return value.Float(s.avgSum / float64(s.avgN))
-	case plan.AggMin, plan.AggMax:
-		if !s.hasMM {
-			return value.Null()
-		}
-		return s.minmax
-	default: // plan.AggCollect
-		return value.List(s.items)
 	}
+	// AggMin/AggMax/AggCollect finalize off the aggregator's overflow slabs.
+	return value.Null()
 }
 
 // Group state lives in flat stride-indexed slabs on the aggregator (keys,
@@ -202,8 +182,12 @@ type aggregator struct {
 	nGroups     int
 	keysChunks  [][]value.Value
 	stateChunks [][]aggState
-	seenChunks  [][]distinctSet // filled only when a DISTINCT aggregate exists
+	seenChunks  [][]distinctSet   // filled only when a DISTINCT aggregate exists
+	mmChunks    [][]value.Value   // min/max extrema, filled only when a min/max aggregate exists
+	itemsChunks [][][]value.Value // collect lists, filled only when a collect aggregate exists
 	hasDistinct bool
+	hasMinMax   bool
+	hasCollect  bool
 	kinds       []plan.AggKind
 
 	// keyScratch/gkScratch/dkScratch are the per-update key buffers, reused
@@ -228,6 +212,12 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 		a.kinds = append(a.kinds, ac.Kind)
 		if ac.Distinct {
 			a.hasDistinct = true
+		}
+		switch ac.Kind {
+		case plan.AggMin, plan.AggMax:
+			a.hasMinMax = true
+		case plan.AggCollect:
+			a.hasCollect = true
 		}
 	}
 	return a
@@ -257,6 +247,18 @@ func (a *aggregator) seenOf(idx int) []distinctSet {
 	return a.seenChunks[idx/chunkGroups][w : w+s]
 }
 
+func (a *aggregator) mmOf(idx int) []value.Value {
+	s := len(a.aggC)
+	w := (idx % chunkGroups) * s
+	return a.mmChunks[idx/chunkGroups][w : w+s]
+}
+
+func (a *aggregator) itemsOf(idx int) [][]value.Value {
+	s := len(a.aggC)
+	w := (idx % chunkGroups) * s
+	return a.itemsChunks[idx/chunkGroups][w : w+s]
+}
+
 // appendGroup claims the next slab windows for a new group, copying its
 // key tuple in.
 func (a *aggregator) appendGroup(keys []value.Value) int {
@@ -267,6 +269,12 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 		a.stateChunks = append(a.stateChunks, make([]aggState, 0, chunkGroups*len(a.aggC)))
 		if a.hasDistinct {
 			a.seenChunks = append(a.seenChunks, make([]distinctSet, chunkGroups*len(a.aggC)))
+		}
+		if a.hasMinMax {
+			a.mmChunks = append(a.mmChunks, make([]value.Value, chunkGroups*len(a.aggC)))
+		}
+		if a.hasCollect {
+			a.itemsChunks = append(a.itemsChunks, make([][]value.Value, chunkGroups*len(a.aggC)))
 		}
 	}
 	c := idx / chunkGroups
@@ -366,6 +374,14 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 	if a.hasDistinct {
 		seen = a.seenOf(idx)
 	}
+	var mm []value.Value
+	if a.hasMinMax {
+		mm = a.mmOf(idx)
+	}
+	var items [][]value.Value
+	if a.hasCollect {
+		items = a.itemsOf(idx)
+	}
 	for j := range proj.Aggs {
 		var arg value.Value
 		present := a.aggC[j] != nil
@@ -377,7 +393,28 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 				continue
 			}
 		}
-		states[j].update(arg, present)
+		switch a.kinds[j] {
+		case plan.AggMin, plan.AggMax:
+			// The extremum lives on the mm slab; a null slot is the
+			// uninitialized sentinel (a min/max arg is never null, so the
+			// first non-null arg always seeds it, matching the prior hasMM
+			// flag exactly).
+			if arg.IsNull() {
+				continue
+			}
+			if mm[j].IsNull() {
+				mm[j] = arg
+			} else if c, ok := value.Compare(arg, mm[j]); ok &&
+				((a.kinds[j] == plan.AggMin && c < 0) || (a.kinds[j] == plan.AggMax && c > 0)) {
+				mm[j] = arg
+			}
+		case plan.AggCollect:
+			if !arg.IsNull() {
+				items[j] = append(items[j], arg)
+			}
+		default:
+			states[j].update(arg, present)
+		}
 	}
 }
 
@@ -420,8 +457,24 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 			row[gi] = keys[k]
 		}
 		states := a.statesOf(idx)
+		var mm []value.Value
+		if a.hasMinMax {
+			mm = a.mmOf(idx)
+		}
+		var items [][]value.Value
+		if a.hasCollect {
+			items = a.itemsOf(idx)
+		}
 		for j := range proj.Aggs {
-			row[proj.Aggs[j].OutIdx] = states[j].finalize()
+			switch a.kinds[j] {
+			case plan.AggMin, plan.AggMax:
+				// A null slot means no non-null arg was seen -> Null.
+				row[proj.Aggs[j].OutIdx] = mm[j]
+			case plan.AggCollect:
+				row[proj.Aggs[j].OutIdx] = value.List(items[j])
+			default:
+				row[proj.Aggs[j].OutIdx] = states[j].finalize()
+			}
 		}
 		for i, p := range proj.Post {
 			row[p.Col] = postC[i].Eval(ctx, row, postSlots)

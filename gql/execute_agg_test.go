@@ -97,6 +97,37 @@ func TestGroupedRowsDoNotAliasAcrossArena(t *testing.T) {
 	}
 }
 
+// min/max and collect state lives in per-group overflow slabs (off the
+// aggState struct). Group by company and check each group's extrema and
+// collected list resolve independently -- guards the slab indexing.
+func TestGroupedMinMaxCollectOverflowSlabs(t *testing.T) {
+	g := socialGraph(t)
+	rows := runBoth(t, g,
+		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) "+
+			"RETURN c.name AS co, min(p.age) AS lo, max(p.age) AS hi, size(collect(p.name)) AS n "+
+			"ORDER BY co")
+	type row struct {
+		co        string
+		lo, hi, n int64
+	}
+	var got []row
+	for r := range rows.All() {
+		cv, _ := r.Get("co")
+		co, _ := cv.AsStr()
+		lv, _ := r.Get("lo")
+		lo, _ := lv.AsInt()
+		hv, _ := r.Get("hi")
+		hi, _ := hv.AsInt()
+		nv, _ := r.Get("n")
+		n, _ := nv.AsInt()
+		got = append(got, row{co, lo, hi, n})
+	}
+	// Acme employs Alice(30) and Bob(35); Globex employs Carol(40).
+	if len(got) != 2 || got[0] != (row{"Acme", 30, 35, 2}) || got[1] != (row{"Globex", 40, 40, 1}) {
+		t.Fatalf("grouped min/max/collect = %+v", got)
+	}
+}
+
 func TestNumericAggregatesAndCollect(t *testing.T) {
 	g := socialGraph(t)
 	rows := runBoth(t, g,
