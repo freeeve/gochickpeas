@@ -92,6 +92,41 @@ type outcome struct {
 	rows   int
 }
 
+// planDistinct plans query n times in this one process and returns how many
+// DISTINCT plan texts result. Go randomizes map iteration order on purpose,
+// so any planner decision that leaks map order produces more than one plan
+// here -- the plan-stability question a bandwidth-bound query's timing cannot
+// answer on a shared box: it costs nothing, needs no quiet machine, and a
+// count above 1 identifies a nondeterministic planner outright, before any
+// timing anomaly can be mistaken for a regression.
+func planDistinct(g *chickpeas.Snapshot, query string, n int) (int, error) {
+	seen := map[string]struct{}{}
+	for range n {
+		plan, err := gql.Explain(g, query)
+		if err != nil {
+			return 0, err
+		}
+		seen[stripVolatilePlanLines(plan)] = struct{}{}
+	}
+	return len(seen), nil
+}
+
+// stripVolatilePlanLines drops a rendered plan's non-structural lines so the
+// stability comparison sees only the plan's shape. The "Planning: N ms" header
+// is wall-clock and jitters every run -- keeping it would report every plan as
+// unstable and hide a genuine map-order divergence in the noise.
+func stripVolatilePlanLines(plan string) string {
+	lines := strings.Split(plan, "\n")
+	kept := lines[:0]
+	for _, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "Planning:") {
+			continue
+		}
+		kept = append(kept, ln)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // cpuProfiling tracks the lazily-started -cpuprofile capture, begun at the
 // first timed run so graph loads and parity checks stay out of the
 // profile.
@@ -123,6 +158,7 @@ func run() error {
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
 	cachedParity := flag.Bool("cached-parity", false, "also run each query through the PlanCache (auto-parameterized) path and verify it matches the same reference hash; catches divergence between the literal and cached plans")
+	planStability := flag.Int("plan-stability", 0, "if >1, plan each matched query this many times in-process and fail the run for any query whose plan text is not identical across all plannings (catches map-order-dependent plan nondeterminism); needs no quiet box, and unstable queries are never emitted a timing")
 	gqlVersion := flag.String("gql-version", "v0.2.0", "gql engine version stamped into meta")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile covering the timed runs")
 	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
@@ -175,6 +211,7 @@ func run() error {
 	// way a real caller hits it.
 	caches := map[string]*gql.PlanCache{}
 	var outcomes []outcome
+	var unstable []string
 	emitted := 0
 	for _, row := range rows {
 		g, ok := graphs[row.Graph]
@@ -255,9 +292,31 @@ func run() error {
 			}
 		}
 
+		// Plan-stability: a timing means nothing if the plan behind it varies
+		// run to run, so ask this before ever timing the query (it needs no
+		// quiet box). An unstable plan is not a parity failure -- the result
+		// still MATCHed -- but the run fails at the end and the query is never
+		// emitted a timing.
+		planUnstable := false
+		if *planStability > 1 {
+			distinct, perr := planDistinct(g, row.GQL, *planStability)
+			if perr != nil {
+				return fmt.Errorf("%s (plan-stability): %w", id, perr)
+			}
+			if distinct > 1 {
+				planUnstable = true
+				unstable = append(unstable, fmt.Sprintf("%s (%d distinct plans/%d plannings)", id, distinct, *planStability))
+				fmt.Printf("%-16s UNSTABLE %d distinct plans across %d plannings\n", id, distinct, *planStability)
+			}
+		}
+
 		outcomes = append(outcomes, outcome{row: row, status: "MATCH", rows: len(cells)})
 		if *verifyOnly {
 			fmt.Printf("%-16s MATCH (%d rows)\n", id, len(cells))
+			continue
+		}
+		if planUnstable {
+			fmt.Printf("%-16s skip emit -- plan not stable\n", id)
 			continue
 		}
 
@@ -335,11 +394,17 @@ func run() error {
 	}
 	fmt.Printf("\n%d/%d MATCH, %d DIFF%s, %d SKIP; %d timing+plan+profile triples emitted at %s\n",
 		match, len(outcomes), diff, cdiffSummary, skip, emitted, stamp.Commit)
+	if len(unstable) > 0 {
+		fmt.Printf("%d plan-unstable: %s\n", len(unstable), strings.Join(unstable, "; "))
+	}
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
 	}
 	if cdiff > 0 {
 		return fmt.Errorf("%d queries diverged on the cached/auto-parameterized path (CDIFF)", cdiff)
+	}
+	if len(unstable) > 0 {
+		return fmt.Errorf("%d queries produced nondeterministic plans across plannings", len(unstable))
 	}
 	return nil
 }
