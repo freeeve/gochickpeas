@@ -1,10 +1,9 @@
 // Correlated subquery matching: EXISTS { MATCH ... }, COUNT { MATCH ... },
 // and pattern comprehensions, all sharing one anchored DFS over the
 // pattern. The DFS's evaluation-invariant setup (anchor-reversal, level
-// slots, the extended scope) is shaped once per pattern and cached on the
-// Ctx with its evaluation scratch, so the per-row cost is a row refresh
-// instead of map/slice rebuilds. NodeMatches lives here (the Rust engine
-// kept it in exec; Go moves it to break the eval -> exec module cycle).
+// slots, the extended scope, compiled node and rel matchers) is shaped
+// once per pattern and cached on the Ctx with its evaluation scratch, so
+// the per-row cost is a row refresh instead of map/slice/matcher rebuilds.
 package eval
 
 import (
@@ -14,23 +13,6 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
-
-// NodeMatches reports whether a node satisfies a pattern node's labels and
-// literal inline properties: every label present and every property equal
-// (params resolved through the context).
-func NodeMatches(ctx *Ctx, nid graph.NodeID, labels []string, props []ast.PropEntry) bool {
-	for _, l := range labels {
-		if !ctx.G.HasLabel(nid, l) {
-			return false
-		}
-	}
-	for _, p := range props {
-		if !ctx.G.NodePropEq(nid, p.Key, LitValue(ctx, p.Val)) {
-			return false
-		}
-	}
-	return true
-}
 
 // engineDir maps a pattern direction to the engine's traversal direction.
 func engineDir(d ast.Dir) graph.Direction {
@@ -79,6 +61,14 @@ type subqueryShape struct {
 	// matchers lazily holds each hop's pre-resolved rel matcher, so the
 	// per-candidate seam calls skip name resolution.
 	matchers []*graph.RelMatcher
+	// nodeMatchers lazily holds each level's compiled node matcher (labels
+	// resolved to membership tests, inline-prop params resolved to values),
+	// so the per-candidate accept is a bitmap probe plus a column read
+	// instead of a string-keyed label lookup -- the same hoist the main
+	// expand path gets from CompileNodeMatcher, mirrored for the subquery
+	// walk. Params are fixed per Ctx, so the resolved values stay valid for
+	// the shape's lifetime (the invariant scan0 already relies on).
+	nodeMatchers []*graph.NodeMatcher
 	// BFS scratch for quantified hops.
 	expanded map[graph.NodeID]struct{}
 	emitted  map[graph.NodeID]struct{}
@@ -289,7 +279,7 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 	candidates := s.cand[level][:0]
 	if level == 0 {
 		if s.anchored[0] {
-			if id, ok := s.row[slot].AsNode(); ok && NodeMatches(ctx, id, node.Labels, node.Props) {
+			if id, ok := s.row[slot].AsNode(); ok && ctx.G.NodeMatcherAccepts(s.nodeMatcherFor(ctx, 0), id) {
 				candidates = append(candidates, id)
 			}
 		} else {
@@ -318,7 +308,7 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 			// directly instead of enumerating a candidate set, appending
 			// the bound node once per relationship so match multiplicity
 			// (COUNT forms) is preserved exactly.
-			if NodeMatches(ctx, bound, node.Labels, node.Props) {
+			if ctx.G.NodeMatcherAccepts(s.nodeMatcherFor(ctx, level), bound) {
 				n := ctx.G.CountNeighborsMatched(fromID, bound, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
 				for range n {
 					candidates = append(candidates, bound)
@@ -332,9 +322,10 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 			}
 			// Filter the appended tail in place: endpoint binding and the
 			// pattern node's own constraints.
+			m := s.nodeMatcherFor(ctx, level)
 			kept := candidates[:0]
 			for _, nid := range candidates {
-				if (!isBound || bound == nid) && NodeMatches(ctx, nid, node.Labels, node.Props) {
+				if (!isBound || bound == nid) && ctx.G.NodeMatcherAccepts(m, nid) {
 					kept = append(kept, nid)
 				}
 			}
@@ -359,17 +350,18 @@ func (s *subqueryShape) existsScan(ctx *Ctx, node *ast.NodePat) []graph.NodeID {
 	if s.scan0Done {
 		return s.scan0
 	}
+	m := s.nodeMatcherFor(ctx, 0)
 	if len(node.Labels) > 0 {
 		if set := ctx.G.NodesWithLabel(node.Labels[0]); set != nil {
 			for id := range set.Iter() {
-				if NodeMatches(ctx, id, node.Labels, node.Props) {
+				if ctx.G.NodeMatcherAccepts(m, id) {
 					s.scan0 = append(s.scan0, id)
 				}
 			}
 		}
 	} else {
 		for id := graph.NodeID(0); id < ctx.G.IDSpace(); id++ {
-			if NodeMatches(ctx, id, node.Labels, node.Props) {
+			if ctx.G.NodeMatcherAccepts(m, id) {
 				s.scan0 = append(s.scan0, id)
 			}
 		}
@@ -384,6 +376,23 @@ func (s *subqueryShape) existsScan(ctx *Ctx, node *ast.NodePat) []graph.NodeID {
 // needs the reachable set, not per-path enumeration -- the same collapse
 // varReach applies in the main pipeline. BFS state reuses the shape's
 // scratch.
+// nodeMatcherFor lazily compiles (once per shape) level i's node matcher;
+// the shape is Ctx-cached and single-threaded, so plain lazy fill is safe.
+func (s *subqueryShape) nodeMatcherFor(ctx *Ctx, level int) *graph.NodeMatcher {
+	if s.nodeMatchers == nil {
+		s.nodeMatchers = make([]*graph.NodeMatcher, len(s.nodes))
+	}
+	if s.nodeMatchers[level] == nil {
+		node := s.nodes[level]
+		props := make([]graph.PropSpec, len(node.Props))
+		for i, p := range node.Props {
+			props[i] = graph.PropSpec{Key: p.Key, Val: LitValue(ctx, p.Val)}
+		}
+		s.nodeMatchers[level] = ctx.G.CompileNodeMatcher(node.Labels, props)
+	}
+	return s.nodeMatchers[level]
+}
+
 // matcherFor lazily resolves (once per shape) hop i's rel matcher; the
 // shape is Ctx-cached and single-threaded, so plain lazy fill is safe.
 func (s *subqueryShape) matcherFor(ctx *Ctx, hop int) *graph.RelMatcher {

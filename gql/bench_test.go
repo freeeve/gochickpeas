@@ -111,6 +111,26 @@ func BenchmarkExecuteVarLength(b *testing.B) {
 	}
 }
 
+// BenchmarkExecuteCountSubquery drives the correlated-subquery DFS: one
+// COUNT {} probe per outer row, its inner node tested per candidate
+// against labels and an inline property. The per-candidate accept cost is
+// what this pins (the same walk as a plain expand, through the subquery
+// enumeration path).
+func BenchmarkExecuteCountSubquery(b *testing.B) {
+	g := gqlBenchGraph(b, 20_000, 100_000)
+	q := "MATCH (p:Person) WHERE p.age > 70 " +
+		"RETURN p.name AS name, COUNT { (p)-[:KNOWS]->(f:Person {age: 42}) } AS c"
+	b.ResetTimer()
+	for b.Loop() {
+		rows, err := Run(g, q)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range rows.All() {
+		}
+	}
+}
+
 func BenchmarkPlanCacheHit(b *testing.B) {
 	g := gqlBenchGraph(b, 20_000, 100_000)
 	cache := NewPlanCache(DefaultCacheBytes)
