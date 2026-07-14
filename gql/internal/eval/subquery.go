@@ -216,6 +216,53 @@ func SubqueryCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []va
 	return total
 }
 
+// SubqueryGroupCount evaluates a correlated subquery ONCE with the group
+// variable left free, returning the match count bucketed by the node the
+// group variable binds to. It is the decorrelated form of SubqueryCount:
+// where SubqueryCount re-walks the pattern once per outer entity bound to
+// the group variable, a single SubqueryGroupCount call -- anchored on the
+// SHARED endpoint (anchorVar, still bound from the outer row) -- yields every
+// entity's count in one pass over the anchored set, so the per-entity cost
+// collapses from a walk to an O(1) map read.
+//
+// anchorVar must name an outer variable bound in outerRow; groupVar names the
+// pattern endpoint to bucket by, left UNBOUND here even when it is itself an
+// outer variable (its outer binding is ignored -- enumeration rebinds it per
+// match). The returned map is keyed only by node id, so it is independent of
+// what the outer query calls the group variable: two subqueries with the same
+// pattern, WHERE, and anchor share one table (see task 084 / rustychickpeas
+// 091). The result for a given entity equals SubqueryCount with that entity
+// bound -- the invariant the decor parity test asserts.
+func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []value.Value, outerSlots map[string]int, anchorVar, groupVar string) map[graph.NodeID]int {
+	// Anchor only anchorVar: a reduced outer scope that drops groupVar so the
+	// group endpoint enumerates through the DFS instead of binding.
+	outer := make(map[string]int, len(outerSlots))
+	for k, v := range outerSlots {
+		if k != groupVar {
+			outer[k] = v
+		}
+	}
+	s := buildSubqueryShape(outer, outerRow, pattern)
+	copy(s.row, outerRow)
+	for i := len(outerRow); i < len(s.row); i++ {
+		s.row[i] = value.Null()
+	}
+	out := map[graph.NodeID]int{}
+	gslot, ok := s.slots[groupVar]
+	if !ok {
+		return out
+	}
+	s.dfs(ctx, 0, func() bool {
+		if where == nil || Eval(ctx, where, s.row, s.slots).IsTruthy() {
+			if gid, ok := s.row[gslot].AsNode(); ok {
+				out[gid]++
+			}
+		}
+		return false
+	})
+	return out
+}
+
 // evalPatternComp collects a projection over each correlated match of a
 // pattern: [ (pattern) [WHERE filter] | proj ].
 func evalPatternComp(ctx *Ctx, e *ast.PatternComp, row []value.Value, slots map[string]int) value.Value {
