@@ -5,6 +5,7 @@
 package exec
 
 import (
+	"math/rand"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -107,6 +108,121 @@ func TestWeightedExprFormula(t *testing.T) {
 	rows := runSPStage(ctx, sp, [][]value.Value{{value.Node(0), value.Node(1), value.Null()}})
 	if len(rows) != 0 {
 		t.Fatalf("all-excluded edges should drop the row, got %d rows", len(rows))
+	}
+}
+
+// refShortestLen is the independent oracle: a plain map-based BFS over the
+// public neighbor seam, returning the minimum hop count a..b under the cap
+// (-1 when unreachable within it). Deliberately naive -- it shares no code
+// with the bidirectional search it checks.
+func refShortestLen(ctx *eval.Ctx, a, b graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hopCap uint64) int {
+	if a == b {
+		return 0
+	}
+	visited := map[graph.NodeID]bool{a: true}
+	frontier := []graph.NodeID{a}
+	for depth := uint64(1); len(frontier) > 0 && depth <= hopCap; depth++ {
+		var next []graph.NodeID
+		for _, u := range frontier {
+			for v := range ctx.G.NeighborsMatched(u, dir, rm) {
+				if visited[v] {
+					continue
+				}
+				if v == b {
+					return int(depth)
+				}
+				visited[v] = true
+				next = append(next, v)
+			}
+		}
+		frontier = next
+	}
+	return -1
+}
+
+// TestShortestPathDifferential fuzzes the bidirectional search against the
+// reference BFS across graph shapes, directions, and hop caps: found/not
+// agreement, exact minimum length, AND that the returned node list is a
+// real walk -- each consecutive pair joined by an accepted relationship in
+// the pattern direction (a stitching bug yields a plausible node list that
+// is not a path; the length assertion alone would pass it).
+func TestShortestPathDifferential(t *testing.T) {
+	rng := rand.New(rand.NewSource(97))
+	shapes := []func(b *chickpeas.Builder, n int){
+		// sparse random
+		func(b *chickpeas.Builder, n int) {
+			for range n * 3 {
+				_, _ = b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R")
+			}
+		},
+		// hub-heavy: node 0 fans out wide, plus a sparse mesh
+		func(b *chickpeas.Builder, n int) {
+			for i := 1; i < n; i += 2 {
+				_, _ = b.AddRel(0, chickpeas.NodeID(i), "R")
+			}
+			for range n {
+				_, _ = b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R")
+			}
+		},
+		// long chain with random shortcuts
+		func(b *chickpeas.Builder, n int) {
+			for i := 0; i+1 < n; i++ {
+				_, _ = b.AddRel(chickpeas.NodeID(i), chickpeas.NodeID(i+1), "R")
+			}
+			for range n / 4 {
+				_, _ = b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R")
+			}
+		},
+	}
+	caps := []uint64{1, 2, 3, 1<<63 - 1}
+	for si, shape := range shapes {
+		const n = 200
+		b := chickpeas.NewBuilder(n, n*4)
+		for range n {
+			if _, err := b.AddNode("N"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		shape(b, n)
+		ctx := &eval.Ctx{G: graph.New(b.Finalize())}
+		rm := ctx.G.CompileRelMatcher([]string{"R"})
+		scr := newSPScratch()
+		for _, dir := range []graph.Direction{graph.Outgoing, graph.Incoming, graph.Both} {
+			for trial := range 700 {
+				a := graph.NodeID(rng.Intn(n))
+				bb := graph.NodeID(rng.Intn(n))
+				hopCap := caps[trial%len(caps)]
+				sp := &plan.SpStage{Dir: dir, Types: []string{"R"}}
+				if hopCap != 1<<63-1 {
+					c := hopCap
+					sp.Max = &c
+				}
+				path, found := shortestPath(ctx, a, bb, sp, rm, nil, scr)
+				want := refShortestLen(ctx, a, bb, dir, rm, hopCap)
+				if !found {
+					if want != -1 {
+						t.Fatalf("shape %d dir %v cap %d (%d,%d): no path found, reference length %d", si, dir, hopCap, a, bb, want)
+					}
+					continue
+				}
+				got := len(path.nodes) - 1
+				if got != want {
+					t.Fatalf("shape %d dir %v cap %d (%d,%d): length %d, reference %d", si, dir, hopCap, a, bb, got, want)
+				}
+				if path.nodes[0] != a || path.nodes[got] != bb {
+					t.Fatalf("shape %d (%d,%d): endpoints %v", si, a, bb, path.nodes)
+				}
+				for i := 0; i < got; i++ {
+					if ctx.G.CountNeighborsMatched(path.nodes[i], path.nodes[i+1], dir, rm) == 0 {
+						t.Fatalf("shape %d dir %v (%d,%d): nodes %v is not a walk -- no accepted rel %d->%d",
+							si, dir, a, bb, path.nodes, path.nodes[i], path.nodes[i+1])
+					}
+				}
+				if len(path.rels) != got {
+					t.Fatalf("shape %d (%d,%d): %d rels for %d hops", si, a, bb, len(path.rels), got)
+				}
+			}
+		}
 	}
 }
 

@@ -145,27 +145,49 @@ type nodesRels struct {
 	rels  []uint32
 }
 
-// spScratch is a stage's reusable path-search state: the walk's visited
-// set and double-buffered frontier, the single-path parent links, the
-// all-shortest distance map, and the batch neighbor buffers. One row's
-// search allocates only its result path once the maps and buffers warm
-// up. Retained structures (the spTree memo's parent maps, result node
-// chains) always allocate fresh -- scratch never escapes a call.
+// spScratch is a stage's reusable path-search state: dense node-indexed
+// search arrays with a generation stamp (a slot belongs to the current
+// search iff gen[id] carries its stamp, so a run needs no O(n) clear and
+// no hash per neighbor probe), the double-buffered frontiers of both
+// search halves, and the batch neighbor buffers. Arrays size by IDSpace
+// -- sparse CSR slots make NodeCount too small -- growing on first use
+// per graph. Retained structures (the spTree memo's parent maps, result
+// node chains) always allocate fresh; scratch never escapes a call.
 type spScratch struct {
-	visited        map[graph.NodeID]struct{}
-	frontier, next []graph.NodeID
-	parent         map[graph.NodeID]graph.NodeID
-	dist           map[graph.NodeID]uint64
-	nbNodes        []graph.NodeID
-	nbPoss         []uint32
+	gen              []uint32
+	cur              uint32 // forward stamp; cur+1 is the backward stamp
+	parent           []graph.NodeID
+	dist             []uint32
+	frontier, next   []graph.NodeID
+	bFrontier, bNext []graph.NodeID
+	nbNodes          []graph.NodeID
+	nbPoss           []uint32
 }
 
-func newSPScratch() *spScratch {
-	return &spScratch{
-		visited: map[graph.NodeID]struct{}{},
-		parent:  map[graph.NodeID]graph.NodeID{},
-		dist:    map[graph.NodeID]uint64{},
+func newSPScratch() *spScratch { return &spScratch{} }
+
+// begin sizes the dense arrays for the graph's id space and opens a new
+// generation, returning its forward stamp (backward = stamp+1). Stamp
+// wraparound clears the gen array once; slot zero never collides because
+// stamps start at 2.
+func (scr *spScratch) begin(n int) uint32 {
+	if len(scr.gen) < n {
+		gen := make([]uint32, n)
+		copy(gen, scr.gen)
+		scr.gen = gen
+		parent := make([]graph.NodeID, n)
+		copy(parent, scr.parent)
+		scr.parent = parent
+		dist := make([]uint32, n)
+		copy(dist, scr.dist)
+		scr.dist = dist
 	}
+	if scr.cur >= ^uint32(0)-2 {
+		clear(scr.gen)
+		scr.cur = 0
+	}
+	scr.cur += 2
+	return scr.cur
 }
 
 // appendHopNeighbors fills scr.nbNodes with node's accepted hop neighbors
@@ -223,8 +245,8 @@ func spCap(sp *plan.SpStage) uint64 {
 // all-shortest walk must finish a level so every minimum-hop predecessor
 // gets a distance before stopping.
 func spWalk(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch, reach func(v, u graph.NodeID, d uint64) bool, levelDone func() bool) {
-	clear(scr.visited)
-	scr.visited[a] = struct{}{}
+	fs := scr.begin(int(ctx.G.IDSpace()))
+	scr.gen[a], scr.dist[a] = fs, 0
 	frontier := append(scr.frontier[:0], a)
 	next := scr.next[:0]
 	defer func() { scr.frontier, scr.next = frontier, next }()
@@ -232,10 +254,10 @@ func spWalk(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelMatche
 		next = next[:0]
 		for _, u := range frontier {
 			for _, v := range appendHopNeighbors(ctx, scr, u, sp.Dir, rm, hop) {
-				if _, seen := scr.visited[v]; seen {
+				if scr.gen[v] == fs {
 					continue
 				}
-				scr.visited[v] = struct{}{}
+				scr.gen[v] = fs
 				if reach(v, u, depth+1) {
 					return
 				}
@@ -272,22 +294,130 @@ func pathFromParents(parent map[graph.NodeID]graph.NodeID, a, b graph.NodeID) []
 	return nodes
 }
 
-// shortestPath is the early-exit minimum-hop search a..b: the first time b
-// is reached is at its minimum hop distance. Returned by value -- one
-// found path per row, no per-path box.
+// shortestPath is the single-pair minimum-hop search a..b: a bidirectional
+// BFS growing a frontier from each end (the backward half walking the
+// reversed direction), always expanding the smaller frontier by one full
+// level, stopping at the first node stamped by both halves. Cost is edges
+// touched, not nodes visited: expanding the smaller frontier means a hub
+// adjacent to one endpoint never has its ply expanded at all.
+//
+// Minimality: once the halves have fully explored depths df and db, every
+// path of length <= df+db crosses a node both halves reached, so its
+// second stamping would already have been a meet; with none seen, an
+// undiscovered path is at least df+db+1 long. Expanding a ply can then
+// only find meets totalling exactly df+db+1 -- every first-ply meet is
+// optimal, so the search stops at the first one. The same bound makes the
+// hop cap exact: the loop stops once df+db reaches the cap, and any meet
+// found before that totals within it.
 func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch) (nodesRels, bool) {
-	clear(scr.parent)
-	if a != b {
-		spWalk(ctx, a, sp, rm, hop, scr, func(v, u graph.NodeID, _ uint64) bool {
-			scr.parent[v] = u
-			return v == b
-		}, nil)
+	if a == b {
+		return nodesRels{nodes: []graph.NodeID{a}}, true
 	}
-	nodes := pathFromParents(scr.parent, a, b)
-	if nodes == nil {
+	fs := scr.begin(int(ctx.G.IDSpace()))
+	bs := fs + 1
+	scr.gen[a], scr.dist[a], scr.parent[a] = fs, 0, a
+	scr.gen[b], scr.dist[b], scr.parent[b] = bs, 0, b
+	fFront := append(scr.frontier[:0], a)
+	fNext := scr.next[:0]
+	bFront := append(scr.bFrontier[:0], b)
+	bNext := scr.bNext[:0]
+	defer func() {
+		scr.frontier, scr.next = fFront, fNext
+		scr.bFrontier, scr.bNext = bFront, bNext
+	}()
+	dirB := flipDir(sp.Dir)
+	var fMeet, bMeet graph.NodeID
+	found := false
+	df, db := uint64(0), uint64(0)
+	// The side to expand is chosen by the frontier's PENDING EDGE count
+	// (sum of member degrees in its walk direction), not its node count:
+	// cost is edges touched, and a one-node frontier sitting on a hub is
+	// the most expensive frontier in the graph. Node counts under-predict
+	// exactly where hubs make the choice matter.
+	fDeg := uint64(ctx.G.Degree(a, sp.Dir))
+	bDeg := uint64(ctx.G.Degree(b, dirB))
+	for len(fFront) > 0 && len(bFront) > 0 && df+db < spCap(sp) && !found {
+		if fDeg <= bDeg {
+			fNext = fNext[:0]
+			fDeg = 0
+			for _, u := range fFront {
+				for _, v := range appendHopNeighbors(ctx, scr, u, sp.Dir, rm, hop) {
+					switch scr.gen[v] {
+					case fs:
+					case bs:
+						fMeet, bMeet, found = u, v, true
+					default:
+						scr.gen[v], scr.parent[v], scr.dist[v] = fs, u, uint32(df+1)
+						fNext = append(fNext, v)
+						fDeg += uint64(ctx.G.Degree(v, sp.Dir))
+					}
+					if found {
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			fFront, fNext = fNext, fFront
+			df++
+		} else {
+			bNext = bNext[:0]
+			bDeg = 0
+			for _, u := range bFront {
+				for _, v := range appendHopNeighbors(ctx, scr, u, dirB, rm, hop) {
+					switch scr.gen[v] {
+					case bs:
+					case fs:
+						fMeet, bMeet, found = v, u, true
+					default:
+						scr.gen[v], scr.parent[v], scr.dist[v] = bs, u, uint32(db+1)
+						bNext = append(bNext, v)
+						bDeg += uint64(ctx.G.Degree(v, dirB))
+					}
+					if found {
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			bFront, bNext = bNext, bFront
+			db++
+		}
+	}
+	if !found {
 		return nodesRels{}, false
 	}
-	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
+	nodes := stitchPath(scr, a, b, fMeet, bMeet)
+	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}, true
+}
+
+// stitchPath joins the forward parent chain a..fMeet and the backward
+// chain bMeet..b into one node sequence, sized exactly. Each source is its
+// own parent, terminating the chain walks.
+func stitchPath(scr *spScratch, a, b, fMeet, bMeet graph.NodeID) []graph.NodeID {
+	n := 1
+	for cur := fMeet; cur != a; cur = scr.parent[cur] {
+		n++
+	}
+	m := 1
+	for cur := bMeet; cur != b; cur = scr.parent[cur] {
+		m++
+	}
+	nodes := make([]graph.NodeID, n+m)
+	cur := fMeet
+	for i := n - 1; i >= 0; i-- {
+		nodes[i] = cur
+		cur = scr.parent[cur]
+	}
+	cur = bMeet
+	for i := range m {
+		nodes[n+i] = cur
+		cur = scr.parent[cur]
+	}
+	return nodes
 }
 
 // spTree is a single-source minimum-hop parent tree, reused across every
@@ -316,7 +446,7 @@ func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, rm *gra
 	if nodes == nil {
 		return nodesRels{}, false
 	}
-	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
+	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}, true
 }
 
 // allShortestPaths enumerates every minimum-hop path a..b: a forward BFS
@@ -327,33 +457,31 @@ func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *gr
 	if a == b {
 		return []nodesRels{{nodes: []graph.NodeID{a}}}
 	}
-	clear(scr.dist)
-	dist := scr.dist
-	dist[a] = 0
+	// spWalk opens the generation; dist entries are valid under its stamp
+	// (scr.cur) until the next search begins.
 	spWalk(ctx, a, sp, rm, hop, scr, func(v, _ graph.NodeID, d uint64) bool {
-		dist[v] = d
+		scr.dist[v] = uint32(d)
 		return false
 	}, func() bool {
-		_, reached := dist[b]
-		return reached
+		return scr.gen[b] == scr.cur
 	})
-	if _, reached := dist[b]; !reached {
+	if scr.gen[b] != scr.cur {
 		return nil
 	}
 	rdir := flipDir(sp.Dir)
 	var chains [][]graph.NodeID
 	suffix := []graph.NodeID{b}
-	enumeratePaths(ctx, a, dist, rdir, rm, hop, &suffix, &chains)
+	enumeratePaths(ctx, a, scr, rdir, rm, hop, &suffix, &chains)
 	out := make([]nodesRels, len(chains))
 	for i, nodes := range chains {
-		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}
+		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}
 	}
 	return out
 }
 
 // enumeratePaths extends the reversed suffix [b..v] by each predecessor u
-// with dist[u] == dist[v]-1; reaching a completes one path.
-func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64, rdir graph.Direction, rm *graph.RelMatcher, hop *hopFilter, suffix *[]graph.NodeID, out *[][]graph.NodeID) {
+// whose stamped distance is dist[v]-1; reaching a completes one path.
+func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Direction, rm *graph.RelMatcher, hop *hopFilter, suffix *[]graph.NodeID, out *[][]graph.NodeID) {
 	if len(*out) >= maxAllShortestPaths {
 		return
 	}
@@ -365,28 +493,37 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, dist map[graph.NodeID]uint64,
 		*out = append(*out, path)
 		return
 	}
-	want := dist[v] - 1
+	want := scr.dist[v] - 1
 	filteredNeighbors(ctx, v, rdir, rm, hop, func(u graph.NodeID) {
 		if len(*out) >= maxAllShortestPaths {
 			return
 		}
-		if d, ok := dist[u]; ok && d == want {
+		if scr.gen[u] == scr.cur && scr.dist[u] == want {
 			*suffix = append(*suffix, u)
-			enumeratePaths(ctx, a, dist, rdir, rm, hop, suffix, out)
+			enumeratePaths(ctx, a, scr, rdir, rm, hop, suffix, out)
 			*suffix = (*suffix)[:len(*suffix)-1]
 		}
 	})
 }
 
 // pathRelPositions resolves each consecutive node pair's relationship
-// position (the first accepted relationship between them), reading each
-// hop's candidates through the batch seam into the scratch buffers.
-func pathRelPositions(ctx *eval.Ctx, scr *spScratch, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
+// position (the first accepted relationship between them). Each hop reads
+// from its lower-degree endpoint with an early-exit scan -- resolving from
+// the higher-degree side pays that side's whole adjacency, and a path
+// found by never expanding a hub's ply must not re-pay the hub here.
+// Positions read identically from either side (the incoming seam maps to
+// stored positions), so the side pick cannot change the resolved rel set.
+func pathRelPositions(ctx *eval.Ctx, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
 	rels := make([]uint32, 0, max(len(nodes)-1, 0))
+	rdir := flipDir(dir)
 	for i := 0; i+1 < len(nodes); i++ {
-		scr.nbNodes, scr.nbPoss = ctx.G.AppendRelationshipsMatched(scr.nbNodes[:0], scr.nbPoss[:0], nodes[i], dir, rm)
-		for j, nb := range scr.nbNodes {
-			if p := scr.nbPoss[j]; nb == nodes[i+1] && (hop == nil || hop.keep(ctx, p)) {
+		x, y := nodes[i], nodes[i+1]
+		from, fdir, want := x, dir, y
+		if ctx.G.Degree(y, rdir) < ctx.G.Degree(x, dir) {
+			from, fdir, want = y, rdir, x
+		}
+		for nb, p := range ctx.G.RelationshipsMatched(from, fdir, rm) {
+			if nb == want && (hop == nil || hop.keep(ctx, p)) {
 				rels = append(rels, p)
 				break
 			}
