@@ -402,9 +402,16 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	for i, p := range proj.Post {
 		postC[i] = compileEval(ctx, p.Expr, postSlots)
 	}
+	// One arena backs every output row instead of a make per group: a
+	// grouping over a million groups then pays one large allocation plus its
+	// row-header slice, not a million small ones. Each row is a stride
+	// window (nCols visible columns + the hidden accumulator slots the
+	// post-wrappers read); only the visible prefix is published.
+	stride := nCols + proj.NHidden
+	arena := make([]value.Value, a.nGroups*stride)
 	out := make([][]value.Value, 0, a.nGroups)
 	for idx := 0; idx < a.nGroups; idx++ {
-		row := make([]value.Value, nCols+proj.NHidden)
+		row := arena[idx*stride : idx*stride+stride : idx*stride+stride]
 		keys := a.keysOf(idx)
 		for k, gi := range proj.GroupIdx {
 			row[gi] = keys[k]

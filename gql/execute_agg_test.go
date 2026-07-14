@@ -70,6 +70,33 @@ func TestCountDistinctVsCountStar(t *testing.T) {
 	}
 }
 
+// Multiple groups with a post-aggregate wrapper: the finalize rows share one
+// arena backing slab, so each group's row must stay an independent window
+// (no aliasing) and the hidden accumulator slot must read back correctly.
+func TestGroupedRowsDoNotAliasAcrossArena(t *testing.T) {
+	g := socialGraph(t)
+	rows := runBoth(t, g,
+		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) "+
+			"RETURN c.name AS company, count(*) AS n, count(*) * 2 AS dbl ORDER BY company")
+	type row struct {
+		c      string
+		n, dbl int64
+	}
+	var got []row
+	for r := range rows.All() {
+		cv, _ := r.Get("company")
+		c, _ := cv.AsStr()
+		nv, _ := r.Get("n")
+		n, _ := nv.AsInt()
+		dv, _ := r.Get("dbl")
+		d, _ := dv.AsInt()
+		got = append(got, row{c, n, d})
+	}
+	if len(got) != 2 || got[0] != (row{"Acme", 2, 4}) || got[1] != (row{"Globex", 1, 2}) {
+		t.Fatalf("arena-backed grouped rows = %+v", got)
+	}
+}
+
 func TestNumericAggregatesAndCollect(t *testing.T) {
 	g := socialGraph(t)
 	rows := runBoth(t, g,
