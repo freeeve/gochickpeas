@@ -118,6 +118,20 @@ func (t *i64Term) read(row []value.Value) (int64, uint8) {
 // deriveRowFast specializes a compiled tree whose root is a comparison
 // over two supported terms; nil keeps the tree evaluation.
 func deriveRowFast(c cnode, g *chickpeas.Snapshot) rowFast {
+	// A bare prop-vs-const comparison is already fused to cCmpPropConst; derive
+	// the monomorphic i64 compare from it so the common filter shape skips
+	// value.Compare's type switch too (rev marks the const on the left).
+	if cc, ok := c.(*cCmpPropConst); ok {
+		if cc.prop.reader.node.kind != colI64 {
+			return nil
+		}
+		k, exact, kok := constI64Val(cc.c)
+		if !kok {
+			return nil
+		}
+		t := i64Term{slot: cc.prop.slot, col: cc.prop.reader.node.i64}
+		return propLitFast(t, k, exact, opKeep(cc.op), cc.rev, c, g)
+	}
 	bin, ok := c.(*cBin)
 	if !ok {
 		return nil
@@ -142,29 +156,115 @@ func deriveRowFast(c cnode, g *chickpeas.Snapshot) rowFast {
 	}
 	ta, aok := i64TermOf(bin.l)
 	tb, bok := i64TermOf(bin.r)
-	if !aok || !bok {
-		return nil
+	if aok && bok {
+		return func(ctx *eval.Ctx, row []value.Value, slots map[string]int) value.Value {
+			va, sa := ta.read(row)
+			if sa == readFallback {
+				return ceval(ctx, c, g, row, slots)
+			}
+			vb, sb := tb.read(row)
+			if sb == readFallback {
+				return ceval(ctx, c, g, row, slots)
+			}
+			if sa == readNull || sb == readNull {
+				return value.Null()
+			}
+			// Same-kind ints compare through float64 exactly like
+			// value.Compare's asNum path -- mirroring is the invariant.
+			o, comparable := cmpFloat(float64(va), float64(vb))
+			if !comparable {
+				return value.Null()
+			}
+			return value.Bool(keep(o))
+		}
 	}
+	// One typed term against a foldable i64 literal -- WHERE p.age > 30 /
+	// WHERE m.creationDate < datetime(...), the most common filter shape, which
+	// the two-term derivation above silently declined.
+	if aok {
+		if k, exact, kok := constI64(bin.r); kok {
+			return propLitFast(ta, k, exact, keep, false, c, g)
+		}
+	}
+	if bok {
+		if k, exact, kok := constI64(bin.l); kok {
+			return propLitFast(tb, k, exact, keep, true, c, g)
+		}
+	}
+	return nil
+}
+
+// constI64 folds a bare comparison literal to the int64 the monomorphic path
+// compares against, reporting whether value.Compare orders it EXACTLY (int64)
+// rather than through the float64 asNum path. Only Int and Temporal literals
+// fold: an Int compares Int-vs-Int through asNum (exact=false, matching the
+// two-term path and the always-Int column read); a Temporal compares against
+// the i64 epoch-millis column through cmpInt (exact=true), so folding it to its
+// millis is bit-identical. Float/Null/Str/Bool/Duration are declined -- an
+// integer compare cannot reproduce their semantics (truncating a float would
+// silently change the result).
+func constI64(c cnode) (k int64, exact, ok bool) {
+	lit, isLit := c.(*cLit)
+	if !isLit {
+		return 0, false, false
+	}
+	return constI64Val(lit.v)
+}
+
+// constI64Val is constI64's fold over an already-extracted value -- the form
+// cCmpPropConst needs, whose folded constant is a value.Value rather than a
+// cLit node. Same Int/Temporal-only rule; see constI64.
+func constI64Val(v value.Value) (k int64, exact, ok bool) {
+	if n, isInt := v.AsInt(); isInt {
+		return n, false, true
+	}
+	if ms, _, isTemporal := v.AsTemporal(); isTemporal {
+		return ms, true, true
+	}
+	return 0, false, false
+}
+
+// propLitFast is the one-sided fast path: a typed i64 term compared to a folded
+// constant -- one column read and an integer compare per row. exact selects the
+// comparison value.Compare uses for the literal's kind (int64 for a Temporal,
+// float64 asNum for an Int); litOnLeft preserves operand order so
+// datetime(...) < m.creationDate is not silently inverted.
+func propLitFast(t i64Term, k int64, exact bool, keep func(int) bool, litOnLeft bool, c cnode, g *chickpeas.Snapshot) rowFast {
 	return func(ctx *eval.Ctx, row []value.Value, slots map[string]int) value.Value {
-		va, sa := ta.read(row)
-		if sa == readFallback {
+		v, s := t.read(row)
+		if s == readFallback {
 			return ceval(ctx, c, g, row, slots)
 		}
-		vb, sb := tb.read(row)
-		if sb == readFallback {
-			return ceval(ctx, c, g, row, slots)
-		}
-		if sa == readNull || sb == readNull {
+		if s == readNull {
 			return value.Null()
 		}
-		// Same-kind ints compare through float64 exactly like
-		// value.Compare's asNum path -- mirroring is the invariant.
-		o, comparable := cmpFloat(float64(va), float64(vb))
+		lo, ro := v, k
+		if litOnLeft {
+			lo, ro = k, v
+		}
+		var o int
+		comparable := true
+		if exact {
+			o = cmpI64(lo, ro)
+		} else {
+			o, comparable = cmpFloat(float64(lo), float64(ro))
+		}
 		if !comparable {
 			return value.Null()
 		}
 		return value.Bool(keep(o))
 	}
+}
+
+// cmpI64 is the exact int64 ordering value.Compare uses for temporal operands.
+func cmpI64(a, b int64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
 }
 
 // i64TermOf resolves a comparison side: a bare i64-column property read,

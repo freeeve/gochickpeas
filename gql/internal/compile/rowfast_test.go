@@ -81,12 +81,80 @@ func TestRowFastMatchesInterpreter(t *testing.T) {
 	for _, src := range []string{
 		"a.ts > b.ts + duration({months: 1})", // calendar-dependent shift
 		"a.ts + 1.5 > b.ts",                   // float shift
-		"a.ts > 5",                            // prop-vs-const fuses elsewhere
 		"a.ts + b.k > 3",                      // two-prop arithmetic side
+		"a.ts > 1.5",                          // FLOAT literal: must decline (truncation would change the result)
+		"1.5 < a.ts",                          // float literal on the left
+		"a.name = 'x'",                        // string literal: not an integer compare
 	} {
 		c := New(ctx, exprOf(t, src), slots, g)
 		if c.fast != nil {
 			t.Fatalf("%q unexpectedly derived a fast form", src)
+		}
+	}
+}
+
+// TestRowFastPropVsLiteral is the prop-vs-LITERAL differential matrix (task
+// 102): every operator x integer/temporal literal x operand order x a possibly
+// shifted term must derive a fast form whose per-row answer is bit-identical to
+// the interpreter, over the same absent/null/non-node/short-row inputs. Integer
+// literals compare through the float64 asNum path; temporal literals fold to
+// epoch millis and compare exactly (cmpInt) -- both must mirror value.Compare.
+func TestRowFastPropVsLiteral(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 4)
+	var ids []chickpeas.NodeID
+	for i := range 6 {
+		n, _ := b.AddNode("N")
+		ids = append(ids, n)
+		switch i {
+		case 0, 1, 2, 3:
+			_ = b.SetProp(n, "ts", int64(1_311_120_000_000+int64(i)*86_400_000)) // ~2011-07 epoch millis, 1 day apart
+			_ = b.SetProp(n, "k", int64(i*10))
+		case 4:
+			_ = b.SetProp(n, "k", int64(9_223_372_036_854_775_000)) // near MaxInt64
+			// 5: all props missing
+		}
+	}
+	g := b.Finalize("rowfast_lit")
+	ctx := &eval.Ctx{G: graph.New(g)}
+	slots := map[string]int{"a": 0}
+
+	exprs := []string{
+		// integer literal, both operand orders, every operator
+		"a.k > 20", "a.k < 20", "a.k = 20", "a.k <> 20", "a.k >= 20", "a.k <= 20",
+		"20 > a.k", "20 < a.k", "20 = a.k", "20 <= a.k",
+		// shifted term vs integer literal
+		"a.k + 5 > 20", "a.k - 5 < 20", "10 + a.k >= 20",
+		// temporal literal (folds to epoch millis, exact int64 compare)
+		"a.ts < datetime('2011-07-25')", "a.ts >= datetime('2011-07-25')",
+		"datetime('2011-07-25') > a.ts", "a.ts = datetime('2011-07-25')",
+		// shifted temporal term vs temporal literal
+		"a.ts + duration({hours: 4}) < datetime('2011-07-25')",
+	}
+	for _, src := range exprs {
+		e := exprOf(t, src)
+		c := New(ctx, e, slots, g)
+		if c.fast == nil {
+			t.Fatalf("%q did not derive a fast form (compiled to %T)", src, c.c)
+		}
+		for _, ia := range ids {
+			row := []value.Value{value.Node(graph.NodeID(ia))}
+			got := c.Eval(ctx, row, slots)
+			want := eval.Eval(ctx, e, row, slots)
+			if !value.Identical(got, want) {
+				t.Fatalf("%q a=%d: fast %v, interp %v", src, ia, got, want)
+			}
+		}
+		for _, row := range [][]value.Value{
+			{value.Null()},
+			{value.Int(42)},
+			{value.Str("x")},
+			{},
+		} {
+			got := c.Eval(ctx, row, slots)
+			want := eval.Eval(ctx, e, row, slots)
+			if !value.Identical(got, want) {
+				t.Fatalf("%q row %v: fast %v, interp %v", src, row, got, want)
+			}
 		}
 	}
 }
