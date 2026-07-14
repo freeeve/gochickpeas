@@ -549,3 +549,64 @@ func TestDedupEndpointsUnderDistinct(t *testing.T) {
 		t.Fatal("a named rel variable must keep per-trail rows")
 	}
 }
+
+// TestWherePropEqualitySeeksIndex (106): a WHERE-form equality on an indexed
+// property must seek the index, exactly like the inline {name: ...} spelling --
+// not fall back to a full label scan + post-filter.
+func TestWherePropEqualitySeeksIndex(t *testing.T) {
+	g := buildFixture(t)
+	p := mustPlan(t, g, "MATCH (tg:Tag) WHERE tg.name = 'tagA' RETURN tg")
+	src := firstMatch(t, p).Ops[0].Source
+	if src.Kind != ScanProperty || src.Label != "Tag" || src.Key != "name" {
+		t.Fatalf("anchor = %+v, want a Tag.name property seek (WHERE-form must seek like inline)", src)
+	}
+	// The equality stays in the WHERE to finalize (superset-source precedent).
+	if firstMatch(t, p).Where == nil {
+		t.Fatal("lifted equality must remain as a finalizing filter")
+	}
+}
+
+// TestWherePropParamSeeksButAbstains (106): a param-valued WHERE equality still
+// lowers to a ScanProperty (an index seek at runtime) but keeps the param as its
+// value -- no plan-time resolution, so a shared cached plan stays value-blind.
+func TestWherePropParamSeeksButAbstains(t *testing.T) {
+	g := buildFixture(t)
+	p := mustPlan(t, g, "MATCH (tg:Tag) WHERE tg.name = $n RETURN tg")
+	src := firstMatch(t, p).Ops[0].Source
+	if src.Kind != ScanProperty || src.Key != "name" {
+		t.Fatalf("anchor = %+v, want a Tag.name property seek", src)
+	}
+	if src.Value.Kind != ast.LitParam && src.Value.Kind != ast.LitNamedParam {
+		t.Fatalf("seek value kind = %v, want a param (no plan-time value)", src.Value.Kind)
+	}
+}
+
+// TestScanSourcePicksMostSelectiveProp (107): with several inline props the
+// lowerer must seek the SAME one anchorCard scored -- the smallest posting --
+// not the first written. Here the selective prop (email, 1 node) is written
+// second behind a common one (country, 10 nodes); the pre-107 code scanned
+// country. This regression is invisible to row parity (it returns the right
+// rows), which is exactly why 112's plan corpus exists.
+func TestScanSourcePicksMostSelectiveProp(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 4)
+	for i := range 10 {
+		n, err := b.AddNode("Person")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(n, "country", "US"); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			if err := b.SetProp(n, "email", "rare@x"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	g := graph.New(b.Finalize("country", "email"))
+	p := mustPlan(t, g, "MATCH (n:Person {country: 'US', email: 'rare@x'}) RETURN n")
+	src := firstMatch(t, p).Ops[0].Source
+	if src.Kind != ScanProperty || src.Key != "email" {
+		t.Fatalf("seek key = %q, want email (most selective posting), not the first-written prop", src.Key)
+	}
+}

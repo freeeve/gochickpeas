@@ -7,6 +7,7 @@ package plan
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 )
 
 // assignSlot resolves a node pattern's slot: an existing variable keeps its
@@ -162,18 +163,116 @@ func isIDOfVar(e ast.Expr, varName string) bool {
 	return ok && v.Name == varName
 }
 
-// scanSource picks a fresh node's default scan source from its labels and
-// inline props: an indexed property seek, a label scan, or all nodes.
-func scanSource(node *ast.NodePat) ScanSource {
-	var anchor *ast.PropEntry
-	for i := range node.Props {
-		if node.Props[i].Val.Kind != ast.LitNull {
-			anchor = &node.Props[i]
-			break
+// propEq is a var-property equality recognized as an indexed-seek anchor:
+// key = val, val a seekable literal (Null excluded).
+type propEq struct {
+	key string
+	val ast.Literal
+}
+
+// propEqConjuncts collects the top-level WHERE conjuncts of the form
+// `varName.key = <literal|param>` (either operand order) -- the seekable
+// equalities the inline `{key: val}` spelling would have produced, so the two
+// spellings of one query plan alike. Only top-level AND conjuncts qualify: an
+// equality nested under an OR is not a guaranteed filter and must not lift.
+func propEqConjuncts(where ast.Expr, varName string) []propEq {
+	if where == nil || varName == "" {
+		return nil
+	}
+	var conjs []ast.Expr
+	SplitAnd(where, &conjs)
+	var out []propEq
+	for _, c := range conjs {
+		b, ok := c.(*ast.Binary)
+		if !ok || b.Op != ast.OpEq {
+			continue
+		}
+		if k, v, ok := propEqSide(b.LHS, b.RHS, varName); ok {
+			out = append(out, propEq{key: k, val: v})
+		} else if k, v, ok := propEqSide(b.RHS, b.LHS, varName); ok {
+			out = append(out, propEq{key: k, val: v})
 		}
 	}
-	if len(node.Labels) > 0 && anchor != nil {
-		return ScanSource{Kind: ScanProperty, Label: node.Labels[0], Key: anchor.Key, Value: anchor.Val}
+	return out
+}
+
+// propEqSide matches propExpr as varName.key and litExpr as a seekable literal,
+// returning (key, value). A Null literal is rejected (= null is never true, so
+// it is not a seek). Params are accepted: they seek but abstain from costing.
+func propEqSide(propExpr, litExpr ast.Expr, varName string) (string, ast.Literal, bool) {
+	p, ok := propExpr.(*ast.Prop)
+	if !ok || p.Var != varName {
+		return "", ast.Literal{}, false
+	}
+	l, ok := litExpr.(*ast.Lit)
+	if !ok {
+		return "", ast.Literal{}, false
+	}
+	switch l.Value.Kind {
+	case ast.LitInt, ast.LitFloat, ast.LitStr, ast.LitBool, ast.LitParam, ast.LitNamedParam:
+		return p.Key, l.Value, true
+	}
+	return "", ast.Literal{}, false
+}
+
+// propSeekPick is the property a labelled node anchors on via the value index,
+// chosen over both inline `{key: val}` props and top-level WHERE equalities on
+// the node. A concrete value carries its exact posting length; a param abstains
+// (no plan-time value) and is used only when nothing concrete seeks -- so a
+// param never bakes a value into a shared cached plan.
+type propSeekPick struct {
+	key     string
+	val     ast.Literal
+	card    uint64 // exact posting length; meaningful only when !abstain
+	abstain bool   // param value: seekable but uncosted
+}
+
+// bestPropSeek is the single source of truth for which property a fresh
+// labelled node seeks on: the most selective one -- smallest exact posting
+// length -- across inline props and WHERE-form equalities. rank, anchorCard,
+// resolveAnchorNodes and scanSource all consult it, so the plan that is COSTED
+// is always the plan that is BUILT (the two drifting apart is the bug 107
+// names). A concrete prop always beats a param; among concretes, min posting
+// wins; ok=false for an unlabelled node or one with no seekable prop.
+func bestPropSeek(node *ast.NodePat, where ast.Expr, g graph.Graph) (propSeekPick, bool) {
+	if len(node.Labels) == 0 {
+		return propSeekPick{}, false
+	}
+	label := node.Labels[0]
+	var best propSeekPick
+	found := false
+	consider := func(key string, val ast.Literal) {
+		switch val.Kind {
+		case ast.LitNull:
+			return
+		case ast.LitParam, ast.LitNamedParam:
+			if !found { // a param seeks, but any concrete prop is preferred
+				best = propSeekPick{key: key, val: val, abstain: true}
+				found = true
+			}
+			return
+		}
+		c := uint64(setLen(g.NodesWithProperty(label, key, semantics.LitValue(val))))
+		if !found || best.abstain || c < best.card {
+			best = propSeekPick{key: key, val: val, card: c}
+			found = true
+		}
+	}
+	for i := range node.Props {
+		consider(node.Props[i].Key, node.Props[i].Val)
+	}
+	for _, eq := range propEqConjuncts(where, node.Var) {
+		consider(eq.key, eq.val)
+	}
+	return best, found
+}
+
+// scanSource picks a fresh node's default scan source: the most selective
+// indexed property seek over its inline props and WHERE equalities (via
+// bestPropSeek), else a label scan, else all nodes.
+func scanSource(node *ast.NodePat, where ast.Expr, g graph.Graph) ScanSource {
+	if ps, ok := bestPropSeek(node, where, g); ok {
+		return ScanSource{Kind: ScanProperty, Label: node.Labels[0], Key: ps.key, Value: ps.val}
 	}
 	if len(node.Labels) > 0 {
 		return ScanSource{Kind: ScanLabel, Label: node.Labels[0]}

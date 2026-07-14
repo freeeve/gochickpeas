@@ -230,17 +230,15 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 		if n.Var != "" && (idSeekLiteral(where, n.Var) != nil || idSeekVar(where, n.Var, slots, bound) != NoSlot) {
 			return 3
 		}
-		hasConcrete := false
-		for i := range n.Props {
-			if n.Props[i].Val.Kind != ast.LitNull {
-				hasConcrete = true
-				break
-			}
-		}
-		if len(n.Labels) > 0 && (hasConcrete || (n.Var != "" && textMatchSeek(where, n.Var) != nil)) {
-			return 2
-		}
 		if len(n.Labels) > 0 {
+			// A value seek -- inline prop OR a WHERE equality (bestPropSeek sees
+			// both) -- or a substring seek makes this a tier-2 anchor.
+			if _, ok := bestPropSeek(n, where, g); ok {
+				return 2
+			}
+			if n.Var != "" && textMatchSeek(where, n.Var) != nil {
+				return 2
+			}
 			return 1
 		}
 		return 0
@@ -300,7 +298,7 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 		source = ScanSource{Kind: ScanArg, Slot: s0}
 	} else {
 		bound[s0] = true
-		source = startScanSource(pattern, where, slots, bound)
+		source = startScanSource(pattern, where, slots, bound, g)
 	}
 	ops = append(ops, BindOp{Kind: OpScan, Slot: s0, Source: source, Labels: pattern.Start.Labels, Props: pattern.Start.Props, RelSlot: NoSlot})
 
@@ -416,7 +414,7 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 // conjunct, a per-row id-variable seek, a substring-index candidate scan
 // (labelled start, no inline anchor property), else the label/property/all
 // scan.
-func startScanSource(pattern *ast.Pattern, where ast.Expr, slots map[string]int, bound map[int]bool) ScanSource {
+func startScanSource(pattern *ast.Pattern, where ast.Expr, slots map[string]int, bound map[int]bool, g graph.Graph) ScanSource {
 	sv := pattern.Start.Var
 	if sv != "" {
 		if lit := idSeekLiteral(where, sv); lit != nil {
@@ -425,31 +423,27 @@ func startScanSource(pattern *ast.Pattern, where ast.Expr, slots map[string]int,
 		if s := idSeekVar(where, sv, slots, bound); s != NoSlot {
 			return ScanSource{Kind: ScanNodeIDVar, Slot: s}
 		}
-		hasConcrete := false
-		for i := range pattern.Start.Props {
-			if pattern.Start.Props[i].Val.Kind != ast.LitNull {
-				hasConcrete = true
-				break
+		// A value seek -- an inline prop OR a WHERE equality (bestPropSeek sees
+		// both) -- outranks the substring / EXISTS-seed fallbacks; only reach
+		// for those when nothing seeks by value.
+		if _, hasSeek := bestPropSeek(&pattern.Start, where, g); !hasSeek {
+			if len(pattern.Start.Labels) > 0 {
+				if ts := textMatchSeek(where, sv); ts != nil {
+					return ScanSource{Kind: ScanTextMatch, Label: pattern.Start.Labels[0], Field: ts.field, Mode: ts.mode, Value: ts.needle}
+				}
 			}
-		}
-		if !hasConcrete && len(pattern.Start.Labels) > 0 {
-			if ts := textMatchSeek(where, sv); ts != nil {
-				return ScanSource{Kind: ScanTextMatch, Label: pattern.Start.Labels[0], Field: ts.field, Mode: ts.mode, Value: ts.needle}
-			}
-		}
-		// An EXISTS conjunct correlated to sv and anchored at a bound
-		// variable narrows the scan to its candidate superset; the kept
-		// conjunct finalizes. Only worth it against a broad base source.
-		if !hasConcrete {
+			// An EXISTS conjunct correlated to sv and anchored at a bound
+			// variable narrows the scan to its candidate superset; the kept
+			// conjunct finalizes. Only worth it against a broad base source.
 			if seeds := existsSeedChains(where, sv, slots, bound); seeds != nil {
-				src := scanSource(&pattern.Start)
+				src := scanSource(&pattern.Start, where, g)
 				src.Kind = ScanExistsSeed
 				src.Seeds = seeds
 				return src
 			}
 		}
 	}
-	return scanSource(&pattern.Start)
+	return scanSource(&pattern.Start, where, g)
 }
 
 // existsSeedChains recognizes a WHERE conjunct that is EXISTS { pattern }

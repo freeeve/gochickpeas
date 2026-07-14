@@ -28,15 +28,13 @@ func anchorCard(n *ast.NodePat, where ast.Expr, slots map[string]int, bound map[
 	if len(n.Labels) > 0 {
 		label := n.Labels[0]
 		best := int64(-1)
-		for i := range n.Props {
-			lit := n.Props[i].Val
-			if lit.Kind == ast.LitParam || lit.Kind == ast.LitNamedParam || lit.Kind == ast.LitNull {
-				continue
-			}
-			c := int64(setLen(g.NodesWithProperty(label, n.Props[i].Key, semantics.LitValue(lit))))
-			if best < 0 || c < best {
-				best = c
-			}
+		// The costed seek is the SAME one scanSource builds (bestPropSeek is the
+		// shared oracle over inline props and WHERE equalities), so the rank that
+		// justifies this anchor can never be a posting list the lowerer discards.
+		// A param seek abstains -- no plan-time value -- and falls through to the
+		// label-wide cardinality below.
+		if ps, ok := bestPropSeek(n, where, g); ok && !ps.abstain {
+			best = int64(ps.card)
 		}
 		if n.Var != "" {
 			if ts := textMatchSeek(where, n.Var); ts != nil && ts.needle.Kind == ast.LitStr {
@@ -71,12 +69,11 @@ func resolveAnchorNodes(n *ast.NodePat, where ast.Expr, slots map[string]int, bo
 	if len(n.Labels) == 0 {
 		return nil, false
 	}
-	for i := range n.Props {
-		lit := n.Props[i].Val
-		if lit.Kind == ast.LitParam || lit.Kind == ast.LitNamedParam || lit.Kind == ast.LitNull {
-			continue
-		}
-		return setSlice(g.NodesWithProperty(n.Labels[0], n.Props[i].Key, semantics.LitValue(lit))), true
+	// Resolve the SAME prop scanSource seeks (bestPropSeek), so the exact-degree
+	// read here matches the plan actually built. A param seek abstains (no
+	// plan-time value).
+	if ps, ok := bestPropSeek(n, where, g); ok && !ps.abstain {
+		return setSlice(g.NodesWithProperty(n.Labels[0], ps.key, semantics.LitValue(ps.val))), true
 	}
 	return nil, false
 }
