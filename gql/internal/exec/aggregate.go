@@ -14,19 +14,22 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// aggState is one aggregate accumulator.
+// aggState is one aggregate accumulator. Fields are ordered wide-to-narrow
+// so the four booleans pack into one tail word instead of each forcing its
+// own padding slot -- the struct is allocated once per group per aggregate,
+// so shaving its padding scales with the group count.
 type aggState struct {
-	kind    plan.AggKind
-	count   int64
+	minmax  value.Value
+	items   []value.Value
 	sumI    acc128
+	count   int64
 	sumF    float64
-	isFloat bool
-	any     bool
 	avgSum  float64
 	avgN    int64
-	minmax  value.Value
+	kind    plan.AggKind
+	isFloat bool
+	any     bool
 	hasMM   bool
-	items   []value.Value
 }
 
 // update folds one argument in (arg absent means count(*)).
