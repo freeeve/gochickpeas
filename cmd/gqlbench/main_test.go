@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -115,6 +116,32 @@ func TestDiffGoldenDetectsDrift(t *testing.T) {
 	for _, want := range []string{"A: plan shape changed", "C: new query", "B: in golden but absent"} {
 		if !contains(d, want) {
 			t.Fatalf("expected drift %q in %s", want, joined)
+		}
+	}
+}
+
+// TestGoldenFileWellFormed guards the committed plan-shape corpus in plain CI
+// (no manifest, no graph load): it must parse to the manifest's 89 queries and
+// every plan must round-trip through format+parse unchanged, so a later capture
+// writes a byte-stable file and verify never spuriously drifts on a corrupted
+// or hand-edited golden.
+func TestGoldenFileWellFormed(t *testing.T) {
+	data, err := os.ReadFile("testdata/plans_golden.txt")
+	if err != nil {
+		t.Fatalf("read committed golden: %v", err)
+	}
+	entries := parseGolden(string(data))
+	if len(entries) != 89 {
+		t.Fatalf("committed golden has %d queries, want 89 (regenerate with -plans-golden-capture if the manifest changed)", len(entries))
+	}
+	var ordered []goldenEntry
+	for id, plan := range entries {
+		ordered = append(ordered, goldenEntry{id: id, plan: plan})
+	}
+	round := parseGolden(formatGolden(ordered))
+	for id, plan := range entries {
+		if round[id] != plan {
+			t.Fatalf("committed golden entry %s did not round-trip through format+parse", id)
 		}
 	}
 }

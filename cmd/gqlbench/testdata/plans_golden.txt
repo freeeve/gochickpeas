@@ -1,0 +1,1239 @@
+# gochickpeas canonical plan-shape golden.
+# Regenerate deliberately after an intended planner change:
+#   gqlbench -manifest <...> -plans-golden <this file> -plans-golden-capture
+# A diff here is a review prompt: the planner moved a plan.
+
+=== BI/Q1
+Segment 0
+  NodeScan (message:Message)
+  Filter (message.creationDate < zoned_datetime('2011-12-01'))
+  Aggregate (group=[]; count(message))
+Segment 1
+  Project [totalMessageCountInt, totalMessageCount]
+Segment 2
+  NodeScan (message:Message)
+  Filter (message.creationDate < zoned_datetime('2011-12-01') AND message.content IS NOT NULL)
+  Project [totalMessageCountInt, totalMessageCount, message, year]
+Segment 3
+  Project [totalMessageCountInt, totalMessageCount, message, year, isComment]
+Segment 4
+  Project [totalMessageCountInt, totalMessageCount, message, year, isComment, lengthCategory]
+Segment 5
+  Aggregate (group=[totalMessageCount, year, isComment, lengthCategory]; count(message), sum(message.length), count(message), sum(message.length))
+Segment 6
+  Project [year, isComment, lengthCategory, messageCount, averageMessageLength, sumMessageLength, percentageOfMessages]
+  OrderBy [year DESC, isComment, lengthCategory]
+
+=== BI/Q2
+Segment 0
+  NodeByProperty (_:TagClass {name = 'MusicalArtist'})
+    [anchor: :TagClass {name} card=N, fan-out N · vs tag:Tag card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (_)<-[:HAS_TYPE]-(tag)
+  Argument (tag)
+  Expand (tag)<-[:HAS_TAG]-(message1)
+  Filter (zoned_datetime('2012-06-01') <= message1.creationDate AND message1.creationDate < zoned_datetime('2012-06-01') + duration('P100D'))
+  Aggregate (group=[tag]; count(message1))
+Segment 1
+  Argument (tag)
+  Expand (tag)<-[:HAS_TAG]-(message2)
+  Filter (zoned_datetime('2012-06-01') + duration('P100D') <= message2.creationDate AND message2.creationDate < zoned_datetime('2012-06-01') + duration('P200D'))
+  Aggregate (group=[tag, countWindow1]; count(message2))
+Segment 2
+  Project [tagName, countWindow1, countWindow2, diff]
+  OrderBy [diff DESC, tagName]
+  Limit 100
+
+=== BI/Q3
+NodeByProperty (_:Country {name = 'Burma'})
+  [anchor: :Country {name} card=N, fan-out N · vs :TagClass {name} card=N, fan-out N → smaller first-hop degree (hub-aware)]
+Expand (_)<-[:IS_PART_OF]-(_)
+Expand (_)<-[:IS_LOCATED_IN]-(person)
+Expand (person)<-[:HAS_MODERATOR]-(forum)
+Expand (forum)-[:CONTAINER_OF]->(post)
+VarExpand (post)<-[:REPLY_OF*0..]-(message)
+Expand (message)-[:HAS_TAG]->(_)
+Expand (_)-[:HAS_TYPE]->(_)
+Aggregate (group=[forumId, forumTitle, forumCreationDate, personId]; count(DISTINCT message))
+OrderBy [messageCount DESC, forumId]
+Limit 20
+
+=== BI/Q4
+Segment 0
+  NodeScan (country:Country)
+    [anchor: country:Country card=N, fan-out ~N · vs forum:Forum card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (country)<-[:IS_PART_OF]-(_)
+  Expand (_)<-[:IS_LOCATED_IN]-(person)
+  Expand (person)<-[:HAS_MEMBER]-(forum)
+  Filter (forum.creationDate > zoned_datetime('2010-01-29'))
+  Aggregate (group=[country, forum]; count(person))
+Segment 1
+  Project [country, forum, numberOfMembers]
+  OrderBy [numberOfMembers DESC, forum.id, country.id]
+Segment 2
+  Distinct Project [topForum]
+  Limit 100
+Segment 3
+  Aggregate (group=[]; collect(topForum))
+Segment 4
+  CallSubquery [person, messageCount]
+      Branch 0
+        Segment 0
+          Project [topForums]
+        Segment 1
+          Unwind (topForums AS topForum1)
+          Argument (topForum1)
+          Expand (topForum1)-[:CONTAINER_OF]->(post)
+          VarExpand (post)<-[:REPLY_OF*0..]-(message)
+          Expand (message)-[:HAS_CREATOR]->(person)
+          Expand (person)<-[:HAS_MEMBER]-(topForum2)
+          Filter (topForum2 IN topForums)
+          Aggregate (group=[person]; count(DISTINCT message))
+      UNION ALL
+      Branch 1
+        Segment 0
+          Project [topForums]
+        Segment 1
+          Unwind (topForums AS topForum1)
+          Argument (topForum1:Forum)
+          Expand (topForum1)-[:HAS_MEMBER]->(person)
+          Project [person, messageCount]
+  Aggregate (group=[personId]; sum(messageCount))
+  OrderBy [messageCount DESC, personId]
+  Limit 100
+
+=== BI/Q5
+Segment 0
+  NodeByProperty (tag:Tag {name = 'Abbas_I_of_Persia'})
+    [anchor: tag:Tag {name} card=N, fan-out N,N · vs person:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (tag)<-[:HAS_TAG]-(message)
+  Expand (message)-[:HAS_CREATOR]->(person)
+  Argument (message)
+  Expand (message)<-[:LIKES]-(_)
+  Aggregate (group=[person, message]; count(likes))
+Segment 1
+  Argument (message)
+  Expand (message)<-[:REPLY_OF]-(reply)
+  Aggregate (group=[person, message, likeCount]; count(reply))
+Segment 2
+  Aggregate (group=[person]; count(message), sum(likeCount), sum(replyCount))
+Segment 3
+  Project [personId, replyCount, likeCount, messageCount, score]
+  OrderBy [score DESC, personId]
+  Limit 100
+
+=== BI/Q6
+NodeByProperty (tag:Tag {name = 'Arnold_Schwarzenegger'})
+  [anchor: tag:Tag {name} card=N, fan-out N,N · vs personN:Person card=N, fan-out ~N → smaller leaf cardinality]
+Expand (tag)<-[:HAS_TAG]-(message1)
+Expand (message1)-[:HAS_CREATOR]->(person1)
+Argument (message1)
+Expand (message1)<-[:LIKES]-(person2)
+Argument (person2)
+Expand (person2)<-[:HAS_CREATOR]-(message2)
+Expand (message2)<-[:LIKES]-(person3)
+Aggregate (group=[person1Id]; count(DISTINCT like))
+OrderBy [authorityScore DESC, person1Id]
+Limit 100
+
+=== BI/Q7
+NodeByProperty (tag:Tag {name = 'Enrique_Iglesias'})
+  [anchor: tag:Tag {name} card=N, fan-out N,N · vs message:Message card=N, fan-out ~N → smaller leaf cardinality]
+Expand (tag)<-[:HAS_TAG]-(message)
+Argument (message)
+Expand (message)<-[:REPLY_OF]-(comment)
+Expand (comment)-[:HAS_TAG]->(relatedTag)
+Filter (NOT EXISTS {…})
+Aggregate (group=[relatedTagName]; count(DISTINCT comment))
+OrderBy [commentCount DESC, relatedTagName]
+Limit 100
+
+=== BI/Q8
+Segment 0
+  NodeByProperty (tag:Tag {name = 'Che_Guevara'})
+  NodeByExistsSeed (person:Person, 2 chain(s))
+  Filter (EXISTS {…} OR EXISTS {…})
+  Project [tag, person]
+Segment 1
+  Project [tag, person, score]
+Segment 2
+  Argument (person)
+  Expand (person)-[:KNOWS]-(friend)
+  Project [person, score, friendScore]
+Segment 3
+  Aggregate (group=[person.id, score]; sum(friendScore))
+  OrderBy [score + friendsScore DESC, person.id]
+  Limit 100
+
+=== BI/Q9
+NodeScan (person:Person)
+  [anchor: person:Person card=N, fan-out ~N · vs reply:Message card=N, fan-out ~N → smaller leaf cardinality]
+Expand (person)<-[:HAS_CREATOR]-(post)
+VarExpand (post)<-[:REPLY_OF*0..]-(reply)
+Filter (post.creationDate >= zoned_datetime('2011-10-01') AND post.creationDate < zoned_datetime('2011-10-16') AND reply.creationDate >= zoned_datetime('2011-10-01') AND reply.creationDate < zoned_datetime('2011-10-16'))
+Aggregate (group=[person.id]; count(DISTINCT post), count(DISTINCT reply))
+OrderBy [messageCount DESC, person.id]
+Limit 100
+
+=== BI/Q10
+Segment 0
+  NodeByProperty (s:Person {id = 3470})
+  NodeByProperty (_:Country {name = 'China'})
+    [anchor: :Country {name} card=N, fan-out N · vs expert:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (_)<-[:IS_PART_OF]-(_)
+  Expand (_)<-[:IS_LOCATED_IN]-(expert)
+  Gate (ShortestPath (s)-[*]-(expert), dist >= 3)
+  Argument (expert)
+  Expand (expert)<-[:HAS_CREATOR]-(message)
+  Expand (message)-[:HAS_TAG]->(_)
+  Expand (_)-[:HAS_TYPE]->(_)
+  Argument (message)
+  Expand (message)-[:HAS_TAG]->(tag)
+  Project [s, expert, message, tag]
+Segment 1
+  ShortestPath (s)-[*]-(expert)
+  Project [s, expert, message, tag, p, dist]
+Segment 2
+  Project [s, expert, message, tag, p, dist]
+  Filter (dist >= 3)
+Segment 3
+  Aggregate (group=[eid, tagName]; count(DISTINCT message))
+  OrderBy [messageCount DESC, tagName, eid]
+  Limit 100
+
+=== BI/Q11
+Segment 0
+  NodeByProperty (country:Country {name = 'India'})
+    [anchor: country:Country {name} card=N, fan-out N · vs a:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (country)<-[:IS_PART_OF]-(_)
+  Expand (_)<-[:IS_LOCATED_IN]-(a)
+  Argument (a)
+  Expand (a)-[:KNOWS]-(b)
+  Filter (a.id < b.id AND zoned_datetime('2012-09-29') <= k1.creationDate AND k1.creationDate <= zoned_datetime('2013-01-01'))
+  Distinct Project [country, a, b]
+Segment 1
+  Argument (b)
+  Expand (b)-[:IS_LOCATED_IN]->(_)
+  Expand (_)-[:IS_PART_OF]->(country) [into bound]
+  Distinct Project [country, a, b]
+Segment 2
+  Argument (b)
+  Expand (b)-[:KNOWS]-(c)
+  Argument (c)
+  Expand (c)-[:IS_LOCATED_IN]->(_)
+  Expand (_)-[:IS_PART_OF]->(country) [into bound]
+  Filter (b.id < c.id AND zoned_datetime('2012-09-29') <= k2.creationDate AND k2.creationDate <= zoned_datetime('2013-01-01'))
+  Distinct Project [a, b, c]
+Segment 3
+  Argument (c)
+  Expand (c)-[:KNOWS]-(a) [into bound]
+  Filter (zoned_datetime('2012-09-29') <= k3.creationDate AND k3.creationDate <= zoned_datetime('2013-01-01'))
+  Distinct Project [a, b, c]
+Segment 4
+  Aggregate (group=[]; count(*))
+
+=== BI/Q12
+Segment 0
+  NodeScan (person:Person)
+  Argument (person)
+  Expand (person)<-[:HAS_CREATOR]-(message)
+  VarExpand (message)-[:REPLY_OF*0..]->(post)
+  Filter (message.content IS NOT NULL AND message.length < 20 AND message.creationDate > zoned_datetime('2010-07-22') AND post.language IN ['ar', 'hu'])
+  Aggregate (group=[person]; count(message))
+Segment 1
+  Aggregate (group=[messageCount]; count(person))
+  OrderBy [personCount DESC, messageCount DESC]
+
+=== BI/Q13
+Segment 0
+  NodeByProperty (country:Country {name = 'France'})
+    [anchor: country:Country {name} card=N, fan-out N · vs zombie:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (country)<-[:IS_PART_OF]-(_)
+  Expand (_)<-[:IS_LOCATED_IN]-(zombie)
+  Filter (zombie.creationDate < zoned_datetime('2013-01-01'))
+  Argument (zombie)
+  Expand (zombie)<-[:HAS_CREATOR]-(message)
+  Filter (message.creationDate < zoned_datetime('2013-01-01'))
+  Aggregate (group=[country, zombie]; count(message))
+Segment 1
+  Project [country, zombie, messageCount, months]
+Segment 2
+  Project [country, zombie, messageCount, months]
+  Filter (messageCount / months < 1)
+Segment 3
+  Aggregate (group=[country]; collect(zombie))
+Segment 4
+  Unwind (zombies AS zombie)
+  Argument (zombie)
+  Expand (zombie)<-[:HAS_CREATOR]-(message)
+  Expand (message)<-[:LIKES]-(likerZombie)
+  Filter (likerZombie IN zombies)
+  Aggregate (group=[zombie]; count(likerZombie))
+Segment 5
+  Argument (zombie)
+  Expand (zombie)<-[:HAS_CREATOR]-(message)
+  Expand (message)<-[:LIKES]-(likerPerson)
+  Filter (likerPerson.creationDate < zoned_datetime('2013-01-01'))
+  Aggregate (group=[zombie, zombieLikeCount]; count(likerPerson))
+Segment 6
+  Project [zombie, zombieLikeCount, totalLikeCount, zombieScore]
+Segment 7
+  Project [zombie, zombieLikeCount, totalLikeCount, zombieScore]
+  OrderBy [zombieScore DESC, zombie.id]
+  Limit 100
+Segment 8
+  Project [zombieId, zombieLikeCount, totalLikeCount]
+
+=== BI/Q14
+Segment 0
+  NodeByProperty (country1:Country {name = 'Chile'})
+    [anchor: countryN:Country {name} card=N, fan-out N · vs personN:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (country1)<-[:IS_PART_OF]-(city1)
+  Expand (city1)<-[:IS_LOCATED_IN]-(person1)
+  Argument (person1)
+  Expand (person1)-[:KNOWS]-(person2)
+  Argument (person2:Person)
+  Expand (person2)-[:IS_LOCATED_IN]->(city2)
+  Expand (city2)-[:IS_PART_OF]->(country2)
+  Project [person1, person2, city1, score]
+Segment 1
+  Argument (person1)
+  Expand (person1)<-[:HAS_CREATOR]-(c)
+  Expand (c)-[:REPLY_OF]->(_)
+  Expand (_)-[:HAS_CREATOR]->(person2) [into bound]
+  Distinct Project [person1, person2, city1, score]
+Segment 2
+  Argument (person2)
+  Expand (person2)<-[:HAS_CREATOR]-(_)
+  Expand (_)-[:REPLY_OF]->(m)
+  Expand (m)-[:HAS_CREATOR]->(person1) [into bound]
+  Distinct Project [person1, person2, city1, score]
+Segment 3
+  Argument (person1)
+  Expand (person1)-[:LIKES]->(m)
+  Expand (m)-[:HAS_CREATOR]->(person2) [into bound]
+  Distinct Project [person1, person2, city1, score]
+Segment 4
+  Argument (person2)
+  Expand (person2)-[:LIKES]->(m)
+  Expand (m)-[:HAS_CREATOR]->(person1) [into bound]
+  Distinct Project [person1, person2, city1, score]
+Segment 5
+  Project [person1, person2, city1, score]
+  OrderBy [city1.name, score DESC, person1.id, person2.id]
+Segment 6
+  Aggregate (group=[city1]; collect(person1.id), collect(person2.id), collect(score))
+Segment 7
+  Project [topPerson1Id, topPerson2Id, cityName, topScore]
+  OrderBy [topScore DESC, topPerson1Id, topPerson2Id]
+  Limit 100
+
+=== BI/Q15
+NodeByProperty (a:Person {id = 14})
+NodeByProperty (b:Person {id = 16})
+WeightedShortestPath (a)-[*]-(b)
+Unwind (rels(p) AS e)
+Aggregate (group=[]; sum(e.w))
+
+=== BI/Q16
+Segment 0
+  NodeByProperty (tagA:Tag {name = 'Meryl_Streep'})
+    [anchor: tagA:Tag {name} card=N, fan-out N,N · vs personN:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (tagA)<-[:HAS_TAG]-(messageA)
+  Expand (messageA)-[:HAS_CREATOR]->(person1)
+  Filter (date(messageA.creationDate) = date(zoned_datetime('2012-09-16')))
+  Argument (tagA)
+  Expand (tagA)<-[:HAS_TAG]-(messageA2)
+  Expand (messageA2)-[:HAS_CREATOR]->(personA2)
+  Expand (personA2)-[:KNOWS]-(person1) [into bound]
+  Filter (date(messageA2.creationDate) = date(zoned_datetime('2012-09-16')))
+  Aggregate (group=[person1]; count(DISTINCT messageA), count(DISTINCT personA2))
+Segment 1
+  Project [person1, messageCountA, knowsA]
+  Filter (knowsA <= 4)
+Segment 2
+  Argument (person1)
+  Expand (person1)<-[:HAS_CREATOR]-(messageB)
+  Expand (messageB)-[:HAS_TAG]->(tagB)
+  Filter (date(messageB.creationDate) = date(zoned_datetime('2012-05-08')))
+  Argument (tagB)
+  Expand (tagB)<-[:HAS_TAG]-(messageB2)
+  Expand (messageB2)-[:HAS_CREATOR]->(personB2)
+  Expand (personB2)-[:KNOWS]-(person1) [into bound]
+  Filter (date(messageB2.creationDate) = date(zoned_datetime('2012-05-08')))
+  Aggregate (group=[person1, messageCountA]; count(DISTINCT messageB), count(DISTINCT personB2))
+Segment 3
+  Project [person1, messageCountA, messageCountB, knowsB]
+  Filter (knowsB <= 4)
+Segment 4
+  Project [personId, messageCountA, messageCountB]
+  OrderBy [messageCountA + messageCountB DESC, personId]
+  Limit 20
+
+=== BI/Q17
+NodeByProperty (tag:Tag {name = 'Slavoj_Žižek'})
+Argument (tag)
+Expand (tag)<-[:HAS_TAG]-(message1)
+Argument (message1:Message)
+Expand (message1)-[:HAS_CREATOR]->(person1)
+Argument (message1:Message)
+VarExpand (message1)-[:REPLY_OF*0..]->(post1)
+Expand (post1)<-[:CONTAINER_OF]-(forum1)
+HashJoin (key=person3, probe (forum1)-[:HAS_MEMBER]->(person3))
+  build: Argument (tag)
+  build: Expand (tag)<-[:HAS_TAG]-(comment)
+  build: Argument (comment)
+  build: Expand (comment)-[:REPLY_OF]->(message2)
+  build: Argument (message2)
+  build: Expand (message2)-[:HAS_TAG]->(tag) [into bound]
+  build: Argument (message2:Message)
+  build: Expand (message2)-[:HAS_CREATOR]->(person3)
+  build: Argument (comment:Comment)
+  build: Expand (comment)-[:HAS_CREATOR]->(person2)
+  build: Argument (comment:Comment)
+  build: Expand (comment)-[:HAS_TAG]->(tag) [into bound]
+Filter (message2.creationDate > message1.creationDate + duration({hours: 4}))
+VarExpand (message2)-[:REPLY_OF*0..]->(post2)
+Expand (post2)<-[:CONTAINER_OF]-(forum2)
+Filter (forum1 <> forum2 AND NOT EXISTS {…})
+Expand (person2)<-[:HAS_MEMBER]-(forum1) [into bound]
+Aggregate (group=[person1.id]; count(DISTINCT message2))
+OrderBy [messageCount DESC, person1.id]
+Limit 10
+
+=== BI/Q18
+NodeByProperty (tag:Tag {name = 'Frank_Sinatra'})
+  [anchor: tag:Tag {name} card=N, fan-out N · vs tag card=N, fan-out ~N → smaller leaf cardinality]
+Expand (tag)<-[:HAS_INTEREST]-(person1)
+Expand (person1)-[:KNOWS]-(mutualFriend)
+Expand (mutualFriend)-[:KNOWS]-(person2)
+Expand (person2)-[:HAS_INTEREST]->(tag) [into bound]
+Filter (person1 <> person2 AND NOT EXISTS {…})
+Aggregate (group=[person1Id, person2Id]; count(DISTINCT mutualFriend))
+OrderBy [mutualFriendCount DESC, person1Id, person2Id]
+Limit 20
+
+=== BI/Q19
+NodeByProperty (_:City {id = 669})
+  [anchor: :City {id} card=N, fan-out N · vs a:Person card=N, fan-out ~N → smaller leaf cardinality]
+Expand (_)<-[:IS_LOCATED_IN]-(a)
+NodeByProperty (_:City {id = 648})
+  [anchor: :City {id} card=N, fan-out N · vs b:Person card=N, fan-out ~N → smaller leaf cardinality]
+Expand (_)<-[:IS_LOCATED_IN]-(b)
+WeightedShortestPath (a)-[*]-(b)
+Unwind (rels(p) AS e)
+Aggregate (group=[p1, p2]; sum(e.w))
+OrderBy [dist, p1, p2]
+Limit 20
+
+=== BI/Q20
+NodeByProperty (p2:Person {id = 66})
+NodeByProperty (c:Company {name = 'Falcon_Air'})
+  [anchor: c:Company {name} card=N, fan-out N · vs pN:Person card=N, fan-out ~N → smaller leaf cardinality]
+Expand (c)<-[:WORK_AT]-(p1)
+WeightedShortestPath (p1)-[*]-(p2)
+Unwind (rels(p) AS e)
+Aggregate (group=[pid]; sum(e.w))
+OrderBy [dist, pid]
+Limit 20
+
+=== FinBench/CR1
+Segment 0
+  NodeByProperty (s:Account {id = 4877400870343548146})
+  Argument (s)
+  VarExpand (s)<-[:transfer*1..3]-(o) [mono createTime desc]
+  Project [s, o, p, ts]
+Segment 1
+  Project [s, o, p, ts]
+Segment 2
+  Aggregate (group=[o]; min(size(ts)))
+Segment 3
+  Argument (o)
+  Expand (o)<-[:signIn]-(m)
+  Filter (m.isBlocked = true)
+  Project [oid, dist, mid, mtype]
+
+=== FinBench/CR2
+Segment 0
+  NodeByProperty (per:Person {id = 24189255841071})
+    [anchor: per:Person {id} card=N, fan-out N · vs oa:Account card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (per)-[:own]->(oa)
+  Argument (oa)
+  VarExpand (oa)<-[:transfer*1..3]-(acct) [mono createTime desc]
+  Project [per, oa, acct, p, ts]
+Segment 1
+  Project [per, oa, acct, p, ts]
+  Filter (acct <> oa)
+Segment 2
+  Distinct Project [oa, acct]
+Segment 3
+  Argument (acct)
+  Expand (acct)<-[:deposit]-(loan)
+  Distinct Project [oa, acct, loan]
+Segment 4
+  Aggregate (group=[oa, acct]; sum(loan.loanAmount), sum(loan.balance))
+Segment 5
+  Aggregate (group=[acct]; sum(amt), sum(bal))
+Segment 6
+  Project [aid, tamt, tbal]
+
+=== FinBench/CR3
+NodeByProperty (a:Account {id = 234469755111622579})
+NodeByProperty (b:Account {id = 304838499289284059})
+ShortestPath (a)-[*]-(b)
+Project [hops]
+
+=== FinBench/CR4
+NodeByProperty (a:Account {id = 4877400870343548146})
+  [anchor: a:Account {id} card=N, fan-out N · vs a card=N, fan-out ~N → smaller leaf cardinality]
+Expand (a)-[:transfer]->(n1)
+Expand (n1)-[:transfer]->(a) [into bound]
+Filter (a <> n1 AND t1.amount >= 1000 AND t2.amount >= 1000 AND t1.createTime < t2.createTime AND t2.createTime <= t1.createTime + 7776000000)
+Project [aid, n1id]
+
+=== FinBench/CR5
+Segment 0
+  NodeByProperty (per:Person {id = 24189255841071})
+    [anchor: per:Person {id} card=N, fan-out N · vs start:Account card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (per)-[:own]->(start)
+  Argument (start)
+  VarExpand (start)-[:transfer*1..3]->(d) [mono createTime asc]
+  Project [per, start, d, p, ts]
+Segment 1
+  Project [per, start, d, p, ts, t]
+Segment 2
+  Project [per, start, d, p, ts, t]
+Segment 3
+  Distinct Project [t]
+  OrderBy [size(t) DESC]
+
+=== FinBench/CR6
+Segment 0
+  NodeByProperty (card:Account {id = 240943129820355424})
+    [anchor: card:Account {id} card=N, fan-out N · vs  card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (card)-[:withdraw]->(_)
+  Aggregate (group=[card]; sum(w.amount), max(w.createTime))
+Segment 1
+  Argument (card)
+  Expand (card)<-[:transfer]-(src)
+  Filter (t.createTime <= lw)
+  Aggregate (group=[sid, tw]; sum(t.amount))
+
+=== FinBench/CR7
+Segment 0
+  NodeByProperty (a:Account {id = 234469755111622579})
+  Argument (a)
+  Expand (a)<-[:transfer]-(src)
+  Aggregate (group=[a]; count(DISTINCT src), sum(ti.amount))
+Segment 1
+  Argument (a)
+  Expand (a)-[:transfer]->(dst)
+  Aggregate (group=[ns, ia]; count(DISTINCT dst), sum(to.amount))
+Segment 2
+  Project [num_src, num_dst, ratio]
+
+=== FinBench/CR8
+Segment 0
+  NodeByProperty (loan:Loan {id = 279505201629616671})
+    [anchor: loan:Loan {id} card=N, fan-out N · vs acct:Account card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (loan)-[:deposit]->(acct)
+  Aggregate (group=[loanAmount]; collect(acct), collect(d.amount))
+Segment 1
+  Call algo.propagate(…) [correlated, 8 args]
+  Project [dstId, ratio, distanceFromLoan]
+  OrderBy [distanceFromLoan DESC, ratio DESC, dstId]
+
+=== FinBench/CR9
+Segment 0
+  NodeByProperty (a:Account {id = 234469755111622579})
+  Argument (a)
+  Expand (a)-[:repay]->(_)
+  Aggregate (group=[a]; sum(r1.amount))
+Segment 1
+  Argument (a)
+  Expand (a)<-[:deposit]-(_)
+  Aggregate (group=[a, s1]; sum(r2.amount))
+Segment 2
+  Argument (a)
+  Expand (a)-[:transfer]->(_)
+  Aggregate (group=[a, s1, s2]; sum(r3.amount))
+Segment 3
+  Argument (a)
+  Expand (a)<-[:transfer]-(_)
+  Aggregate (group=[s1, s2, s3]; sum(r4.amount))
+Segment 4
+  Project [rr, rd, rt]
+
+=== FinBench/CR10
+NodeByProperty (p1:Person {id = 28587302363231})
+  [anchor: pN:Person {id} card=N, fan-out N · vs pN card=N, fan-out ~N → smaller leaf cardinality]
+Expand (p1)-[:invest]->(c)
+Expand (c)<-[:invest]-(p2)
+Filter (p2 <> p1)
+Aggregate (group=[oid]; count(DISTINCT c))
+
+=== FinBench/CR11
+Segment 0
+  NodeByProperty (p:Person {id = 26388279096622})
+    [anchor: p:Person {id} card=N, fan-out N · vs g:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:guarantee*0..]->(g)
+  Distinct Project [g]
+Segment 1
+  Argument (g)
+  Expand (g)-[:apply]->(_)
+  Aggregate (group=[]; sum(a.loanAmount))
+
+=== FinBench/CR12
+NodeByProperty (p:Person {id = 24189255841071})
+  [anchor: p:Person {id} card=N, fan-out N · vs c:Company card=N, fan-out ~N → smaller leaf cardinality]
+Expand (p)-[:own]->(a)
+Expand (a)-[:transfer]->(ca)
+Expand (ca)<-[:own]-(c)
+Aggregate (group=[caid]; sum(t.amount))
+
+=== FinBench/SR1
+NodeByProperty (a:Account {id = 234469755111622579})
+Project [createTime, isBlocked, type]
+
+=== FinBench/SR2
+Segment 0
+  NodeByProperty (a:Account {id = 234469755111622579})
+  Argument (a)
+  Expand (a)-[:transfer]->(_)
+  Aggregate (group=[a]; sum(o.amount), max(o.amount), count(o))
+Segment 1
+  Argument (a)
+  Expand (a)<-[:transfer]-(_)
+  Aggregate (group=[so, mo, no]; sum(i.amount), max(i.amount), count(i))
+Segment 2
+  Project [sumOut, maxOut, numOut, sumIn, maxIn, numIn]
+
+=== FinBench/SR3
+Segment 0
+  NodeByProperty (dst:Account {id = 234469755111622579})
+    [anchor: dst:Account {id} card=N, fan-out N · vs src:Account card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (dst)<-[:transfer]-(src)
+  Filter (t.amount > 0)
+  Aggregate (group=[]; count(t), sum(CASE…END))
+Segment 1
+  Project [blockRatio]
+
+=== FinBench/SR4
+NodeByProperty (src:Account {id = 234469755111622579})
+  [anchor: src:Account {id} card=N, fan-out N,N · vs dst:Account card=N, fan-out ~N → smaller leaf cardinality]
+Expand (src)-[:transfer]->(dst)
+Filter (t.amount > 1000)
+Aggregate (group=[dstId]; count(t), sum(t.amount))
+OrderBy [sumAmount DESC, dstId]
+
+=== FinBench/SR5
+NodeByProperty (dst:Account {id = 234469755111622579})
+  [anchor: dst:Account {id} card=N, fan-out N · vs src:Account card=N, fan-out ~N → smaller leaf cardinality]
+Expand (dst)<-[:transfer]-(src)
+Filter (t.amount > 1000)
+Aggregate (group=[srcId]; count(t), sum(t.amount))
+OrderBy [sumAmount DESC, srcId]
+
+=== FinBench/SR6
+NodeByProperty (account:Account {id = 234469755111622579})
+  [anchor: account:Account {id} card=N, fan-out N · vs dst:Account card=N, fan-out ~N → smaller leaf cardinality]
+Expand (account)<-[:transfer]-(mid)
+Expand (mid)-[:transfer]->(dst)
+Filter (dst.id <> 234469755111622579 AND dst.isBlocked = true)
+Distinct Project [dstId]
+OrderBy [dstId]
+
+=== IC/IC1
+NodeByProperty (a:Person {id = 4398046519825})
+NodeByProperty (f:Person {firstName = 'John'})
+ShortestPath (a)-[*]-(f)
+Project [dist, lname, pid]
+OrderBy [dist, lname, pid]
+Limit 20
+
+=== IC/IC2
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs m:Message card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)-[:KNOWS]-(f)
+  Expand (f)<-[:HAS_CREATOR]-(m)
+  Filter (m.creationDate < zoned_datetime('2013-01-02'))
+  Project [ms, mid]
+Segment 1
+  Project [ms, mid]
+  OrderBy [ms DESC, mid]
+  Limit 20
+Segment 2
+  Project [ms]
+
+=== IC/IC3
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:KNOWS*1..2]-(f)
+  Filter (f.id <> 4398046519825)
+  Distinct Project [f]
+Segment 1
+  Project [f]
+  Filter (NOT EXISTS {…} AND NOT EXISTS {…})
+Segment 2
+  Argument (f)
+  Expand (f)<-[:HAS_CREATOR]-(m)
+  Expand (m)-[:IS_LOCATED_IN]->(c)
+  Filter (c.name IN ['China', 'Germany'] AND m.creationDate >= zoned_datetime('2010-01-01') AND m.creationDate < zoned_datetime('2014-02-09'))
+  Aggregate (group=[f]; sum(CASE…END), sum(CASE…END))
+Segment 3
+  Project [f, countryXCount, countryYCount]
+  Filter (countryXCount > 0 AND countryYCount > 0)
+Segment 4
+  Project [personId, countryXCount, countryYCount]
+  OrderBy [countryXCount + countryYCount DESC, personId]
+  Limit 20
+
+=== IC/IC4
+Segment 0
+  NodeByProperty (_:Person {id = 4398046519825})
+    [anchor: :Person {id} card=N, fan-out N · vs tb:Tag card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (_)-[:KNOWS]-(_)
+  Expand (_)<-[:HAS_CREATOR]-(pre)
+  Expand (pre)-[:HAS_TAG]->(tb)
+  Filter (pre.creationDate < zoned_datetime('2011-01-01'))
+  Aggregate (group=[]; collect(DISTINCT tb))
+Segment 1
+  NodeByProperty (_:Person {id = 4398046519825})
+    [anchor: :Person {id} card=N, fan-out N · vs t:Tag card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (_)-[:KNOWS]-(_)
+  Expand (_)<-[:HAS_CREATOR]-(post)
+  Expand (post)-[:HAS_TAG]->(t)
+  Filter (post.creationDate >= zoned_datetime('2011-01-01') AND post.creationDate < zoned_datetime('2012-01-01') AND NOT t IN before)
+  Aggregate (group=[tagName]; count(DISTINCT post))
+  OrderBy [postCount DESC, tagName]
+  Limit 10
+
+=== IC/IC5
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:KNOWS*1..2]-(f)
+  Filter (f.id <> 4398046519825)
+  Distinct Project [f]
+Segment 1
+  Argument (f)
+  Expand (f)<-[:HAS_CREATOR]-(post)
+  Expand (post)<-[:CONTAINER_OF]-(forum)
+  Argument (forum:Forum)
+  Expand (forum)-[:HAS_MEMBER]->(f) [into bound]
+  Filter (hm.joinDate >= zoned_datetime('2011-01-02'))
+  Aggregate (group=[forumId]; count(DISTINCT post))
+  OrderBy [postCount DESC, forumId]
+  Limit 20
+
+=== IC/IC6
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:KNOWS*1..2]-(f)
+  Filter (f.id <> 4398046519825)
+  Distinct Project [f]
+Segment 1
+  Argument (f)
+  Expand (f)<-[:HAS_CREATOR]-(post)
+  Expand (post)-[:HAS_TAG]->(_)
+  Argument (post)
+  Expand (post)-[:HAS_TAG]->(other)
+  Filter (other.name <> 'Augustine_of_Hippo')
+  Aggregate (group=[tagName]; count(DISTINCT post))
+  OrderBy [postCount DESC, tagName]
+  Limit 10
+
+=== IC/IC7
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs liker:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(_)
+  Expand (_)<-[:LIKES]-(liker)
+  Aggregate (group=[p, liker]; max(lk.creationDate))
+Segment 1
+  Project [likeTime, likerId, isNew]
+  OrderBy [likeTime DESC, likerId]
+  Limit 20
+
+=== IC/IC8
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs reply:Message card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(_)
+  Expand (_)<-[:REPLY_OF]-(reply)
+  Project [ms, rid]
+Segment 1
+  Project [ms, rid]
+  OrderBy [ms DESC, rid]
+  Limit 20
+Segment 2
+  Project [ms]
+
+=== IC/IC9
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:KNOWS*1..2]-(f)
+  Filter (f.id <> 4398046519825)
+  Distinct Project [f]
+Segment 1
+  Argument (f)
+  Expand (f)<-[:HAS_CREATOR]-(m)
+  Filter (m.creationDate < zoned_datetime('2013-01-02'))
+  Project [ms, mid]
+Segment 2
+  Project [ms, mid]
+  OrderBy [ms DESC, mid]
+  Limit 20
+Segment 3
+  Project [ms]
+
+=== IC/IC10
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs foaf:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)-[:KNOWS]-(_)
+  Expand (_)-[:KNOWS]-(foaf)
+  Filter (foaf.id <> 4398046519825 AND foaf.bmon = 1 AND foaf.bdom >= 21 OR foaf.bmon = 2 AND foaf.bdom < 22)
+  Distinct Project [p, foaf]
+Segment 1
+  Project [p, foaf]
+  Filter (NOT EXISTS {…})
+Segment 2
+  Project [p, foaf, total]
+Segment 3
+  Project [p, foaf, total, common]
+Segment 4
+  Project [personId, commonInterestScore]
+  OrderBy [commonInterestScore DESC, personId]
+  Limit 10
+
+=== IC/IC11
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+  VarExpand (p)-[:KNOWS*1..2]-(f)
+  Filter (f.id <> 4398046519825)
+  Distinct Project [f]
+Segment 1
+  Argument (f)
+  Expand (f)-[:WORK_AT]->(company)
+  Expand (company)-[:IS_LOCATED_IN]->(_)
+  Filter (w.workFrom < 2030)
+  Project [personId, companyName, workFromYear]
+  OrderBy [workFromYear, personId, companyName DESC]
+  Limit 10
+
+=== IC/IC12
+NodeByProperty (_:Person {id = 4398046519825})
+  [anchor: :Person {id} card=N, fan-out N · vs tc:TagClass card=N, fan-out ~N → smaller leaf cardinality]
+Expand (_)-[:KNOWS]-(f)
+Expand (f)<-[:HAS_CREATOR]-(c)
+Expand (c)-[:REPLY_OF]->(post)
+Expand (post)-[:HAS_TAG]->(_)
+Expand (_)-[:HAS_TYPE]->(tc)
+Filter (EXISTS {…})
+Aggregate (group=[personId]; count(DISTINCT c))
+OrderBy [replyCount DESC, personId]
+Limit 20
+
+=== IC/IC13
+NodeByProperty (a:Person {id = 4398046519825})
+NodeByProperty (b:Person {id = 15393162798503})
+ShortestPath (a)-[*]-(b)
+Project [hops]
+
+=== IC/IC14
+NodeByProperty (a:Person {id = 4398046519825})
+NodeByProperty (b:Person {id = 15393162798503})
+WeightedShortestPath (a)-[*]-(b)
+Unwind (rels(p) AS e)
+Aggregate (group=[]; sum(e.w))
+
+=== IC/IS1
+NodeByProperty (p:Person {id = 4398046519825})
+Project [firstName, lastName]
+
+=== IC/IS2
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs m:Message card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(m)
+  Filter (m.creationDate < zoned_datetime('2013-01-02'))
+  Project [ms, mid]
+Segment 1
+  Project [ms, mid]
+  OrderBy [ms DESC, mid]
+  Limit 10
+Segment 2
+  Project [ms]
+
+=== IC/IS3
+NodeByProperty (p:Person {id = 4398046519825})
+  [anchor: p:Person {id} card=N, fan-out N · vs f:Person card=N, fan-out ~N → smaller leaf cardinality]
+Expand (p)-[:KNOWS]-(f)
+Project [friendId]
+OrderBy [friendId]
+
+=== IC/IS4
+NodeByProperty (m:Message {id = 2336466638639})
+Project [ms, content]
+
+=== IC/IS5
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs m:Message card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(m)
+  Filter (m.creationDate < zoned_datetime('2013-01-02'))
+  Project [m]
+Segment 1
+  Project [m]
+  OrderBy [m.creationDate DESC]
+  Limit 1
+Segment 2
+  Argument (m)
+  Expand (m)-[:HAS_CREATOR]->(creator)
+  Project [creatorId]
+
+=== IC/IS6
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs m:Post card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(m)
+  Project [m]
+Segment 1
+  Project [m]
+  OrderBy [m.creationDate DESC]
+  Limit 1
+Segment 2
+  Argument (m)
+  Expand (m)<-[:CONTAINER_OF]-(forum)
+  Argument (forum)
+  Expand (forum)-[:HAS_MODERATOR]->(moderator)
+  Project [forumId, moderatorId]
+
+=== IC/IS7
+Segment 0
+  NodeByProperty (p:Person {id = 4398046519825})
+    [anchor: p:Person {id} card=N, fan-out N,N · vs m:Post card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (p)<-[:HAS_CREATOR]-(m)
+  Project [p, m]
+Segment 1
+  Project [p, m]
+  OrderBy [m.creationDate DESC]
+  Limit 1
+Segment 2
+  Argument (m)
+  Expand (m)<-[:REPLY_OF]-(reply)
+  Expand (reply)-[:HAS_CREATOR]->(author)
+  Project [ms, authorId, knowsAuthor]
+  OrderBy [ms DESC, authorId]
+
+=== SPB/a1
+NodeByProperty (t:Thing {uri = 'http://dbpedia.org/resource/Action_of_25_February_1781'})
+  [anchor: t:Thing {uri} card=N, fan-out N,N · vs w:CreativeWork card=N, fan-out ~N → smaller leaf cardinality]
+Expand (t)<-[:about]-(w)
+Filter (w.dateModified IS NOT NULL)
+Distinct Project [uri]
+
+=== SPB/a2
+Branch 0
+  Segment 0
+    NodeByProperty (w:BlogPost {uri = 'http://www.bbc.co.uk/things/9407#id'})
+    Project [w]
+    Filter (w.title IS NOT NULL)
+  Segment 1
+    Project [lbl]
+UNION
+Branch 1
+  Segment 0
+    NodeByProperty (w:NewsItem {uri = 'http://www.bbc.co.uk/things/9407#id'})
+    Project [w]
+    Filter (w.title IS NOT NULL)
+  Segment 1
+    Project [lbl]
+UNION
+Branch 2
+  Segment 0
+    NodeByProperty (w:Programme {uri = 'http://www.bbc.co.uk/things/9407#id'})
+    Project [w]
+    Filter (w.title IS NOT NULL)
+  Segment 1
+    Project [lbl]
+
+=== SPB/a3
+Segment 0
+  NodeScan (w:CreativeWork)
+  Filter (w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00')
+  Project [w, minute]
+Segment 1
+  Aggregate (group=[k]; count(*))
+
+=== SPB/a4
+Branch 0
+  Segment 0
+    NodeScan (w:BlogPost)
+    Project [w]
+    Filter (w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00')
+  Segment 1
+    Aggregate (group=[lbl]; count(w))
+UNION
+Branch 1
+  Segment 0
+    NodeScan (w:NewsItem)
+    Project [w]
+    Filter (w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00')
+  Segment 1
+    Aggregate (group=[lbl]; count(w))
+UNION
+Branch 2
+  Segment 0
+    NodeScan (w:Programme)
+    Project [w]
+    Filter (w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00')
+  Segment 1
+    Aggregate (group=[lbl]; count(w))
+
+=== SPB/a5
+NodeScan (w:CreativeWork)
+  [anchor: w:CreativeWork card=N, fan-out ~N · vs e:Thing card=N, fan-out ~N → smaller leaf cardinality]
+Expand (w)-[:about]->(e)
+Filter (EXISTS {…})
+Aggregate (group=[k]; count(*))
+
+=== SPB/a6
+Branch 0
+  Segment 0
+    NodeScan (w:CreativeWork)
+      [anchor: w:CreativeWork card=N, fan-out ~N · vs  {uri} card=N, fan-out ~N,N → smaller leaf cardinality]
+    Expand (w)-[:audience]->(_)
+    Project [w]
+    Filter (w.liveCoverage = true)
+  Segment 1
+    Distinct Project [w]
+  Segment 2
+    Argument (w)
+    Expand (w)-[:about]->(e)
+    Aggregate (group=[ty]; count(*))
+UNION
+Branch 1
+  Segment 0
+    NodeScan (w:CreativeWork)
+      [anchor: w:CreativeWork card=N, fan-out ~N · vs  {uri} card=N, fan-out ~N,N → smaller leaf cardinality]
+    Expand (w)-[:audience]->(_)
+    Project [w]
+    Filter (w.liveCoverage = true)
+  Segment 1
+    Distinct Project [w]
+  Segment 2
+    Argument (w)
+    Expand (w)-[:about]->(e)
+    Aggregate (group=[ty]; count(*))
+UNION
+Branch 2
+  Segment 0
+    NodeScan (w:CreativeWork)
+      [anchor: w:CreativeWork card=N, fan-out ~N · vs  {uri} card=N, fan-out ~N,N → smaller leaf cardinality]
+    Expand (w)-[:audience]->(_)
+    Project [w]
+    Filter (w.liveCoverage = true)
+  Segment 1
+    Distinct Project [w]
+  Segment 2
+    Argument (w)
+    Expand (w)-[:about]->(e)
+    Aggregate (group=[ty]; count(*))
+
+=== SPB/a7
+NodeScan (w:CreativeWork)
+  [anchor: w:CreativeWork card=N, fan-out ~N · vs m card=N, fan-out ~N → smaller leaf cardinality]
+Expand (w)-[:mentions]->(m)
+Filter (COUNT {…} > 1)
+Aggregate (group=[k]; count(*))
+
+=== SPB/a8
+NodeScan (w:BlogPost)
+  [anchor: w:BlogPost card=N, fan-out ~N · vs t card=N, fan-out ~N → smaller leaf cardinality]
+Expand (w)-[:tag]->(t)
+Filter (w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00' AND EXISTS {…})
+Aggregate (group=[k]; count(*))
+
+=== SPB/a9
+NodeScan (w:CreativeWork)
+Aggregate (group=[]; max(COUNT {…}))
+
+=== SPB/a10
+NodeScan (w:CreativeWork)
+Filter (w.dateCreated IS NOT NULL AND COUNT {…} = 16)
+Project [k, n]
+
+=== SPB/a13
+NodeScan (w:CreativeWork)
+  [anchor: w:CreativeWork card=N, fan-out ~N · vs t card=N, fan-out ~N → smaller leaf cardinality]
+Expand (w)-[:tag]->(t)
+Filter (w.dateModified IS NOT NULL AND EXISTS {…})
+Distinct Project [a, b]
+
+=== SPB/a14
+NodeScan (w:CreativeWork)
+  [anchor: w:CreativeWork card=N, fan-out ~N · vs  {uri} card=N, fan-out ~N,N → smaller leaf cardinality]
+Expand (w)-[:primaryFormat]->(_)
+Filter (w.dateModified IS NOT NULL AND EXISTS {…} AND EXISTS {…} AND EXISTS {…} AND EXISTS {…} AND EXISTS {…})
+Distinct Project [uri]
+
+=== SPB/a15
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'policy')
+  Project [w]
+  Filter (EXISTS {…} AND EXISTS {…} AND EXISTS {…})
+Segment 1
+  Project [uri]
+
+=== SPB/a16
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'policy')
+  Project [w]
+  Filter (w.title IS NOT NULL AND EXISTS {…})
+Segment 1
+  Argument (w)
+  Expand (w)-[:tag]->(t)
+  Distinct Project [a, b]
+
+=== SPB/a17
+Segment 0
+  NodeScan (w:CreativeWork)
+    [anchor: w:CreativeWork card=N, fan-out ~N · vs f:Feature card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (w)-[:mentions]->(f)
+  Project [w, f]
+  Filter (f.lat >= 51.0074 AND f.lat <= 52.0074 AND f.long >= -0.6278 AND f.long <= 0.3722 AND w.dateModified IS NOT NULL)
+Segment 1
+  Distinct Project [uri]
+
+=== SPB/a18
+NodeScan (w:BlogPost)
+Filter (w.dateModified >= '2011-03-01T00:00:00.000+00:00' AND w.dateModified <= '2011-06-01T00:00:00.000+00:00' AND w.title IS NOT NULL AND w.liveCoverage IS NOT NULL AND EXISTS {…} AND EXISTS {…})
+Distinct Project [uri]
+
+=== SPB/a19
+Segment 0
+  NodeScan (w:BlogPost)
+    [anchor: w:BlogPost card=N, fan-out ~N · vs topic card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (w)-[:tag]->(topic)
+  Filter (w.dateModified >= '2011-03-01T00:00:00.000+00:00' AND w.dateModified <= '2011-06-01T00:00:00.000+00:00' AND EXISTS {…})
+  Aggregate (group=[topic]; count(DISTINCT w), max(w.dateModified))
+Segment 1
+  Project [name, cnt, maxd]
+
+=== SPB/a20
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'football')
+  Project [w]
+  Filter (w.dateModified IS NOT NULL)
+Segment 1
+  Project [uri]
+
+=== SPB/a21
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'football')
+  Project [w]
+  Filter (EXISTS {…} OR EXISTS {…} AND EXISTS {…} AND EXISTS {…})
+Segment 1
+  Project [uri]
+
+=== SPB/a22
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'football')
+  Project [w]
+  Filter (w.dateCreated >= '2011-03-01T00:00:00.000+00:00' AND w.dateCreated <= '2011-06-01T00:00:00.000+00:00' AND w.description IS NOT NULL AND w.liveCoverage IS NOT NULL AND EXISTS {…} AND EXISTS {…} AND EXISTS {…} AND EXISTS {…} OR EXISTS {…})
+Segment 1
+  Project [uri]
+
+=== SPB/a23
+Segment 0
+  Call fts.search('CreativeWork', 'title', 'football')
+  Project [w]
+  Filter (EXISTS {…} AND w.dateCreated IS NOT NULL AND w.description IS NOT NULL AND w.liveCoverage IS NOT NULL AND EXISTS {…} AND EXISTS {…})
+Segment 1
+  Argument (w)
+  Expand (w)-[:tag]->(topic)
+  Aggregate (group=[topic]; count(DISTINCT substring(w.dateCreated, 0, 10)))
+Segment 2
+  Project [k, days]
+
+=== SPB/a24
+Segment 0
+  NodeByProperty (b:Thing {uri = 'http://dbpedia.org/resource/International_Telecoms_Week'})
+    [anchor: b:Thing {uri} card=N, fan-out N · vs a:Thing {uri} card=N, fan-out N,N → smaller first-hop degree (hub-aware)]
+  Expand (b)<-[:about]-(w)
+  Expand (w)-[:about]->(a)
+  Filter (w.dateCreated IS NOT NULL)
+  Distinct Project [w]
+Segment 1
+  Aggregate (group=[k]; count(*))
+
+=== SPB/a25
+Segment 0
+  NodeByProperty (a:Thing {uri = 'http://dbpedia.org/resource/Action_of_25_February_1781'})
+    [anchor: a:Thing {uri} card=N, fan-out N,N · vs who card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (a)<-[:about]-(w)
+  Expand (w)-[:about]->(who)
+  Filter (who.uri <> 'http://dbpedia.org/resource/Action_of_25_February_1781' AND w.dateCreated IS NOT NULL)
+  Aggregate (group=[who]; count(DISTINCT substring(w.dateCreated, 0, 10)))
+Segment 1
+  Project [k, days]
+
+=== SPB/q1
+NodeByProperty (t:Thing {uri = 'http://dbpedia.org/resource/Action_of_25_February_1781'})
+  [anchor: t:Thing {uri} card=N, fan-out N,N · vs w:CreativeWork card=N, fan-out ~N → smaller leaf cardinality]
+Expand (t)<-[:tag]-(w)
+Filter (w.dateModified IS NOT NULL)
+Distinct Project [uri]
+
+=== SPB/q2
+NodeByProperty (w:CreativeWork {uri = 'http://www.bbc.co.uk/things/9407#id'})
+Filter (w.title IS NOT NULL)
+Project [uri]
+
+=== SPB/q3
+NodeByProperty (t:Thing {uri = 'http://dbpedia.org/resource/Action_of_25_February_1781'})
+  [anchor: t:Thing {uri} card=N, fan-out N,N · vs w:CreativeWork card=N, fan-out ~N → smaller leaf cardinality]
+Expand (t)<-[:tag]-(w)
+Filter (w.dateCreated IS NOT NULL)
+Distinct Project [uri]
+
+=== SPB/q4
+NodeByProperty (t:Thing {uri = 'http://dbpedia.org/resource/Action_of_25_February_1781'})
+  [anchor: t:Thing {uri} card=N, fan-out N,N · vs w:BlogPost card=N, fan-out ~N → smaller leaf cardinality]
+Expand (t)<-[:tag]-(w)
+Filter (w.dateCreated IS NOT NULL)
+Distinct Project [uri]
+
+=== SPB/q5
+Segment 0
+  NodeScan (w:BlogPost)
+    [anchor: w:BlogPost card=N, fan-out ~N · vs topic card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (w)-[:tag]->(topic)
+  Filter (topic.label IS NOT NULL AND w.dateModified > '2011-03-01T00:00:00.000+00:00' AND w.dateModified < '2011-06-01T00:00:00.000+00:00' AND EXISTS {…})
+  Aggregate (group=[topic]; count(DISTINCT w))
+Segment 1
+  Project [label, cnt]
+
+=== SPB/q7
+NodeScan (w:BlogPost)
+Filter (w.dateCreated >= '2011-03-01T00:00:00.000+00:00' AND w.dateCreated <= '2011-06-01T00:00:00.000+00:00' AND w.title IS NOT NULL AND w.liveCoverage IS NOT NULL AND EXISTS {…} AND EXISTS {…})
+Distinct Project [uri]
+
+=== SPB/q9
+Segment 0
+  NodeByProperty (f:CreativeWork {uri = 'http://www.bbc.co.uk/things/9407#id'})
+    [anchor: f:CreativeWork {uri} card=N, fan-out N · vs o:CreativeWork card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (f)-[:tag]->(e)
+  Expand (e)<-[:tag]-(o)
+  Filter (o.uri <> 'http://www.bbc.co.uk/things/9407#id' AND o.dateModified IS NOT NULL)
+  Distinct Project [f, o, e]
+Segment 1
+  Aggregate (group=[o]; sum(CASE…END * 4 * CASE…END + 3 * CASE…END + CASE…END * 2 * CASE…END + CASE…END))
+Segment 2
+  Project [uri, s]

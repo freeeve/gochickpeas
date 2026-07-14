@@ -11,13 +11,26 @@ nontrivial engine/gql changes:
 ## 1. Parity gate (real data, full pipeline)
 
 ```bash
-go run ./cmd/gqlbench -manifest ~/rustychickpeas-ldbc/viz/data/gql_variants.tsv -verify-only
+go run ./cmd/gqlbench -manifest ~/rustychickpeas-ldbc/viz/data/gql_variants.tsv \
+  -verify-only -cached-parity \
+  -plans-golden cmd/gqlbench/testdata/plans_golden.txt
 ```
 
-Expect `49/49 MATCH, 0 DIFF, 0 SKIP`. This drives parse -> plan -> exec
-over SF1/FinBench SF10 exports with pinned row hashes. Loads ~26M rels;
-takes a few minutes. Never emit (-verify-only) from a dirty tree -- the
-append-only bench-out protocol stamps engineCommit.
+Expect `89/89 MATCH, 0 DIFF, 0 SKIP`, plus `plan-shape golden: 89 queries
+unchanged`. This drives parse -> plan -> exec over SF1/FinBench SF10 exports
+with pinned row hashes. Loads ~26M rels; takes a few minutes. Never emit
+(-verify-only) from a dirty tree -- the append-only bench-out protocol stamps
+engineCommit.
+
+- `-cached-parity` also checks the auto-parameterized PlanCache path against
+  the same reference hashes (catches literal-vs-cached-plan divergence).
+- `-plans-golden` guards plan QUALITY, which row parity cannot see: a planner
+  change that stays correct still moves the plan, and drift here fails the run.
+  For an INTENTIONAL planner change, review the drift, then regenerate the
+  golden with `-plans-golden-capture` and commit it in the same change. Do a
+  planner change WITHOUT this and a regression that stays row-correct lands
+  invisibly.
+- Run heavy invocations under `taskman lock run local-cpu` (shared box).
 
 ## 2. Sample drive through the public export
 
