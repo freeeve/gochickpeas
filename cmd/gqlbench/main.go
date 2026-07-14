@@ -122,6 +122,7 @@ func run() error {
 	runs := flag.Int("runs", 5, "timed runs per matched query (median emitted)")
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
+	cachedParity := flag.Bool("cached-parity", false, "also run each query through the PlanCache (auto-parameterized) path and verify it matches the same reference hash; catches divergence between the literal and cached plans")
 	gqlVersion := flag.String("gql-version", "v0.2.0", "gql engine version stamped into meta")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile covering the timed runs")
 	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
@@ -169,6 +170,10 @@ func run() error {
 
 	// One load per distinct graph, in first-seen manifest order.
 	graphs := map[string]*chickpeas.Snapshot{}
+	// One PlanCache per graph for the -cached-parity cross-check, so the
+	// auto-parameterized/cached path is exercised (and its plan reused) the
+	// way a real caller hits it.
+	caches := map[string]*gql.PlanCache{}
 	var outcomes []outcome
 	emitted := 0
 	for _, row := range rows {
@@ -211,6 +216,45 @@ func run() error {
 			fmt.Printf("%-16s DIFF  %s\n", id, detail)
 			continue
 		}
+		// Cached-path parity: the PlanCache auto-parameterizes before
+		// planning, which can pick a different anchor than the literal plan.
+		// The RESULT must stay identical -- verify the cached path against the
+		// same reference hash. Run twice so the cache-hit replay (not only the
+		// first miss) is checked. A divergence here is a real correctness bug
+		// in the cached path that -verify-only over gql.Run cannot see.
+		if *cachedParity {
+			c, ok := caches[row.Graph]
+			if !ok {
+				c = gql.NewPlanCache(1 << 26)
+				caches[row.Graph] = c
+			}
+			cdiff := ""
+			for pass := 0; pass < 2 && cdiff == ""; pass++ {
+				cres, cerr := c.Run(g, row.GQL)
+				if cerr != nil {
+					cdiff = "cached run: " + cerr.Error()
+					break
+				}
+				ccells, cerr := resultCells(cres)
+				if cerr != nil {
+					cdiff = "cached cells: " + cerr.Error()
+					break
+				}
+				cmatch, cdetail, cerr := ldbc.VerifyCell(row, ccells)
+				if cerr != nil {
+					return fmt.Errorf("%s (cached parity): %w", id, cerr)
+				}
+				if !cmatch {
+					cdiff = cdetail
+				}
+			}
+			if cdiff != "" {
+				outcomes = append(outcomes, outcome{row: row, status: "CDIFF", detail: cdiff})
+				fmt.Printf("%-16s CDIFF %s\n", id, cdiff)
+				continue
+			}
+		}
+
 		outcomes = append(outcomes, outcome{row: row, status: "MATCH", rows: len(cells)})
 		if *verifyOnly {
 			fmt.Printf("%-16s MATCH (%d rows)\n", id, len(cells))
@@ -259,13 +303,15 @@ func run() error {
 		}
 	}
 
-	match, diff, skip := 0, 0, 0
+	match, diff, skip, cdiff := 0, 0, 0, 0
 	for _, o := range outcomes {
 		switch o.status {
 		case "MATCH":
 			match++
 		case "DIFF":
 			diff++
+		case "CDIFF":
+			cdiff++
 		case "SKIP":
 			skip++
 		}
@@ -283,10 +329,17 @@ func run() error {
 			return err
 		}
 	}
-	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d timing+plan+profile triples emitted at %s\n",
-		match, len(outcomes), diff, skip, emitted, stamp.Commit)
+	cdiffSummary := ""
+	if cdiff > 0 {
+		cdiffSummary = fmt.Sprintf(", %d CDIFF", cdiff)
+	}
+	fmt.Printf("\n%d/%d MATCH, %d DIFF%s, %d SKIP; %d timing+plan+profile triples emitted at %s\n",
+		match, len(outcomes), diff, cdiffSummary, skip, emitted, stamp.Commit)
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
+	}
+	if cdiff > 0 {
+		return fmt.Errorf("%d queries diverged on the cached/auto-parameterized path (CDIFF)", cdiff)
 	}
 	return nil
 }
