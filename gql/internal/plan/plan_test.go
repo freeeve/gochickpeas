@@ -10,6 +10,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/parser"
+	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 )
 
 // buildFixture is a small LDBC-shaped graph: many Persons, few Tags (with
@@ -121,6 +122,92 @@ func TestAnchorSmallerLabelWinsSameTier(t *testing.T) {
 	ms := firstMatch(t, p)
 	if ms.Ops[0].Source.Kind != ScanLabel || ms.Ops[0].Source.Label != "Tag" {
 		t.Fatalf("anchor = %+v, want Tag label scan (cost tie-break)", ms.Ops[0].Source)
+	}
+}
+
+// buildDegreeSkewFixture is a KNOWS graph whose per-node degrees diverge
+// sharply from the relation's AVERAGE degree. One hub person (pid 0) knows
+// 20 others (out-degree 20); each of those knows only the hub back
+// (in-degree 1 apiece). The graph is degree-symmetric in aggregate --
+// AvgDegree(KNOWS, out) == AvgDegree(KNOWS, in) -- so a value-independent
+// cost probe cannot tell the two orientations apart, while the resolved
+// per-node degrees make one orientation 20x better. This is exactly the
+// shape that exposes the auto-parameterization anchor hazard.
+func buildDegreeSkewFixture(t *testing.T) graph.Graph {
+	t.Helper()
+	b := chickpeas.NewBuilder(32, 64)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var persons []chickpeas.NodeID
+	for i := range 21 {
+		p, err := b.AddNode("Person")
+		must(err)
+		must(b.SetProp(p, "pid", int64(i)))
+		persons = append(persons, p)
+	}
+	// Hub (pid 0) knows everyone; everyone knows only the hub back. Sources
+	// and targets are the same 21 nodes, so out/in average degree match; but
+	// the hub's out-degree is 20 and every spoke's in-degree is 1.
+	for i := 1; i <= 20; i++ {
+		_, err := b.AddRel(persons[0], persons[i], "KNOWS")
+		must(err)
+		_, err = b.AddRel(persons[i], persons[0], "KNOWS")
+		must(err)
+	}
+	return graphNew(b.Finalize())
+}
+
+// TestAutoParamAnchorHazard confirms (turns code analysis into a measured
+// fact) that auto-parameterization can flip the chosen anchor orientation:
+// the literal query anchors on the selective endpoint via the resolved
+// first-hop degree, but once the seek constants are lifted to params the
+// degree probe abstains and the planner falls back to the (tied) average
+// degree, picking the 20x-worse orientation. Locks in the hazard task 081
+// diagnosed; the fix, if landed, must keep the two forms convergent.
+func TestAutoParamAnchorHazard(t *testing.T) {
+	g := buildDegreeSkewFixture(t)
+	src := "MATCH (a:Person {pid: 0})-[:KNOWS]->(b:Person {pid: 1}) RETURN a.pid, b.pid"
+
+	// Literal form: both endpoints are single-row property seeks (same leaf
+	// cardinality), so the tie breaks on the resolved first-hop degree --
+	// hub a fans out 20, spoke b fans in 1 -- and the plan reverses to
+	// anchor on b, expanding incoming.
+	lit := mustPlan(t, g, src)
+	litHop := firstMatch(t, lit).Ops[1]
+	if litHop.Kind != OpExpand || litHop.Dir != graph.Incoming {
+		t.Fatalf("literal hop = %+v, want reversed incoming expand (anchor on selective b)", litHop)
+	}
+
+	// Auto-parameterized form: the same query with its seek constants lifted
+	// to param slots. The degree probe abstains on params and the tie falls
+	// through to the average-degree pathCost, which is symmetric here, so the
+	// planner keeps the forward orientation and anchors on the 20x-worse hub.
+	q, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	semantics.AutoParameterize(q)
+	par, err := Build(q, g)
+	if err != nil {
+		t.Fatalf("plan parameterized: %v", err)
+	}
+	parHop := par.Branches[0][0].Stages[0].(*MatchStage).Ops[1]
+	if parHop.Kind != OpExpand {
+		t.Fatalf("parameterized hop = %+v, want an expand", parHop)
+	}
+
+	// The measured hazard: the two forms disagree on orientation. If a future
+	// fix makes parameterization value-independent for this decision, this
+	// assertion flips and the test should be updated to demand convergence.
+	if parHop.Dir == litHop.Dir {
+		t.Fatalf("expected auto-param to DIVERGE from literal orientation, both = %v", litHop.Dir)
+	}
+	if parHop.Dir != graph.Outgoing {
+		t.Fatalf("parameterized hop dir = %v, want Outgoing (anchored on hub a)", parHop.Dir)
 	}
 }
 
