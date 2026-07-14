@@ -51,11 +51,26 @@ func Render(p *plan.Plan, prof *Profile, planTime time.Duration, est *plan.Estim
 			out = append(out, fmt.Sprintf("%-54s %16s", "", "est"))
 		}
 	}
-	render(&out, p, prof, est)
+	render(&out, p, prof, est, true)
 	return out
 }
 
-func render(out *[]string, p *plan.Plan, prof *Profile, est *plan.Estimates) {
+// Canonical renders a plan as a stable shape string for golden
+// plan-regression snapshots: operator order and indentation, scan sources,
+// hop patterns, the recognizers that fired (hash join, SP gate, mono
+// var-expand, decorrelation, distinct, aggregate) and the chosen anchor note
+// -- but NOT the wall-clock planning time, the "est" header, or the per-operator
+// numeric estimates, which drift with the fixture while the shape and the anchor
+// choice should not. est supplies the anchor notes only; its numbers are omitted.
+// The result is result-independent (it never executes) and deterministic across
+// plannings, so a diff is a review prompt that a planner change moved a plan.
+func Canonical(p *plan.Plan, est *plan.Estimates) []string {
+	var out []string
+	render(&out, p, nil, est, false)
+	return out
+}
+
+func render(out *[]string, p *plan.Plan, prof *Profile, est *plan.Estimates, numbers bool) {
 	multiBranch := len(p.Branches) > 1
 	gseg := 0
 	for bi, segments := range p.Branches {
@@ -87,12 +102,12 @@ func render(out *[]string, p *plan.Plan, prof *Profile, est *plan.Estimates) {
 				*out = append(*out, fmt.Sprintf("%sSegment %d", bind, si))
 				ind = bind + "  "
 			}
-			renderSegment(out, seg, ind, sp, se)
+			renderSegment(out, seg, ind, sp, se, numbers)
 		}
 	}
 }
 
-func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se *plan.SegEst) {
+func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se *plan.SegEst, numbers bool) {
 	// slot -> variable name (anonymous slots render as _).
 	names := make([]string, seg.RowWidth)
 	for name, slot := range seg.Slots {
@@ -101,15 +116,23 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 		}
 	}
 
+	// The canonical (numbers=false) form pins plan shape and the anchor
+	// decision but omits the per-operator estimate/profile columns; numse/numsp
+	// gate those numeric lookups while se still supplies the anchor notes.
+	numse, numsp := se, sp
+	if !numbers {
+		numse, numsp = nil, nil
+	}
+
 	for ti, stage := range seg.Stages {
 		switch s := stage.(type) {
 		case *plan.MatchStage:
 			var opRows, opEsts []uint64
-			if sp != nil && ti < len(sp.Stages) {
-				opRows = sp.Stages[ti].Match
+			if numsp != nil && ti < len(numsp.Stages) {
+				opRows = numsp.Stages[ti].Match
 			}
-			if se != nil && ti < len(se.Stages) {
-				opEsts = se.Stages[ti].Match
+			if numse != nil && ti < len(numse.Stages) {
+				opEsts = numse.Stages[ti].Match
 			}
 			note := ""
 			if se != nil && ti < len(se.AnchorNotes) {
@@ -118,7 +141,11 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			for oi := range s.Ops {
 				line(out, ind, opLabel(&s.Ops[oi], names), at(opEsts, oi), at(opRows, oi))
 				if oi == 0 && note != "" {
-					*out = append(*out, ind+"  "+note)
+					n := note
+					if !numbers {
+						n = stripNoteMagnitudes(note)
+					}
+					*out = append(*out, ind+"  "+n)
 				}
 			}
 			if s.Where != nil {
@@ -127,7 +154,7 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 		case *plan.HashJoinStage:
 			label := fmt.Sprintf("HashJoin (key=%s, probe %s)", nameOf(s.KeySlot, names),
 				fmtHop(nameOf(s.Probe.From, names), s.Probe.Dir, s.Probe.Types, nameOf(s.Probe.To, names), ""))
-			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, label, singleEst(numse, ti), singleCount(numsp, ti))
 			for _, bs := range s.Build {
 				for oi := range bs.Ops {
 					line(out, ind+"  build: ", opLabel(&bs.Ops[oi], names), nil, nil)
@@ -147,7 +174,7 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 				kind = "WeightedShortestPath"
 			}
 			label := fmt.Sprintf("%s (%s)-[*]-(%s)", kind, nameOf(s.From, names), nameOf(s.To, names))
-			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, label, singleEst(numse, ti), singleCount(numsp, ti))
 		case *plan.GateStage:
 			kind := "ShortestPath"
 			if s.Sp.Weight != nil {
@@ -155,18 +182,18 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			}
 			label := fmt.Sprintf("Gate (%s (%s)-[*]-(%s), %s)",
 				kind, nameOf(s.Sp.From, names), nameOf(s.Sp.To, names), fmtExpr(s.Where))
-			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, label, singleEst(numse, ti), singleCount(numsp, ti))
 		case *plan.CallStage:
 			label := callLabel(&s.Proc)
 			if s.ProcName != "" {
 				label = fmt.Sprintf("%s(…) [correlated, %d args]", s.ProcName, len(s.ArgExprs))
 			}
-			line(out, ind, "Call "+label, singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, "Call "+label, singleEst(numse, ti), singleCount(numsp, ti))
 		case *plan.UnwindStage:
 			label := fmt.Sprintf("Unwind (%s AS %s)", fmtExpr(s.List), nameOf(s.OutSlot, names))
-			line(out, ind, label, singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, label, singleEst(numse, ti), singleCount(numsp, ti))
 		case *plan.CallSubqueryStage:
-			line(out, ind, "CallSubquery ["+strings.Join(s.Sub.Columns, ", ")+"]", singleEst(se, ti), singleCount(sp, ti))
+			line(out, ind, "CallSubquery ["+strings.Join(s.Sub.Columns, ", ")+"]", singleEst(numse, ti), singleCount(numsp, ti))
 			// Render the nested sub-plan indented under the operator,
 			// dropping the sub-render's own header lines.
 			sub := Render(s.Sub, nil, 0, nil)
@@ -178,11 +205,11 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 
 	proj := &seg.Proj
 	var pc, pe *uint64
-	if sp != nil {
-		pc = &sp.ProjRows
+	if numsp != nil {
+		pc = &numsp.ProjRows
 	}
-	if se != nil {
-		pe = se.ProjRows
+	if numse != nil {
+		pe = numse.ProjRows
 	}
 	if proj.Aggregated {
 		var groups []string
@@ -216,14 +243,37 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 	}
 	if seg.PostWhere != nil {
 		var e, c *uint64
-		if se != nil {
-			e = se.PostWhereRows
+		if numse != nil {
+			e = numse.PostWhereRows
 		}
-		if sp != nil {
-			c = sp.PostWhereRows
+		if numsp != nil {
+			c = numsp.PostWhereRows
 		}
 		line(out, ind, "Filter ("+fmtExpr(seg.PostWhere)+")", e, c)
 	}
+}
+
+// stripNoteMagnitudes collapses each maximal digit run in an anchor note to a
+// single 'N', so the canonical form pins the anchor CHOICE and its tie-break
+// REASON (both text -- e.g. which variable anchors, "smaller leaf cardinality")
+// without the card / fan-out magnitudes, which are estimates that drift with
+// the fixture while the decision does not.
+func stripNoteMagnitudes(note string) string {
+	var b strings.Builder
+	b.Grow(len(note))
+	inDigits := false
+	for _, r := range note {
+		if r >= '0' && r <= '9' {
+			if !inDigits {
+				b.WriteByte('N')
+				inDigits = true
+			}
+			continue
+		}
+		inDigits = false
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // at is a bounds-checked element pointer into a count slice.
