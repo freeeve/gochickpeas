@@ -384,6 +384,16 @@ func boundWith(bound map[string]bool, vars ...string) map[string]bool {
 // compile-time constants -- every FuncOp is deterministic, so this is
 // result-identical to per-row evaluation (the dominant win is a temporal
 // constructor in a hot filter parsing its ISO string once).
+// foldFunc evaluates a scalar function at plan time when every argument is a
+// literal, so a hot filter's constant call (e.g. duration({hours: 4})) is one
+// value instead of a per-row rebuild. A ZERO-arg call folds vacuously (the
+// loop below is empty) -- sound only because every scalar function here is
+// deterministic: the only zero-arg forms, date()/datetime()/localdatetime(),
+// return Null, not the current instant. A volatile function (rand/timestamp)
+// must NOT reach this fold -- its plan-time value would be baked into the
+// cached plan and replayed forever -- so it would need excluding here and at
+// constExpr both (the two fold sites). Locked by the gql package's zero-arg
+// fold tests.
 func foldFunc(op eval.FuncOp, args []cnode) cnode {
 	argv := make([]value.Value, len(args))
 	for i, a := range args {
