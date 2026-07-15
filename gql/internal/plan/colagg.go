@@ -55,14 +55,17 @@ func ColAggChainLen(segments []*Segment, i int) int {
 	return 0
 }
 
-// colAggScanStage reports the head shape: one non-optional bare
-// single-label scan stage, no expands, no path bind, no inline props.
+// colAggScanStage reports the head shape: one bare single-label scan
+// stage, no expands, no path bind, no inline props. OPTIONAL is a flag,
+// not a reason to decline: the fused pass is the same scan with a
+// null-fill row emitted through the aggregator when nothing survives
+// (the executor handles it), so both spellings take the same kernel.
 func colAggScanStage(seg *Segment) bool {
 	if len(seg.Stages) != 1 {
 		return false
 	}
 	ms, ok := seg.Stages[0].(*MatchStage)
-	if !ok || ms.Optional || ms.PathBind != nil || len(ms.Ops) != 1 {
+	if !ok || ms.PathBind != nil || len(ms.Ops) != 1 {
 		return false
 	}
 	op := &ms.Ops[0]

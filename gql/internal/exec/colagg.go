@@ -288,12 +288,33 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		}
 	}
 
-	// A keyless aggregate over no input still emits one zeroed group,
-	// exactly like the general accumulator.
-	if len(groupKeys) == 0 && len(proj.GroupIdx) == 0 {
-		groupKeys = append(groupKeys, groupKey{})
+	// No candidate survived. A keyless aggregate over no input still
+	// emits one zeroed group, exactly like the general accumulator. An
+	// OPTIONAL scan instead emits its null-fill row THROUGH the
+	// aggregator: star aggregates count that row (count(*) reads 1),
+	// value aggregates read null from it (their identity), computed
+	// group keys take the null key, carried keys keep their carried
+	// values. Established against the general path's own output --
+	// grouped plain MATCH stays zero rows, everything else fills.
+	if len(groupKeys) == 0 && (len(proj.GroupIdx) == 0 || ms.Optional) {
+		gk := groupKey{}
+		if ms.Optional {
+			for ki := 0; ki < computed; ki++ {
+				gk.null |= 1 << ki
+			}
+		}
+		groupKeys = append(groupKeys, gk)
 		for _, a := range proj.Aggs {
 			states = append(states, aggState{kind: a.Kind})
+		}
+		if ms.Optional {
+			for j, a := range args {
+				if a.star {
+					states[j].update(value.Value{}, false)
+				} else {
+					states[j].update(value.Null(), true)
+				}
+			}
 		}
 	}
 

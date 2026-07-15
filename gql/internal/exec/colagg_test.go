@@ -143,4 +143,47 @@ func TestColumnarAggMatchesGeneral(t *testing.T) {
 	}
 }
 
+// TestColumnarAggOptionalMatchesGeneral pins the OPTIONAL spelling on the
+// same fused kernel (task 101's lesson inverted: this gate declined
+// OPTIONAL where rustychickpeas' declined plain -- either way the walk is
+// identical and the difference is one null-fill flag). Every query runs
+// fused vs general AND asserts the kernel fired -- a duration cannot be
+// asserted on a shared box, a counter can. The empty-scan shapes pin the
+// divergence table: grouped plain MATCH emits zero rows, grouped OPTIONAL
+// one null-key row; global star counts the fill row (1), value aggregates
+// read their identity from it.
+func TestColumnarAggOptionalMatchesGeneral(t *testing.T) {
+	g := colAggFixture(t)
+	queries := []string{
+		// Non-empty: both spellings identical, both fused.
+		`OPTIONAL MATCH (m:Message) RETURN count(m) AS c`,
+		`OPTIONAL MATCH (m:Message) LET year = m.creationDate.year
+		 RETURN year, count(m) AS n NEXT RETURN year, n ORDER BY n, year`,
+		// Empty scan, global: count(m) identity 0, count(*) counts the fill row.
+		`OPTIONAL MATCH (m:NoSuchLabel) RETURN count(m) AS c`,
+		`OPTIONAL MATCH (m:NoSuchLabel) RETURN count(*) AS c`,
+		`OPTIONAL MATCH (m:NoSuchLabel) RETURN sum(m.length) AS s`,
+		// Empty scan, grouped: one null-key row (plain MATCH: zero rows).
+		`OPTIONAL MATCH (m:NoSuchLabel) RETURN m.length AS l, count(m) AS n`,
+		`OPTIONAL MATCH (m:NoSuchLabel)
+		 RETURN m.length AS l, count(*) AS c, count(m) AS n, sum(m.length) AS s`,
+		// Stage WHERE killing every candidate behaves as an empty scan.
+		`OPTIONAL MATCH (m:Message) WHERE m.length > 100000
+		 RETURN m.length AS l, count(m) AS n`,
+		`OPTIONAL MATCH (m:Message) WHERE m.length > 100000 RETURN count(*) AS c`,
+		// Plain-MATCH grouped empty stays zero rows through the fused path.
+		`MATCH (m:NoSuchLabel) RETURN m.length AS l, count(m) AS n`,
+	}
+	for i, q := range queries {
+		before := colAggFired
+		fused, general := runBoth(t, g, q)
+		if fmt.Sprint(fused) != fmt.Sprint(general) {
+			t.Errorf("query %d diverged:\nfused:   %v\ngeneral: %v", i, fused, general)
+		}
+		if colAggFired == before {
+			t.Errorf("query %d never took the fused path (vacuous differential)", i)
+		}
+	}
+}
+
 var _ = value.Null
