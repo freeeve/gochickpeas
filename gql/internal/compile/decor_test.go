@@ -102,3 +102,74 @@ func TestDecorCountMatchesNaiveAndBuildsOnce(t *testing.T) {
 		t.Fatalf("side table built %d times, want 1 (one shared tag anchor)", cs.decorBuilds)
 	}
 }
+
+// TestDecorSiblingsShareOneTable pins task 104: two sibling COUNT{}
+// subqueries identical except for the outer variable naming their group
+// endpoint (BI Q8's score/friendScore shape, C1(person)/C1(friend))
+// canonicalize identically and answer from ONE table per anchor -- the
+// second sibling builds nothing. The build count is the assertion
+// (rustychickpeas 091's pattern): a timing cannot prove sharing, a
+// counter can. Both siblings' answers must equal the naive per-entity
+// walk -- sharing must never change a value.
+func TestDecorSiblingsShareOneTable(t *testing.T) {
+	ctx, g, tag, persons := decorGraph(t)
+	// Two scopes naming the group endpoint differently, as CALL-imported
+	// siblings would: same tag anchor slot, different person variable.
+	slotsP := map[string]int{"t": 0, "p": 1}
+	slotsF := map[string]int{"t": 0, "f": 1}
+	srcP := "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) WHERE m.ts > 100 AND m.ts < 200 }"
+	srcF := "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(f) WHERE m.ts > 100 AND m.ts < 200 }"
+
+	cp := New(ctx, exprOf(t, srcP), slotsP, g)
+	cf := New(ctx, exprOf(t, srcF), slotsF, g)
+	csP := cp.c.(*cSubquery)
+	csF := cf.c.(*cSubquery)
+	if !csP.decorOK || !csF.decorOK {
+		t.Fatal("both siblings must be decorrelatable")
+	}
+
+	want := [3]int{2, 1, 0}
+	for i, p := range persons {
+		row := []value.Value{value.Node(tag), value.Node(p)}
+		if got, _ := cp.Eval(ctx, row, slotsP).AsInt(); got != int64(want[i]) {
+			t.Fatalf("sibling P person %d = %d, want %d", i, got, want[i])
+		}
+		if got, _ := cf.Eval(ctx, row, slotsF).AsInt(); got != int64(want[i]) {
+			t.Fatalf("sibling F person %d = %d, want %d", i, got, want[i])
+		}
+		naive := eval.SubqueryCount(ctx, csF.pattern, csF.where, row, slotsF, false)
+		if got, _ := cf.Eval(ctx, row, slotsF).AsInt(); got != int64(naive) {
+			t.Fatalf("shared answer %d != naive %d", got, naive)
+		}
+	}
+	if csP.decorCanon != csF.decorCanon {
+		t.Fatalf("siblings canonicalize differently:\nP: %q\nF: %q", csP.decorCanon, csF.decorCanon)
+	}
+	if ctx.DecorBuilds != 1 {
+		t.Fatalf("execution built %d tables, want 1 (siblings share the tag anchor's table)", ctx.DecorBuilds)
+	}
+	if csP.decorBuilds+csF.decorBuilds != 1 {
+		t.Fatalf("per-node builds P=%d F=%d, want exactly one across both", csP.decorBuilds, csF.decorBuilds)
+	}
+
+	// A sibling with a DIFFERENT window must NOT share: same pattern, other
+	// WHERE, other answers. Wrong sharing here returns the wide window's
+	// counts -- the value assertions are the soundness guard, the build
+	// count the sharing guard.
+	srcW := "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) WHERE m.ts > 100 AND m.ts < 155 }"
+	cw := New(ctx, exprOf(t, srcW), slotsP, g)
+	csW := cw.c.(*cSubquery)
+	wantW := [3]int{1, 0, 0}
+	for i, p := range persons {
+		row := []value.Value{value.Node(tag), value.Node(p)}
+		if got, _ := cw.Eval(ctx, row, slotsP).AsInt(); got != int64(wantW[i]) {
+			t.Fatalf("narrow-window person %d = %d, want %d (shared a foreign table?)", i, got, wantW[i])
+		}
+	}
+	if csW.decorCanon == csP.decorCanon {
+		t.Fatal("different WHERE must canonicalize differently")
+	}
+	if ctx.DecorBuilds != 2 {
+		t.Fatalf("execution built %d tables, want 2 (narrow window builds its own)", ctx.DecorBuilds)
+	}
+}

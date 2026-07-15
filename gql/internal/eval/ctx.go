@@ -40,6 +40,22 @@ type Ctx struct {
 	// evaluations; the row buffer is refilled each call). A tree AST never
 	// evaluates one node re-entrantly, so a single buffer per node is safe.
 	scopes map[ast.Expr]*scopeScratch
+	// DecorTables shares decorrelated COUNT{} side tables across sibling
+	// compiled subqueries within one execution, keyed by the subquery's
+	// canonical identity (endpoint variable names substituted, so the same
+	// subquery written against two outer variables collides) and the
+	// resolved anchor node. Params are fixed per Ctx, so identities that
+	// embed parameter slots stay valid for the Ctx's lifetime. DecorBuilds
+	// counts table builds across the execution -- tests assert a shared
+	// identity builds once, not once per sibling.
+	DecorTables map[DecorTableKey]map[graph.NodeID]int
+	DecorBuilds int
+}
+
+// DecorTableKey identifies one shared decorrelated side table.
+type DecorTableKey struct {
+	Canon  string
+	Anchor uint32
 }
 
 // scopeScratch is one list-scope node's reused inner environment: the slot

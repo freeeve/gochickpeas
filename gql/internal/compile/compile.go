@@ -118,13 +118,17 @@ type cSubquery struct {
 	// anchor-independent, only speed depends on it.
 	decorAnchorDecided bool
 	decorAnchorIsEnd   bool
-	// decorTables memoizes one node-id->count table per resolved anchor node,
-	// for this execution. decorBuilds counts table builds (asserted in tests:
-	// a shared anchor builds ONCE). decorOff falls back to the DFS path once
-	// too many distinct anchors prove the anchor is not amortizing.
-	decorTables map[uint64]map[chickpeas.NodeID]int
-	decorBuilds int
-	decorOff    bool
+	// decorCanon is the node's canonical table identity (decor_canon.go),
+	// computed once after the anchor role is decided; tables live on the
+	// Ctx keyed by (canon, anchor node) so sibling subqueries share them.
+	// decorBuilds counts the builds THIS node triggered (asserted in
+	// tests: a shared anchor builds ONCE; a sibling hitting another
+	// node's table builds ZERO). decorOff falls back to the DFS path once
+	// too many builds prove the anchor is not amortizing.
+	decorCanon     string
+	decorCanonDone bool
+	decorBuilds    int
+	decorOff       bool
 }
 
 // decorAnchorCap bounds the distinct anchor tables built before decorrelation

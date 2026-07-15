@@ -4,6 +4,8 @@
 package compile
 
 import (
+	"fmt"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
@@ -267,19 +269,34 @@ func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string
 		anchorVar, groupVar = n.decorEndVar, n.decorStartVar
 		anchorNode, groupNode = endNode, startNode
 	}
-	key := uint64(uint32(anchorNode))
-	tbl, hit := n.decorTables[key]
+	// Tables live on the Ctx keyed by (canonical identity, anchor node), so
+	// sibling subqueries that differ only in their outer endpoint names
+	// share one table per anchor. The canonical identity embeds the anchor
+	// ROLE (the substitution marker sits where the anchor sits in the
+	// pattern), so siblings whose runtime anchor choice diverged simply
+	// stop sharing rather than mix tables. A shape with no canonical
+	// identity keys privately by node pointer -- same store, no sharing.
+	if !n.decorCanonDone {
+		n.decorCanon = decorCanon(n.pattern, n.where, anchorVar, groupVar)
+		if n.decorCanon == "" {
+			n.decorCanon = fmt.Sprintf("\x00%p", n)
+		}
+		n.decorCanonDone = true
+	}
+	key := eval.DecorTableKey{Canon: n.decorCanon, Anchor: uint32(anchorNode)}
+	tbl, hit := ctx.DecorTables[key]
 	if !hit {
-		if len(n.decorTables) >= decorAnchorCap {
+		if n.decorBuilds >= decorAnchorCap {
 			n.decorOff = true
 			return 0, false
 		}
 		tbl = eval.SubqueryGroupCount(ctx, n.pattern, n.where, row, slots, anchorVar, groupVar)
-		if n.decorTables == nil {
-			n.decorTables = map[uint64]map[chickpeas.NodeID]int{}
+		if ctx.DecorTables == nil {
+			ctx.DecorTables = map[eval.DecorTableKey]map[chickpeas.NodeID]int{}
 		}
-		n.decorTables[key] = tbl
+		ctx.DecorTables[key] = tbl
 		n.decorBuilds++
+		ctx.DecorBuilds++
 	}
 	return tbl[groupNode], true
 }
