@@ -281,6 +281,22 @@ func conformanceCorpus() []conformanceProbe {
 		{"C expressions", "temporal-duration-literal", "RETURN DURATION 'PT1H' AS x", -1, "", "unexpected trailing input \"PT1H\"", nil},
 		{"C expressions", "date-func", "RETURN date('2024-01-02').year AS y", 1, "", "", nil},
 		{"C expressions", "duration-func", "RETURN duration('PT2H').hours AS h", 1, "[2]", "", nil},
+		// 127 addendum: the ISO string-constructor family (a silently
+		// map-only duration() folded BI Q2's window bounds to null in the
+		// sibling engine), and malformed strings must never partially parse.
+		{"C expressions", "duration-iso-days", "RETURN duration('P100D').days AS x", 1, "[100]", "", nil},
+		{"C expressions", "duration-iso-composite", "RETURN duration('P1Y2M3DT4H5M6S').months AS x", 1, "[14]", "", nil},
+		{"C expressions", "duration-iso-frac", "RETURN duration('PT1.5S').milliseconds AS x", 1, "[1500]", "", nil},
+		{"C expressions", "duration-iso-neg", "RETURN duration('-P1D').days AS x", 1, "[-1]", "", nil},
+		{"C expressions", "duration-iso-malformed-pt", "RETURN duration('PT') AS x", 1, "[null]", "", nil},
+		{"C expressions", "duration-iso-malformed-bare", "RETURN duration('100D') AS x", 1, "[null]", "", nil},
+		// 127 addendum: accessors through a bound variable and through an
+		// arbitrary base expression -- the same accessor can be wired at
+		// one property-access site and missing at the others.
+		{"C expressions", "accessor-bound-var", "LET t = datetime('2020-03-15T00:00') RETURN t.year AS x", 1, "[2020]", "", nil},
+		{"C expressions", "accessor-base-expr", "RETURN [datetime('2020-03-15T00:00')][0].year AS x", 1, "[2020]", "", nil},
+		{"C expressions", "accessor-bound-duration", "LET d = duration('PT2H') RETURN d.hours AS x", 1, "[2]", "", nil},
+		{"C expressions", "q2-window-idiom", "RETURN (zoned_datetime('2012-06-01') + duration('P100D')).month AS x", 1, "[9]", "", nil},
 		{"C expressions", "list-literal", "RETURN [1, 2, 3] AS x", 1, "", "", nil},
 		{"C expressions", "map-literal", "RETURN {a: 1, b: 'x'} AS m", 1, "", "", nil},
 		{"C expressions", "list-index", "RETURN [10,20,30][1] AS x", 1, "[20]", "", nil},

@@ -160,3 +160,49 @@ func TestDurationComponents(t *testing.T) {
 		t.Fatal("duration .hour (singular) must stay null -- duration accessors are plural")
 	}
 }
+
+// TestDurationISOStringEdges pins the 127 parser fixes: fractional
+// seconds (millisecond precision, zero-padded), whole-duration sign, and
+// the no-partial-parse rule (designator-only strings are null, not a
+// zero duration).
+func TestDurationISOStringEdges(t *testing.T) {
+	b := chickpeas.NewBuilder(2, 1)
+	if _, err := b.AddNode("N"); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize()
+	one := func(q string) value.Value {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no row: %s", q)
+		}
+		v, _ := r.GetAt(0)
+		return v
+	}
+	for q, want := range map[string]int64{
+		"RETURN duration('PT1.5S').milliseconds AS x":    1500,
+		"RETURN duration('PT0.25S').milliseconds AS x":   250,
+		"RETURN duration('PT1.2345S').milliseconds AS x": 1234, // truncated at millis
+		"RETURN duration('-P1DT2H').hours AS x":          -2,
+		"RETURN duration('-P1DT2H').days AS x":           -1,
+		"RETURN duration('+P1D').days AS x":              1,
+	} {
+		if got, ok := one(q).AsInt(); !ok || got != want {
+			t.Fatalf("%s = %v, want %d", q, one(q), want)
+		}
+	}
+	for _, q := range []string{
+		"RETURN duration('PT') AS x",
+		"RETURN duration('P') AS x",
+		"RETURN duration('PT1.S') AS x",  // fraction with no digits
+		"RETURN duration('PT1.5') AS x",  // fraction without S
+		"RETURN duration('PT1.5H') AS x", // fraction on a non-seconds field
+		"RETURN duration('-') AS x",
+	} {
+		if !one(q).IsNull() {
+			t.Fatalf("%s must be null (no partial parse), got %v", q, one(q))
+		}
+	}
+}

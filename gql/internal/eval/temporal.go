@@ -207,11 +207,19 @@ func ISOString(millis int64, kind value.TemporalKind) string {
 // sign are not supported; ok is false on a malformed string.
 func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 	s = strings.TrimSpace(s)
+	// A leading sign negates the whole duration ('-P1D').
+	neg := false
+	if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
+		neg = s[0] == '-'
+		s = s[1:]
+	}
 	if len(s) < 2 || (s[0] != 'P' && s[0] != 'p') {
 		return 0, 0, 0, false
 	}
 	inTime := false
+	sawComponent := false
 	num := int64(-1)
+	fracMs := int64(-1) // parsed fractional-seconds millis, -1 = none
 	// A field that overflows its unit conversion or the running total is a
 	// wrapped nonsense duration; decline it (Null) rather than build one.
 	add := func(acc, delta int64) (int64, bool) { return addChk(acc, delta) }
@@ -235,6 +243,30 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 				return 0, 0, 0, false
 			}
 			inTime = true
+		case c == '.':
+			// A fraction is only valid on the seconds field: digits, then
+			// 'S'. Millisecond precision (first three digits, zero-padded).
+			if !inTime || num < 0 || fracMs >= 0 {
+				return 0, 0, 0, false
+			}
+			j := i + 1
+			f, digits := int64(0), 0
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				if digits < 3 {
+					f = f*10 + int64(s[j]-'0')
+					digits++
+				}
+				j++
+			}
+			if digits == 0 || j >= len(s) || (s[j] != 'S' && s[j] != 's') {
+				return 0, 0, 0, false
+			}
+			for digits < 3 {
+				f *= 10
+				digits++
+			}
+			fracMs = f
+			i = j - 1 // the loop's i++ lands on the 'S'
 		default:
 			if num < 0 {
 				return 0, 0, 0, false
@@ -270,7 +302,13 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 			case inTime && (c == 'S' || c == 's'):
 				var t int64
 				if t, okc = scale(num, 1000); okc {
-					ms, okc = add(ms, t)
+					if fracMs >= 0 {
+						t, okc = add(t, fracMs)
+						fracMs = -1
+					}
+					if okc {
+						ms, okc = add(ms, t)
+					}
 				}
 			default:
 				return 0, 0, 0, false
@@ -278,12 +316,17 @@ func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 			if !okc {
 				return 0, 0, 0, false
 			}
+			sawComponent = true
 			num = -1
 		}
 	}
-	// A trailing bare number (or a lone 'P'/'PT') is malformed.
-	if num >= 0 {
+	// A trailing bare number, an unconsumed fraction, or a designator-only
+	// string ('P', 'PT') is malformed -- never a partial parse.
+	if num >= 0 || fracMs >= 0 || !sawComponent {
 		return 0, 0, 0, false
+	}
+	if neg {
+		months, days, ms = -months, -days, -ms
 	}
 	return months, days, ms, true
 }
