@@ -9,8 +9,6 @@
 package parser
 
 import (
-	"strings"
-
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
@@ -52,70 +50,79 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 // parseIdentPrimary handles every identifier-led primary.
 func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 	t := p.peek()
-	kw := strings.ToLower(t.Text)
-	switch kw {
-	case "true", "false", "null":
-		lit, err := p.parseLiteralTok()
-		if err != nil {
-			return nil, err
-		}
-		return &ast.Lit{Value: lit}, nil
-	case "case":
-		return p.parseCase()
-	case "exists":
-		p.i++
-		pat, where, err := p.parseBracedMatch("EXISTS")
-		if err != nil {
-			return nil, err
-		}
-		return &ast.Exists{Pattern: pat, Where: where}, nil
-	case "count":
-		if p.peekAt(1).Kind == TokLBrace {
-			p.i++
-			pat, where, err := p.parseBracedMatch("COUNT")
-			if err != nil {
-				return nil, err
-			}
-			return &ast.CountSub{Pattern: pat, Where: where}, nil
-		}
-	case "date", "datetime", "zoned_datetime", "localdatetime", "timestamp", "duration":
-		// A temporal keyword directly followed by a string literal is the
-		// GQL temporal-literal form (DATE '2024-01-01'); it lowers to the
-		// matching constructor function. The function-call spelling has a
-		// '(' here instead, so the forms never collide.
-		if p.peekAt(1).Kind == TokStr {
-			fn := kw
-			if kw == "datetime" || kw == "timestamp" {
-				fn = "zoned_datetime"
-			}
-			p.i++
+	// Fold the identifier into a stack buffer for the keyword dispatch: a
+	// plain variable or column reference (the common case) matches no keyword
+	// and is not reserved, so it never needs a heap-allocated lowercased copy
+	// -- the switch and reserved probe both run over the non-copying
+	// string(folded) view. An identifier longer than any keyword folds to
+	// ok=false and falls straight through to the variable/function path.
+	var fbuf [24]byte
+	folded, foldOK := foldLower(t.Text, fbuf[:])
+	if foldOK {
+		switch string(folded) {
+		case "true", "false", "null":
 			lit, err := p.parseLiteralTok()
 			if err != nil {
 				return nil, err
 			}
-			return &ast.Func{Name: fn, Args: []ast.Expr{&ast.Lit{Value: lit}}}, nil
+			return &ast.Lit{Value: lit}, nil
+		case "case":
+			return p.parseCase()
+		case "exists":
+			p.i++
+			pat, where, err := p.parseBracedMatch("EXISTS")
+			if err != nil {
+				return nil, err
+			}
+			return &ast.Exists{Pattern: pat, Where: where}, nil
+		case "count":
+			if p.peekAt(1).Kind == TokLBrace {
+				p.i++
+				pat, where, err := p.parseBracedMatch("COUNT")
+				if err != nil {
+					return nil, err
+				}
+				return &ast.CountSub{Pattern: pat, Where: where}, nil
+			}
+		case "date", "datetime", "zoned_datetime", "localdatetime", "timestamp", "duration":
+			// A temporal keyword directly followed by a string literal is the
+			// GQL temporal-literal form (DATE '2024-01-01'); it lowers to the
+			// matching constructor function. The function-call spelling has a
+			// '(' here instead, so the forms never collide.
+			if p.peekAt(1).Kind == TokStr {
+				fn := string(folded)
+				if fn == "datetime" || fn == "timestamp" {
+					fn = "zoned_datetime"
+				}
+				p.i++
+				lit, err := p.parseLiteralTok()
+				if err != nil {
+					return nil, err
+				}
+				return &ast.Func{Name: fn, Args: []ast.Expr{&ast.Lit{Value: lit}}}, nil
+			}
+		case "all", "any", "none", "single":
+			// A quantifier with a `var IN` head is a list predicate; anything
+			// else falls through to a plain function call.
+			if p.peekAt(1).Kind == TokLParen && p.peekAt(2).Kind == TokIdent && kwIs(p.peekAt(3), "in") {
+				return p.parseListPred(string(folded))
+			}
+		case "cast":
+			if p.peekAt(1).Kind == TokLParen {
+				return p.parseCast()
+			}
+		case "reduce":
+			return nil, errf(t.Pos, "reduce(...) is not in the GQL subset")
+		case "shortestpath", "allshortestpaths", "weightedshortestpath":
+			return nil, errf(t.Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern> [COST <expr>]", t.Text)
+		case "cost":
+			if p.peekAt(1).Kind == TokLParen {
+				return nil, errf(t.Pos, "cost(shortestPath(...)) is not in the GQL subset: write MATCH p = ANY SHORTEST <pattern> COST <expr>")
+			}
 		}
-	case "all", "any", "none", "single":
-		// A quantifier with a `var IN` head is a list predicate; anything
-		// else falls through to a plain function call.
-		if p.peekAt(1).Kind == TokLParen && p.peekAt(2).Kind == TokIdent && kwIs(p.peekAt(3), "in") {
-			return p.parseListPred(kw)
+		if reserved[string(folded)] {
+			return nil, errf(t.Pos, "reserved word %q cannot start an expression", t.Text)
 		}
-	case "cast":
-		if p.peekAt(1).Kind == TokLParen {
-			return p.parseCast()
-		}
-	case "reduce":
-		return nil, errf(t.Pos, "reduce(...) is not in the GQL subset")
-	case "shortestpath", "allshortestpaths", "weightedshortestpath":
-		return nil, errf(t.Pos, "%s(...) is not GQL: write MATCH p = ANY SHORTEST / ALL SHORTEST <pattern> [COST <expr>]", t.Text)
-	case "cost":
-		if p.peekAt(1).Kind == TokLParen {
-			return nil, errf(t.Pos, "cost(shortestPath(...)) is not in the GQL subset: write MATCH p = ANY SHORTEST <pattern> COST <expr>")
-		}
-	}
-	if reserved[kw] {
-		return nil, errf(t.Pos, "reserved word %q cannot start an expression", t.Text)
 	}
 	if p.peekAt(1).Kind == TokLParen {
 		return p.parseFuncCall()
@@ -131,7 +138,7 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 // test to keep it a literal element).
 func (p *parser) parseListLit() (ast.Expr, error) {
 	p.i++ // '['
-	if t := p.peek(); t.Kind == TokIdent && !reserved[strings.ToLower(t.Text)] && kwIs(p.peekAt(1), "in") {
+	if t := p.peek(); t.Kind == TokIdent && !isReserved(t.Text) && kwIs(p.peekAt(1), "in") {
 		return p.parseListComp()
 	}
 	list := &ast.ListExpr{}
@@ -217,8 +224,10 @@ func (p *parser) parseCast() (ast.Expr, error) {
 	if terr != nil {
 		return nil, terr
 	}
+	var fbuf [16]byte
+	folded, _ := foldLower(t.Text, fbuf[:])
 	var fn string
-	switch strings.ToLower(t.Text) {
+	switch string(folded) {
 	case "float", "double":
 		fn = "tofloat"
 	case "int", "integer", "bigint":

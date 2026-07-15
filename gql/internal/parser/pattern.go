@@ -5,8 +5,6 @@
 package parser
 
 import (
-	"strings"
-
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
@@ -38,7 +36,7 @@ func (p *parser) parseNodePat() (*ast.NodePat, error) {
 	}
 	n := &ast.NodePat{}
 	if t := p.peek(); t.Kind == TokIdent {
-		if reserved[strings.ToLower(t.Text)] {
+		if isReserved(t.Text) {
 			return nil, errf(t.Pos, "reserved word %q cannot be a node variable", t.Text)
 		}
 		n.Var = t.Text
@@ -241,7 +239,7 @@ func (p *parser) parseRelPat() (*ast.RelPat, error) {
 func (p *parser) parseRelDetail(rel *ast.RelPat) error {
 	p.i++ // '['
 	if t := p.peek(); t.Kind == TokIdent {
-		if reserved[strings.ToLower(t.Text)] {
+		if isReserved(t.Text) {
 			return errf(t.Pos, "reserved word %q cannot be a relationship variable", t.Text)
 		}
 		rel.Var = t.Text

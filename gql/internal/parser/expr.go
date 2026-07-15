@@ -118,24 +118,28 @@ func (p *parser) peekInfix() (op ast.BinOp, bp, width int, isIn, ok bool) {
 	t := p.peek()
 	switch t.Kind {
 	case TokIdent:
-		switch strings.ToLower(t.Text) {
-		case "or":
+		// A case-insensitive keyword match without allocating: peekInfix runs
+		// at every operand boundary, and most tokens here are clause keywords
+		// (RETURN, ORDER, ...) that match nothing, so a lowercased copy per
+		// probe was pure waste. EqualFold short-circuits on length.
+		switch {
+		case kwIs(t, "or"):
 			return ast.OpOr, bpOr, 1, false, true
-		case "xor":
+		case kwIs(t, "xor"):
 			return ast.OpXor, bpXor, 1, false, true
-		case "and":
+		case kwIs(t, "and"):
 			return ast.OpAnd, bpAnd, 1, false, true
-		case "in":
+		case kwIs(t, "in"):
 			return 0, bpCmp, 1, true, true
-		case "starts":
+		case kwIs(t, "starts"):
 			if kwIs(p.peekAt(1), "with") {
 				return ast.OpStartsWith, bpCmp, 2, false, true
 			}
-		case "ends":
+		case kwIs(t, "ends"):
 			if kwIs(p.peekAt(1), "with") {
 				return ast.OpEndsWith, bpCmp, 2, false, true
 			}
-		case "contains":
+		case kwIs(t, "contains"):
 			return ast.OpContains, bpCmp, 1, false, true
 		}
 	case TokEq:

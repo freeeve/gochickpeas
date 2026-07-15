@@ -57,6 +57,41 @@ func kwIs(t Token, kw string) bool {
 	return t.Kind == TokIdent && strings.EqualFold(t.Text, kw)
 }
 
+// reservedMaxLen is the longest reserved word; isReserved short-circuits any
+// longer identifier without folding.
+const reservedMaxLen = 8
+
+// foldLower ASCII-lowercases s into buf and returns buf[:len(s)]; ok is false
+// when s does not fit buf, in which case s equals none of the fixed keywords
+// the parser tests (all shorter) and the caller treats it as a plain
+// identifier. The result is a view into buf and must be used only in the
+// non-copying string idioms -- m[string(b)] lookups and string(b) switch/
+// compare against constants -- never retained. GQL keywords are ASCII, so an
+// ASCII fold matches exactly what strings.ToLower would for keyword purposes.
+func foldLower(s string, buf []byte) (folded []byte, ok bool) {
+	if len(s) > len(buf) {
+		return nil, false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return buf[:len(s)], true
+}
+
+// isReserved reports whether s is a reserved word case-insensitively without
+// allocating: an ASCII fold into a stack buffer, then the m[string(b)]
+// no-copy map probe. Replaces reserved[strings.ToLower(s)], whose ToLower
+// allocated a lowercased copy of every identifier token examined.
+func isReserved(s string) bool {
+	var buf [reservedMaxLen]byte
+	folded, ok := foldLower(s, buf[:])
+	return ok && reserved[string(folded)]
+}
+
 // peekKw reports whether the next token is the keyword kw.
 func (p *parser) peekKw(kw string) bool { return kwIs(p.peek(), kw) }
 
@@ -92,7 +127,7 @@ func (p *parser) identName(what string) (string, *Error) {
 	if t.Kind != TokIdent {
 		return "", errf(t.Pos, "expected %s, found %q", what, t.Text)
 	}
-	if reserved[strings.ToLower(t.Text)] {
+	if isReserved(t.Text) {
 		return "", errf(t.Pos, "reserved word %q cannot be used as %s", t.Text, what)
 	}
 	p.i++
@@ -149,11 +184,14 @@ func (p *parser) parsePart() (*ast.QueryPart, error) {
 		if t.Kind != TokIdent {
 			return nil, errf(t.Pos, "expected a statement, found %q", t.Text)
 		}
-		kw := strings.ToLower(t.Text)
-		if writeKeywords[kw] {
-			return nil, errf(t.Pos, "%s is not supported: this is a read-only engine", strings.ToUpper(kw))
+		// Fold the clause keyword into a stack buffer (no per-clause
+		// lowercased copy); a too-long token folds empty and hits the default.
+		var fbuf [16]byte
+		folded, _ := foldLower(t.Text, fbuf[:])
+		if writeKeywords[string(folded)] {
+			return nil, errf(t.Pos, "%s is not supported: this is a read-only engine", strings.ToUpper(t.Text))
 		}
-		switch kw {
+		switch string(folded) {
 		case "match", "optional":
 			c, err := p.parseMatch()
 			if err != nil {
@@ -295,7 +333,7 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 		p.i += 2
 	}
 	// `ident =` introduces a path binding (a pattern starts with '(').
-	if p.peek().Kind == TokIdent && !reserved[strings.ToLower(p.peek().Text)] && p.peekAt(1).Kind == TokEq {
+	if p.peek().Kind == TokIdent && !isReserved(p.peek().Text) && p.peekAt(1).Kind == TokEq {
 		pathVar, _ := p.identName("a path variable")
 		p.i++ // '='
 		acyclic, merr := p.parsePathMode()
@@ -394,7 +432,9 @@ func (p *parser) parsePathMode() (acyclic bool, err error) {
 	if t.Kind != TokIdent {
 		return false, nil
 	}
-	switch strings.ToLower(t.Text) {
+	var fbuf [8]byte
+	folded, _ := foldLower(t.Text, fbuf[:])
+	switch string(folded) {
 	case "trail":
 		p.i++
 	case "acyclic":
