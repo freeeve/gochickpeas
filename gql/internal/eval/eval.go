@@ -50,6 +50,31 @@ func Eval(ctx *Ctx, expr ast.Expr, row []value.Value, slots map[string]int) valu
 		return value.List(out)
 	case *ast.In:
 		return evalIn(ctx, e, row, slots)
+	case *ast.IsTruth:
+		v := Eval(ctx, e.Expr, row, slots)
+		b, isBool := v.AsBool()
+		got := isBool && b == e.Want
+		return value.Bool(got != e.Negated)
+	case *ast.IsTyped:
+		v := Eval(ctx, e.Expr, row, slots)
+		var got bool
+		switch e.Kind {
+		case "integer":
+			got = v.Kind() == value.KindInt
+		case "float":
+			got = v.Kind() == value.KindFloat
+		case "string":
+			got = v.Kind() == value.KindStr
+		case "boolean":
+			got = v.Kind() == value.KindBool
+		case "list":
+			got = v.Kind() == value.KindList
+		case "node":
+			got = v.Kind() == value.KindNode
+		case "relationship":
+			got = v.Kind() == value.KindRel
+		}
+		return value.Bool(got != e.Negated)
 	case *ast.IsNull:
 		v := Eval(ctx, e.Expr, row, slots)
 		return value.Bool(v.IsNull() != e.Negated)
@@ -331,6 +356,15 @@ func evalBinary(ctx *Ctx, e *ast.Binary, row []value.Value, slots map[string]int
 		}
 		r, rk := value.ThreeValued(Eval(ctx, e.RHS, row, slots))
 		return value.KleeneOr(l, lk, r, rk)
+	case ast.OpXor:
+		// Three-valued XOR: null when either side is null (no
+		// short-circuit -- unlike AND/OR, one known side never decides).
+		l, lk := value.ThreeValued(Eval(ctx, e.LHS, row, slots))
+		r, rk := value.ThreeValued(Eval(ctx, e.RHS, row, slots))
+		if !lk || !rk {
+			return value.Null()
+		}
+		return value.Bool(l != r)
 	}
 	l := Eval(ctx, e.LHS, row, slots)
 	r := Eval(ctx, e.RHS, row, slots)
@@ -347,6 +381,8 @@ func evalBinary(ctx *Ctx, e *ast.Binary, row []value.Value, slots map[string]int
 		return CmpBool(l, r, func(o int) bool { return o > 0 })
 	case ast.OpGte:
 		return CmpBool(l, r, func(o int) bool { return o >= 0 })
+	case ast.OpConcat:
+		return Concat(l, r)
 	case ast.OpStartsWith, ast.OpEndsWith, ast.OpContains:
 		return StrPred(e.Op, l, r)
 	default:
@@ -359,6 +395,26 @@ func evalBinary(ctx *Ctx, e *ast.Binary, row []value.Value, slots map[string]int
 func CmpBool(l, r value.Value, f func(int) bool) value.Value {
 	if o, ok := value.Compare(l, r); ok {
 		return value.Bool(f(o))
+	}
+	return value.Null()
+}
+
+// Concat is the || operator: string or list concatenation only -- unlike
+// +, it never adds numbers; any other operand pair is Null.
+func Concat(l, r value.Value) value.Value {
+	if ls, ok := l.AsStr(); ok {
+		if rs, ok := r.AsStr(); ok {
+			return value.Str(ls + rs)
+		}
+		return value.Null()
+	}
+	if ll, ok := l.AsList(); ok {
+		if rl, ok := r.AsList(); ok {
+			out := make([]value.Value, 0, len(ll)+len(rl))
+			out = append(out, ll...)
+			out = append(out, rl...)
+			return value.List(out)
+		}
 	}
 	return value.Null()
 }

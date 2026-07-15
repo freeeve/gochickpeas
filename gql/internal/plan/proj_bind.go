@@ -261,6 +261,18 @@ func extractNestedAggs(expr ast.Expr, nCols int, hidden *int, aggs *[]AggCol) (a
 			return nil, err
 		}
 		return &ast.IsNull{Expr: e, Negated: n.Negated}, nil
+	case *ast.IsTruth:
+		e, err := extractNestedAggs(n.Expr, nCols, hidden, aggs)
+		if err != nil {
+			return nil, err
+		}
+		return &ast.IsNull{Expr: e, Negated: n.Negated}, nil
+	case *ast.IsTyped:
+		e, err := extractNestedAggs(n.Expr, nCols, hidden, aggs)
+		if err != nil {
+			return nil, err
+		}
+		return &ast.IsNull{Expr: e, Negated: n.Negated}, nil
 	case *ast.Reduce:
 		init, err := extractNestedAggs(n.Init, nCols, hidden, aggs)
 		if err != nil {
@@ -374,6 +386,10 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 	case *ast.Unary:
 		n.Expr = substGroupKeys(n.Expr, groups)
 	case *ast.IsNull:
+		n.Expr = substGroupKeys(n.Expr, groups)
+	case *ast.IsTruth:
+		n.Expr = substGroupKeys(n.Expr, groups)
+	case *ast.IsTyped:
 		n.Expr = substGroupKeys(n.Expr, groups)
 	case *ast.PropOf:
 		n.Base = substGroupKeys(n.Base, groups)

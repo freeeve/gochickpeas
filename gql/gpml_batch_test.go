@@ -99,3 +99,101 @@ func TestRepeatableElementsWalk(t *testing.T) {
 		t.Fatalf("different edges = %d, want 0", n)
 	}
 }
+
+// TestExpressionBatch pins task 124's expression additions through the
+// dual-run harness: three-valued XOR, || concatenation (strings and
+// lists, never numbers), the IS TRUE/FALSE truth tables (null reads
+// false under both, NOT inverts the whole test), and IS TYPED kinds.
+func TestExpressionBatch(t *testing.T) {
+	g := gpmlFixture(t)
+	one := func(q string) string {
+		t.Helper()
+		rows := runBoth(t, g, "RETURN "+q+" AS x")
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no row: %s", q)
+		}
+		v, _ := r.GetAt(0)
+		if v.IsNull() {
+			return "null"
+		}
+		if b, ok := v.AsBool(); ok {
+			if b {
+				return "true"
+			}
+			return "false"
+		}
+		if s, ok := v.AsStr(); ok {
+			return s
+		}
+		if l, ok := v.AsList(); ok {
+			out := ""
+			for _, e := range l {
+				i, _ := e.AsInt()
+				out += string(rune('0' + i))
+			}
+			return out
+		}
+		return "?"
+	}
+	for q, want := range map[string]string{
+		"true XOR false":         "true",
+		"true XOR true":          "false",
+		"false XOR false":        "false",
+		"true XOR null":          "null",
+		"null XOR false":         "null",
+		"'a' || 'b'":             "ab",
+		"[1,2] || [3]":           "123",
+		"'a' || null":            "null",
+		"1 || 2":                 "null",
+		"true IS TRUE":           "true",
+		"false IS TRUE":          "false",
+		"(null = 1) IS TRUE":     "false",
+		"(null = 1) IS NOT TRUE": "true",
+		"false IS FALSE":         "true",
+		"(null = 1) IS FALSE":    "false",
+		"(null = 1) IS UNKNOWN":  "true",
+		"1 IS TYPED INTEGER":     "true",
+		"1 IS TYPED FLOAT":       "false",
+		"1.5 IS TYPED FLOAT":     "true",
+		"'s' IS TYPED STRING":    "true",
+		"[1] IS TYPED LIST":      "true",
+		"1 IS NOT TYPED STRING":  "true",
+	} {
+		if got := one(q); got != want {
+			t.Fatalf("%s = %s, want %s", q, got, want)
+		}
+	}
+}
+
+// TestSetOperations pins EXCEPT / INTERSECT / UNION DISTINCT with
+// hand-derived sets over the fixture (A ages {30}, B ages {25, 35}).
+func TestSetOperations(t *testing.T) {
+	g := gpmlFixture(t)
+	vals := func(q string) []int64 {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		var out []int64
+		for r := range rows.All() {
+			v, _ := r.GetAt(0)
+			n, _ := v.AsInt()
+			out = append(out, n)
+		}
+		return out
+	}
+	// {30,25,35} INTERSECT {25,35} = {25,35}
+	got := vals("MATCH (x) RETURN x.age AS a INTERSECT MATCH (b:B) RETURN b.age AS a")
+	if len(got) != 2 {
+		t.Fatalf("INTERSECT = %v, want 2 rows", got)
+	}
+	// {30,25,35} EXCEPT {25,35} = {30}
+	got = vals("MATCH (x) RETURN x.age AS a EXCEPT MATCH (b:B) RETURN b.age AS a")
+	if len(got) != 1 || got[0] != 30 {
+		t.Fatalf("EXCEPT = %v, want [30]", got)
+	}
+	// UNION DISTINCT dedups across branches.
+	got = vals("MATCH (b:B) RETURN b.age AS a UNION DISTINCT MATCH (b:B) RETURN b.age AS a")
+	if len(got) != 2 {
+		t.Fatalf("UNION DISTINCT = %v, want 2 rows", got)
+	}
+}

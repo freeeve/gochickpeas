@@ -24,8 +24,9 @@ ISO GQL. Legend:
 | RETURN [DISTINCT] items / * / AS / ORDER BY tail | OK | |
 | RETURN ... NEXT composition | OK | |
 | UNION / UNION ALL | OK | branches must alias to the same column names |
-| UNION DISTINCT keyword | reject | spell it UNION |
-| EXCEPT / INTERSECT / OTHERWISE | reject | |
+| UNION DISTINCT keyword | OK | the default, spelled explicitly |
+| EXCEPT / INTERSECT | OK | distinct-set semantics |
+| OTHERWISE | reject | |
 | CALL { subquery }, CALL (imports) { } | OK | |
 | CALL proc(...) YIELD | OK | fixed registry: wcc, algo.*, fts.search, geo.* |
 | USE graph | reject | single-graph embedded engine |
@@ -65,15 +66,15 @@ pattern rejects for the same reason.
 | Construct | Status | Notes |
 |---|---|---|
 | arithmetic + - * / % (precedence, unary -) | OK | % sugars to mod(); `^` rejects |
-| string concat via + | OK (divergent spelling) | ISO `\|\|` rejects |
+| string/list concat: `\|\|` (ISO) and + | OK | `\|\|` never adds numbers |
 | comparisons = <> < <= > >= | OK | |
-| AND / OR / NOT | OK | XOR rejects |
-| IS [NOT] NULL | OK | IS TRUE/FALSE/UNKNOWN reject |
-| IS [NOT] LABELED, postfix :Label predicate | OK | IS TYPED rejects |
+| AND / OR / NOT / XOR | OK | XOR is three-valued (null-propagating) |
+| IS [NOT] NULL / TRUE / FALSE / UNKNOWN | OK | UNKNOWN == the null truth value |
+| IS [NOT] LABELED, :Label postfix, IS [NOT] TYPED | OK | TYPED covers INTEGER/FLOAT/STRING/BOOLEAN/LIST/NODE/RELATIONSHIP |
 | IN list | OK | |
 | STARTS WITH / ENDS WITH / CONTAINS | OK | regex `=~` rejects |
 | EXISTS { pattern }, COUNT { pattern } | OK | |
-| VALUE { subquery } | reject | error text currently misleading (map projection) |
+| VALUE { subquery } | reject | clean targeted error; feature pending |
 | SAME / ALL_DIFFERENT / PROPERTY_EXISTS | reject | unknown function |
 | CASE (searched + simple) | OK | |
 | CAST to INT/FLOAT/STRING/BOOL | OK | temporal targets reject |

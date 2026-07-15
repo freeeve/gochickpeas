@@ -227,6 +227,10 @@ func liftExpr(e ast.Expr, vals *[]value.Value) {
 		liftExpr(n.List, vals)
 	case *ast.IsNull:
 		liftExpr(n.Expr, vals)
+	case *ast.IsTruth:
+		liftExpr(n.Expr, vals)
+	case *ast.IsTyped:
+		liftExpr(n.Expr, vals)
 	case *ast.Case:
 		if n.Operand != nil {
 			liftExpr(n.Operand, vals)

@@ -28,6 +28,12 @@ const (
 	UnionDistinct UnionKind = iota
 	// UnionAll is UNION ALL: combine branches keeping every row.
 	UnionAll
+	// UnionExcept is EXCEPT: rows of the left side (deduplicated) not
+	// present in the right side.
+	UnionExcept
+	// UnionIntersect is INTERSECT: rows (deduplicated) present on both
+	// sides.
+	UnionIntersect
 )
 
 // Query is a whole read-only query: one or more QueryPart branches

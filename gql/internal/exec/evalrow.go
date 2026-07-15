@@ -91,6 +91,10 @@ func astPushdown(e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) {
 		for _, el := range n.Elems {
 			astPushdown(el, slots, refs, hasSlow)
 		}
+	case *ast.IsTruth:
+		astPushdown(n.Expr, slots, refs, hasSlow)
+	case *ast.IsTyped:
+		astPushdown(n.Expr, slots, refs, hasSlow)
 	case *ast.In:
 		astPushdown(n.Expr, slots, refs, hasSlow)
 		astPushdown(n.List, slots, refs, hasSlow)

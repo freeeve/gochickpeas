@@ -112,10 +112,24 @@ func (p *parser) parseQuery() (*ast.Query, error) {
 		return nil, err
 	}
 	q.Parts = append(q.Parts, *part)
-	for p.acceptKw("union") {
-		kind := ast.UnionDistinct
-		if p.acceptKw("all") {
-			kind = ast.UnionAll
+	for {
+		var kind ast.UnionKind
+		switch {
+		case p.acceptKw("union"):
+			kind = ast.UnionDistinct
+			if p.acceptKw("all") {
+				kind = ast.UnionAll
+			} else {
+				p.acceptKw("distinct") // explicit DISTINCT = the default
+			}
+		case p.acceptKw("except"):
+			kind = ast.UnionExcept
+			p.acceptKw("distinct")
+		case p.acceptKw("intersect"):
+			kind = ast.UnionIntersect
+			p.acceptKw("distinct")
+		default:
+			return q, nil
 		}
 		next, err := p.parsePart()
 		if err != nil {
@@ -124,7 +138,6 @@ func (p *parser) parseQuery() (*ast.Query, error) {
 		q.Union = append(q.Union, kind)
 		q.Parts = append(q.Parts, *next)
 	}
-	return q, nil
 }
 
 // parsePart is one UNION branch: statements ending in a RETURN with no

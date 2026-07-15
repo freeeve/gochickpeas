@@ -74,6 +74,37 @@ func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 // DISTINCT's group key, so UNION and RETURN DISTINCT agree on row
 // identity.
 func combineUnion(acc *[][]value.Value, next [][]value.Value, op ast.UnionKind) {
+	// EXCEPT / INTERSECT: distinct-set semantics (ISO) -- dedup the left
+	// side, then keep rows absent from / present in the right side.
+	if op == ast.UnionExcept || op == ast.UnionIntersect {
+		rkeys := make(map[string]struct{}, len(next))
+		var key []byte
+		for _, r := range next {
+			key = key[:0]
+			for _, v := range r {
+				key = value.AppendKey(key, v)
+			}
+			rkeys[string(key)] = struct{}{}
+		}
+		seen := make(map[string]struct{}, len(*acc))
+		kept := (*acc)[:0]
+		for _, r := range *acc {
+			key = key[:0]
+			for _, v := range r {
+				key = value.AppendKey(key, v)
+			}
+			if _, dup := seen[string(key)]; dup {
+				continue
+			}
+			seen[string(key)] = struct{}{}
+			_, inRight := rkeys[string(key)]
+			if (op == ast.UnionExcept) != inRight {
+				kept = append(kept, r)
+			}
+		}
+		*acc = kept
+		return
+	}
 	*acc = append(*acc, next...)
 	if op != ast.UnionDistinct {
 		return

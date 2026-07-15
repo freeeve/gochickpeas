@@ -103,6 +103,10 @@ func collectVars(e ast.Expr, out, locals map[string]bool) {
 		collectVars(n.Expr, out, locals)
 	case *ast.IsNull:
 		collectVars(n.Expr, out, locals)
+	case *ast.IsTruth:
+		collectVars(n.Expr, out, locals)
+	case *ast.IsTyped:
+		collectVars(n.Expr, out, locals)
 	case *ast.Binary:
 		collectVars(n.LHS, out, locals)
 		collectVars(n.RHS, out, locals)

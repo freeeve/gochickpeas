@@ -16,6 +16,11 @@ import (
 
 // parsePrimary parses one primary expression (no prefix/infix/postfix).
 func (p *parser) parsePrimary() (ast.Expr, error) {
+	// VALUE { ... } is the ISO scalar subquery -- not yet supported, but
+	// it must say so rather than misparse into the map-projection error.
+	if p.peekKw("value") && p.peekAt(1).Kind == TokLBrace {
+		return nil, errf(p.peek().Pos, "VALUE { ... } scalar subqueries are not supported")
+	}
 	t := p.peek()
 	switch t.Kind {
 	case TokLParen:

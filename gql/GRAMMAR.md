@@ -289,3 +289,16 @@ unchanged, and adding syntax later is parser-only work.
   enforced within that clause).
 - `%` in expression position is the modulo operator, multiplicative
   precedence, parse-time sugar for `mod(a, b)`.
+
+## Task 124 additions (expression/composition batch)
+
+- `XOR` at its ISO precedence (between OR and AND), three-valued.
+- `||` concatenates strings and lists (additive precedence); it never
+  adds numbers -- any other operand pair is null.
+- `IS [NOT] TRUE | FALSE | UNKNOWN | TYPED <type>` postfix predicates.
+  UNKNOWN is the null truth value (== IS NULL); TYPED covers INTEGER,
+  FLOAT, STRING, BOOLEAN, LIST, NODE, RELATIONSHIP.
+- Set operations: `UNION [ALL | DISTINCT]`, `EXCEPT [DISTINCT]`,
+  `INTERSECT [DISTINCT]` -- EXCEPT/INTERSECT use distinct-set semantics.
+- `VALUE { ... }` scalar subqueries are recognized and rejected with a
+  targeted error (feature pending).

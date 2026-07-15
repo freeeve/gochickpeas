@@ -376,6 +376,13 @@ func cevalBin(ctx *eval.Ctx, n *cBin, g *chickpeas.Snapshot, row []value.Value, 
 		}
 		r, rk := value.ThreeValued(ceval(ctx, n.r, g, row, slots))
 		return value.KleeneOr(l, lk, r, rk)
+	case ast.OpXor:
+		l, lk := value.ThreeValued(ceval(ctx, n.l, g, row, slots))
+		r, rk := value.ThreeValued(ceval(ctx, n.r, g, row, slots))
+		if !lk || !rk {
+			return value.Null()
+		}
+		return value.Bool(l != r)
 	}
 	l := ceval(ctx, n.l, g, row, slots)
 	r := ceval(ctx, n.r, g, row, slots)
@@ -394,6 +401,8 @@ func cevalBin(ctx *eval.Ctx, n *cBin, g *chickpeas.Snapshot, row []value.Value, 
 		return eval.CmpBool(l, r, func(o int) bool { return o >= 0 })
 	case ast.OpStartsWith, ast.OpEndsWith, ast.OpContains:
 		return eval.StrPred(n.op, l, r)
+	case ast.OpConcat:
+		return eval.Concat(l, r)
 	default:
 		return eval.Arith(n.op, l, r)
 	}

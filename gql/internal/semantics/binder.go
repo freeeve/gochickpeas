@@ -88,6 +88,10 @@ func ExprHasAgg(e ast.Expr) bool {
 		return ExprHasAgg(n.Expr) || ExprHasAgg(n.List)
 	case *ast.IsNull:
 		return ExprHasAgg(n.Expr)
+	case *ast.IsTruth:
+		return ExprHasAgg(n.Expr)
+	case *ast.IsTyped:
+		return ExprHasAgg(n.Expr)
 	case *ast.ListExpr:
 		for _, el := range n.Elems {
 			if ExprHasAgg(el) {
@@ -183,6 +187,10 @@ func CheckRefs(e ast.Expr, scope map[string]int) error {
 		}
 		return CheckRefs(n.List, scope)
 	case *ast.IsNull:
+		return CheckRefs(n.Expr, scope)
+	case *ast.IsTruth:
+		return CheckRefs(n.Expr, scope)
+	case *ast.IsTyped:
 		return CheckRefs(n.Expr, scope)
 	case *ast.Case:
 		if n.Operand != nil {

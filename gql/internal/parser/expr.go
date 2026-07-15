@@ -16,12 +16,13 @@ import (
 // exceeds the context minimum (left associativity).
 const (
 	bpOr  = 1
-	bpAnd = 2
-	bpNot = 3
-	bpCmp = 4
-	bpAdd = 5
-	bpMul = 6
-	bpNeg = 7
+	bpXor = 2
+	bpAnd = 3
+	bpNot = 4
+	bpCmp = 5
+	bpAdd = 6
+	bpMul = 7
+	bpNeg = 8
 )
 
 // parseExpr parses one full expression.
@@ -120,6 +121,8 @@ func (p *parser) peekInfix() (op ast.BinOp, bp, width int, isIn, ok bool) {
 		switch strings.ToLower(t.Text) {
 		case "or":
 			return ast.OpOr, bpOr, 1, false, true
+		case "xor":
+			return ast.OpXor, bpXor, 1, false, true
 		case "and":
 			return ast.OpAnd, bpAnd, 1, false, true
 		case "in":
@@ -157,6 +160,10 @@ func (p *parser) peekInfix() (op ast.BinOp, bp, width int, isIn, ok bool) {
 		return ast.OpDiv, bpMul, 1, false, true
 	case TokPercent:
 		return ast.OpMul, bpMul, 1, false, true // op unused: %% builds mod(a,b)
+	case TokPipe:
+		if p.peekAt(1).Kind == TokPipe {
+			return ast.OpConcat, bpAdd, 2, false, true
+		}
 	}
 	return 0, 0, 0, false, false
 }
@@ -189,8 +196,48 @@ func (p *parser) parsePostfix(lhs ast.Expr) (ast.Expr, error) {
 				lhs = e
 				continue
 			}
+			if p.acceptKw("true") {
+				lhs = &ast.IsTruth{Expr: lhs, Want: true, Negated: negated}
+				continue
+			}
+			if p.acceptKw("false") {
+				lhs = &ast.IsTruth{Expr: lhs, Want: false, Negated: negated}
+				continue
+			}
+			if p.acceptKw("unknown") {
+				// UNKNOWN is the null truth value: IS UNKNOWN == IS NULL.
+				lhs = &ast.IsNull{Expr: lhs, Negated: negated}
+				continue
+			}
+			if p.acceptKw("typed") {
+				kind, kerr := p.identName("a type name after IS TYPED")
+				if kerr != nil {
+					return nil, kerr
+				}
+				k := strings.ToLower(kind)
+				switch k {
+				case "int", "integer", "bigint":
+					k = "integer"
+				case "float", "double":
+					k = "float"
+				case "string", "varchar":
+					k = "string"
+				case "bool", "boolean":
+					k = "boolean"
+				case "list", "array":
+					k = "list"
+				case "node", "vertex":
+					k = "node"
+				case "relationship", "edge":
+					k = "relationship"
+				default:
+					return nil, errf(p.peek().Pos, "IS TYPED %s is not supported (INTEGER, FLOAT, STRING, BOOLEAN, LIST, NODE, RELATIONSHIP)", kind)
+				}
+				lhs = &ast.IsTyped{Expr: lhs, Kind: k, Negated: negated}
+				continue
+			}
 			if !p.acceptKw("null") {
-				return nil, errf(p.peek().Pos, "expected NULL or LABELED after IS")
+				return nil, errf(p.peek().Pos, "expected NULL, TRUE, FALSE, UNKNOWN, TYPED, or LABELED after IS")
 			}
 			lhs = &ast.IsNull{Expr: lhs, Negated: negated}
 		case t.Kind == TokLBracket:

@@ -93,6 +93,21 @@ func fmtExpr(e ast.Expr) string {
 			return fmtExpr(n.Expr) + " IS NOT NULL"
 		}
 		return fmtExpr(n.Expr) + " IS NULL"
+	case *ast.IsTruth:
+		s := " IS TRUE"
+		if !n.Want {
+			s = " IS FALSE"
+		}
+		if n.Negated {
+			s = " IS NOT" + s[3:]
+		}
+		return fmtExpr(n.Expr) + s
+	case *ast.IsTyped:
+		s := " IS TYPED "
+		if n.Negated {
+			s = " IS NOT TYPED "
+		}
+		return fmtExpr(n.Expr) + s + n.Kind
 	case *ast.Case:
 		return "CASE…END"
 	case *ast.Cost:

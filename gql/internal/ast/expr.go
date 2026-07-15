@@ -53,6 +53,23 @@ type IsNull struct {
 	Negated bool
 }
 
+// IsTruth is the postfix truth-value test `x IS [NOT] TRUE|FALSE`:
+// IS TRUE is true iff x is the boolean true (null and non-booleans read
+// false); IS FALSE iff x is the boolean false. NOT negates the whole
+// test. (IS UNKNOWN parses to IsNull -- unknown IS the null truth value.)
+type IsTruth struct {
+	Expr    Expr
+	Want    bool
+	Negated bool
+}
+
+// IsTyped is `x IS [NOT] TYPED <type>`: a runtime value-kind test.
+type IsTyped struct {
+	Expr    Expr
+	Kind    string // normalized lowercase: integer, float, string, boolean, list, node, relationship
+	Negated bool
+}
+
 // CaseWhen is one WHEN cond THEN result arm.
 type CaseWhen struct {
 	Cond   Expr
@@ -208,6 +225,8 @@ type HasLabelExpr struct {
 	Expr *LabelExpr
 }
 
+func (*IsTruth) isExpr()      {}
+func (*IsTyped) isExpr()      {}
 func (*Lit) isExpr()          {}
 func (*Var) isExpr()          {}
 func (*Prop) isExpr()         {}
@@ -276,6 +295,11 @@ const (
 	OpEndsWith
 	// OpContains is CONTAINS.
 	OpContains
+	// OpXor is XOR (three-valued: null when either side is null).
+	OpXor
+	// OpConcat is || -- string/list concatenation only (null otherwise;
+	// unlike +, it never adds numbers).
+	OpConcat
 )
 
 // LitKind discriminates a Literal.

@@ -506,7 +506,7 @@ func TestCorpusSurface(t *testing.T) {
 	if u, ok := ne.(*ast.Unary); !ok || u.Op != ast.Not {
 		t.Fatalf("IS NOT LABELED = %#v", ne)
 	}
-	mustErr(t, "MATCH (m) RETURN m IS TRUTHY AS c", "expected NULL or LABELED")
+	mustErr(t, "MATCH (m) RETURN m IS TRUTHY AS c", "after IS")
 
 	// Path modes: TRAIL is a no-op, ACYCLIC sets the flag, WALK/SIMPLE
 	// are rejected; both positions parse.
