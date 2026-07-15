@@ -285,6 +285,12 @@ func conformanceCorpus() []conformanceProbe {
 		// map-only duration() folded BI Q2's window bounds to null in the
 		// sibling engine), and malformed strings must never partially parse.
 		{"C expressions", "duration-iso-days", "RETURN duration('P100D').days AS x", 1, "[100]", "", nil},
+		// 129: the group boundary -- .hours reads the seconds group ONLY
+		// (2, not 26): a day is not always 24 hours, so the groups are
+		// independent. An implementation that eagerly normalizes days
+		// into a tick count passes every single-group probe and fails
+		// exactly this one.
+		{"C expressions", "duration-group-boundary", "RETURN duration('P1DT2H').hours AS x", 1, "[2]", "", nil},
 		{"C expressions", "duration-iso-composite", "RETURN duration('P1Y2M3DT4H5M6S').months AS x", 1, "[14]", "", nil},
 		{"C expressions", "duration-iso-frac", "RETURN duration('PT1.5S').milliseconds AS x", 1, "[1500]", "", nil},
 		{"C expressions", "duration-iso-neg", "RETURN duration('-P1D').days AS x", 1, "[-1]", "", nil},
