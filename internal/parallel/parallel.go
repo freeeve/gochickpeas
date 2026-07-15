@@ -14,63 +14,74 @@ func Workers() int {
 	return runtime.GOMAXPROCS(0)
 }
 
-// chunks splits [0, n) into at most workers*4 contiguous chunks. Bounding the
-// chunk count keeps per-chunk accumulator allocations small (a map-typed
-// accumulator otherwise pays one allocation per chunk -- the pathology the
-// Rust NodeSet::par_fold comment documents), while the x4 headroom keeps
-// load balancing when chunks are uneven.
-func chunks(n int) [][2]int {
+// chunkPlan splits [0, n) into `count` contiguous chunks of `size` (the last
+// short), count at most workers*4. Bounding the chunk count keeps per-chunk
+// accumulator allocations small (a map-typed accumulator otherwise pays one
+// allocation per chunk -- the pathology the Rust NodeSet::par_fold comment
+// documents), while the x4 headroom keeps load balancing when chunks are
+// uneven. Chunk k spans [k*size, min((k+1)*size, n)); returning the plan as
+// two ints rather than a materialised []​[2]int keeps For/ForWorker/Fold from
+// allocating a slice on every call. count is 0 for n <= 0.
+func chunkPlan(n int) (count, size int) {
 	if n <= 0 {
-		return nil
+		return 0, 0
 	}
 	target := max(Workers(), 1) * 4
-	size := max(n/target, 1)
-	out := make([][2]int, 0, n/size+1)
-	for lo := 0; lo < n; lo += size {
-		out = append(out, [2]int{lo, min(lo+size, n)})
-	}
-	return out
+	size = max(n/target, 1)
+	return (n + size - 1) / size, size
+}
+
+// Chunks reports how many contiguous chunks For/ForWorker/Fold split [0, n)
+// into -- i.e. the exclusive upper bound of the worker index ForWorker hands
+// out. Kernels that keep per-worker scratch persistent across repeated passes
+// size their scratch slice by this so every worker index has a slot.
+func Chunks(n int) int {
+	count, _ := chunkPlan(n)
+	return count
 }
 
 // For runs body over [0, n) split into contiguous chunks on parallel
 // goroutines and blocks until all complete.
 func For(n int, body func(lo, hi int)) {
-	cs := chunks(n)
-	if len(cs) <= 1 {
+	count, size := chunkPlan(n)
+	if count <= 1 {
 		if n > 0 {
 			body(0, n)
 		}
 		return
 	}
 	var wg sync.WaitGroup
-	for _, c := range cs {
-		wg.Add(1)
+	wg.Add(count)
+	for k := range count {
+		lo, hi := k*size, min((k+1)*size, n)
 		go func() {
 			defer wg.Done()
-			body(c[0], c[1])
+			body(lo, hi)
 		}()
 	}
 	wg.Wait()
 }
 
 // ForWorker is For with a worker identity: body additionally receives a
-// stable index in [0, len(chunks)) so kernels can keep per-worker scratch
-// (the Go stand-in for thread-locals) in a pre-sized slice. Distinct calls
-// with the same index never run concurrently.
+// stable index in [0, Chunks(n)) so kernels can keep per-worker scratch (the
+// Go stand-in for thread-locals) in a pre-sized slice. Distinct chunks never
+// share an index within a call, and a given index is used at most once per
+// call, so scratch[worker] is safe to reuse across successive calls.
 func ForWorker(n int, body func(worker, lo, hi int)) {
-	cs := chunks(n)
-	if len(cs) <= 1 {
+	count, size := chunkPlan(n)
+	if count <= 1 {
 		if n > 0 {
 			body(0, 0, n)
 		}
 		return
 	}
 	var wg sync.WaitGroup
-	for i, c := range cs {
-		wg.Add(1)
+	wg.Add(count)
+	for k := range count {
+		worker, lo, hi := k, k*size, min((k+1)*size, n)
 		go func() {
 			defer wg.Done()
-			body(i, c[0], c[1])
+			body(worker, lo, hi)
 		}()
 	}
 	wg.Wait()
@@ -82,11 +93,11 @@ func ForWorker(n int, body func(worker, lo, hi int)) {
 // deterministic for any associative reduce. identity is called once per
 // chunk plus once for an empty input.
 func Fold[T any](n int, identity func() T, fold func(acc T, i int) T, reduce func(a, b T) T) T {
-	cs := chunks(n)
-	if len(cs) == 0 {
+	count, _ := chunkPlan(n)
+	if count == 0 {
 		return identity()
 	}
-	accs := make([]T, len(cs))
+	accs := make([]T, count)
 	ForWorker(n, func(worker, lo, hi int) {
 		acc := identity()
 		for i := lo; i < hi; i++ {

@@ -185,15 +185,20 @@ func GACDLPSeeded(g *chickpeas.Snapshot, directed bool, iterations int, init []u
 	n := int(g.NodeCount())
 	cur := slices.Clone(init)
 	next := make([]uint32, n)
+	// Per-worker neighbour-label scratch, persistent across every pass:
+	// worker w owns scratch[w], reused pass to pass so it grows once (to its
+	// chunk's peak degree) instead of re-allocating from nil on every
+	// iteration -- that per-pass regrowth dominated CDLP's allocations.
+	// ForWorker's stable index keys the scratch, and a given index is used at
+	// most once per pass (passes run sequentially), so the reuse is race-free.
+	scratch := make([][]chickpeas.NodeID, parallel.Chunks(n))
+	all := chickpeas.MatchAll()
 	for range iterations {
-		parallel.For(n, func(lo, hi int) {
-			// Per-chunk scratch (a few dozen chunks per pass); reused
-			// across the chunk's nodes. Neighbors batch-append through
-			// the CSR seam (no per-element yield), then rewrite to labels
-			// in place -- NodeID and the label are both uint32, so one
-			// buffer serves both stages.
-			var buf []chickpeas.NodeID
-			all := chickpeas.MatchAll()
+		parallel.ForWorker(n, func(worker, lo, hi int) {
+			// Neighbors batch-append through the CSR seam (no per-element
+			// yield), then rewrite to labels in place -- NodeID and the label
+			// are both uint32, so one buffer serves both stages.
+			buf := scratch[worker]
 			for v := lo; v < hi; v++ {
 				buf = buf[:0]
 				if directed {
@@ -221,6 +226,7 @@ func GACDLPSeeded(g *chickpeas.Snapshot, directed bool, iterations int, init []u
 				}
 				next[v] = best
 			}
+			scratch[worker] = buf // persist grown capacity for the next pass
 		})
 		cur, next = next, cur
 	}

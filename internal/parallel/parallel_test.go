@@ -1,6 +1,7 @@
 package parallel_test
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -68,6 +69,33 @@ func TestFoldReducesInChunkOrder(t *testing.T) {
 	for i, v := range got {
 		if v != i {
 			t.Fatalf("position %d holds %d", i, v)
+		}
+	}
+}
+
+// TestChunksMatchesForWorkerIndexRange guards the Chunks contract kernels
+// rely on to size persistent per-worker scratch (task 153): Chunks(n) must
+// equal the exclusive upper bound of the worker index ForWorker hands out,
+// so scratch[worker] is always in range. An off-by-one here would panic a
+// pooling kernel (e.g. CDLP) with an index-out-of-range on the last chunk.
+func TestChunksMatchesForWorkerIndexRange(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 7, 63, 100, 13_003, 100_000, 832_247} {
+		want := parallel.Chunks(n)
+		maxWorker := -1
+		var mu sync.Mutex
+		parallel.ForWorker(n, func(worker, lo, hi int) {
+			mu.Lock()
+			if worker > maxWorker {
+				maxWorker = worker
+			}
+			mu.Unlock()
+		})
+		got := maxWorker + 1
+		if n == 0 {
+			got = 0 // body never runs; Chunks(0) is 0
+		}
+		if got != want {
+			t.Fatalf("n=%d: Chunks=%d but ForWorker used indices [0,%d)", n, want, got)
 		}
 	}
 }
