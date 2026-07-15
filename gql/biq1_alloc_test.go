@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/exec"
 )
 
 // biQ1 is the BI Q1 canonical GQL from the parity manifest: a two-phase
@@ -70,6 +72,36 @@ func BenchmarkBIQ1Allocs(b *testing.B) {
 			n++
 		}
 		if n == 0 {
+			b.Fatal("no rows")
+		}
+	}
+}
+
+// BenchmarkBIQ1ExecAllocs isolates the EXECUTION-path allocations: the plan
+// is parsed and built once (setup), then executed per iteration -- the cost a
+// served / plan-cached workload actually pays each run, and the fair
+// comparison to a native engine that builds the plan once. A fresh Ctx per
+// run keeps prepared-plan reuse safe (the Ctx holds the per-execution
+// subquery-shape cache).
+func BenchmarkBIQ1ExecAllocs(b *testing.B) {
+	g := loadSF1Bench(b)
+	_, gr, p, _, err := prepare(g, biQ1)
+	if err != nil {
+		b.Fatalf("prepare: %v", err)
+	}
+	if os.Getenv("GOCHICKPEAS_MEMRATE1") != "" {
+		old := runtime.MemProfileRate
+		runtime.MemProfileRate = 1
+		defer func() { runtime.MemProfileRate = old }()
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := exec.Execute(&eval.Ctx{G: gr}, p)
+		if err != nil {
+			b.Fatalf("execute: %v", err)
+		}
+		if len(rows) == 0 {
 			b.Fatal("no rows")
 		}
 	}
