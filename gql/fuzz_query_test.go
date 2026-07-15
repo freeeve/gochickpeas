@@ -149,9 +149,14 @@ func FuzzQuery(f *testing.F) {
 		}
 
 		multiPart := fuzzMultiPart.MatchString(q)
+		// The DISTINCT/ORDER BY/LIMIT invariants scan the query TEXT, so a
+		// comment may have commented the construct out; skip all three for
+		// comment-bearing inputs. (Task 122's lesson; the ORDER BY hole
+		// surfaced in a later fuzz run: `RETURN c AS n//ORDER BY n DESC`.)
+		hasComment := strings.Contains(q, "//") || strings.Contains(q, "/*")
 
 		// DISTINCT: no duplicate rows.
-		if !multiPart && fuzzDistinct.MatchString(q) {
+		if !multiPart && !hasComment && fuzzDistinct.MatchString(q) {
 			seen := map[string]struct{}{}
 			for i, k := range keys {
 				if _, dup := seen[k]; dup {
@@ -162,7 +167,7 @@ func FuzzQuery(f *testing.F) {
 		}
 
 		// ORDER BY a bare output column: monotone per OrderCmp.
-		if m := fuzzOrderBy.FindStringSubmatch(q); m != nil && !multiPart {
+		if m := fuzzOrderBy.FindStringSubmatch(q); m != nil && !multiPart && !hasComment {
 			col, desc := m[1], m[2] != ""
 			idx := -1
 			for i, c := range rows.Columns() {
@@ -180,10 +185,7 @@ func FuzzQuery(f *testing.F) {
 			}
 		}
 
-		// LIMIT bounds the row count. The scan is textual, so a query
-		// containing a comment may have commented its LIMIT out -- skip
-		// the invariant there (comments landed with task 122).
-		hasComment := strings.Contains(q, "//") || strings.Contains(q, "/*")
+		// LIMIT bounds the row count.
 		if m := fuzzLimit.FindStringSubmatch(q); m != nil && !multiPart && !hasComment {
 			n, _ := strconv.Atoi(m[1])
 			if len(keys) > n {

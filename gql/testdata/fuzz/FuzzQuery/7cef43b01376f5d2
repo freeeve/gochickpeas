@@ -1,0 +1,2 @@
+go test fuzz v1
+string("MATCH(c)RETURN c AS n//ORDER BY n DESC")
