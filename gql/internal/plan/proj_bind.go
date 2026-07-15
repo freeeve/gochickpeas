@@ -13,8 +13,30 @@ import (
 // bindProjection compiles a projection body against the segment scope.
 func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error) {
 	var returns []BoundReturn
-	// `*` expands to every in-scope variable ahead of the explicit items,
-	// in introduction (slot) order so column order is stable.
+	// The explicit items carry the output-column names: an alias, else the
+	// derived name. Two explicit items may not share a name -- the result
+	// table cannot have two columns of the same name, and a later ORDER BY /
+	// column reference to it would be ambiguous (openCypher and ISO GQL both
+	// reject it). An explicit item also shadows a same-named `*` variable, so
+	// the expanded projection stays a set of distinct names (this is how a
+	// re-binding LET, desugared to `WITH *, expr AS x`, keeps a single x).
+	explicit := make([]BoundReturn, 0, len(proj.Items))
+	explicitNames := make(map[string]bool, len(proj.Items))
+	for _, item := range proj.Items {
+		isAgg := semantics.ExprHasAgg(item.Expr)
+		name := item.Alias
+		if name == "" {
+			name = semantics.DerivedName(item.Expr)
+		}
+		if explicitNames[name] {
+			return ProjPlan{}, bindErrf("duplicate output column name %q: a projection cannot return two columns with the same name", name)
+		}
+		explicitNames[name] = true
+		explicit = append(explicit, BoundReturn{Expr: item.Expr, Name: name, IsAgg: isAgg})
+	}
+	// `*` expands to every in-scope variable ahead of the explicit items, in
+	// introduction (slot) order so column order is stable -- minus any
+	// variable an explicit item re-projects under the same name (shadowed).
 	if proj.Star {
 		type nv struct {
 			name string
@@ -29,17 +51,13 @@ func bindProjection(proj ast.Projection, scope map[string]int) (ProjPlan, error)
 			return ProjPlan{}, bindErrf("RETURN */WITH * requires at least one variable in scope")
 		}
 		for _, v := range vars {
+			if explicitNames[v.name] {
+				continue
+			}
 			returns = append(returns, BoundReturn{Expr: &ast.Var{Name: v.name}, Name: v.name})
 		}
 	}
-	for _, item := range proj.Items {
-		isAgg := semantics.ExprHasAgg(item.Expr)
-		name := item.Alias
-		if name == "" {
-			name = semantics.DerivedName(item.Expr)
-		}
-		returns = append(returns, BoundReturn{Expr: item.Expr, Name: name, IsAgg: isAgg})
-	}
+	returns = append(returns, explicit...)
 	aggregated := false
 	for i := range returns {
 		aggregated = aggregated || returns[i].IsAgg
