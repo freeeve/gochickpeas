@@ -251,13 +251,14 @@ func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]i
 func ApplyFunc(op FuncOp, argv []value.Value) value.Value {
 	switch op {
 	case FuncDate:
-		// date('YYYY-MM-DD') -> a monotonic YYYYMMDD integer (date-typed
-		// properties are expected stored the same way; comparisons are
-		// integer comparisons).
-		if s, ok := arg(argv, 0).AsStr(); ok {
-			if v, ok := parseYYYYMMDD(s); ok {
-				return value.Int(v)
-			}
+		// date(x) -> Temporal(Date): an ISO string, an i64 epoch-millis,
+		// another temporal, or a component map, truncated to midnight UTC.
+		// Component accessors and ordering come with the temporal kind; the
+		// retired YYYYMMDD-integer form read .year as an epoch and nulled
+		// the int/temporal arguments BI Q16 itself uses.
+		if t := buildDatetime(arg(argv, 0), value.Date); t.Kind() == value.KindTemporal {
+			ms, _, _ := t.AsTemporal()
+			return value.Temporal(floorDiv(ms, MSPerDay)*MSPerDay, value.Date)
 		}
 		return value.Null()
 	case FuncDateTime:
@@ -662,21 +663,6 @@ func applyToString(v value.Value) value.Value {
 	// surfaces emit the {months, days, millis} component form, not a string),
 	// so toString(duration) stays Null rather than bake an arbitrary choice.
 	return value.Null()
-}
-
-// parseYYYYMMDD parses 'YYYY-MM-DD' into the monotonic YYYYMMDD integer.
-func parseYYYYMMDD(s string) (int64, bool) {
-	parts := strings.Split(s, "-")
-	if len(parts) != 3 {
-		return 0, false
-	}
-	y, ok1 := parseI64(parts[0])
-	m, ok2 := parseI64(parts[1])
-	d, ok3 := parseI64(parts[2])
-	if !ok1 || !ok2 || !ok3 || m < 1 || m > 12 || d < 1 || d > 31 {
-		return 0, false
-	}
-	return y*10000 + m*100 + d, true
 }
 
 // buildDatetime builds a temporal from a datetime(...) argument: an ISO

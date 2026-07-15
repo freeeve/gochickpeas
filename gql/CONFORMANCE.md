@@ -77,14 +77,14 @@ pattern rejects for the same reason.
 | VALUE { subquery } | reject | clean targeted error; feature pending |
 | SAME / ALL_DIFFERENT / PROPERTY_EXISTS | reject | unknown function |
 | CASE (searched + simple) | OK | |
-| CAST to INT/FLOAT/STRING/BOOL | OK | temporal targets reject |
+| CAST to INT/FLOAT/STRING/BOOL/DATE/DATETIME/DURATION | OK | lowers to the constructor functions |
 | COALESCE, NULLIF | OK | |
 | $name parameters | OK | positional parameters reject |
 | list literal / index / slice / comprehension | OK | |
 | all/any/none/single(x IN l WHERE p) | OK | |
 | map literal {k: v} | OK | |
 | pattern comprehension / reduce / map projection | reject | pointer errors suggest rewrites |
-| temporal literals DATE '...' / DURATION '...' | reject | constructor functions only |
+| temporal literals DATE/DATETIME/TIMESTAMP/DURATION '...' | OK | lower to the constructor functions |
 | scientific-notation floats (1.5e2, 2E-1) | OK | |
 | string escapes ('' doubling, backslash incl. \\uXXXX) | OK | unknown escapes error |
 | comments // and /* */ | OK | block comments must terminate |
@@ -105,17 +105,16 @@ pattern rejects for the same reason.
 | id, type, startNode, endNode, nodes, relationships, length | OK | |
 | element_id, labels, head, last, tail | OK | |
 | properties | reject | needs a column-enumeration engine API; deliberate |
-| date, datetime, localdatetime, duration constructors | OK | see defect note below |
-| temporal component access (.year .month .day .hour ...) | OK on datetime/localdatetime | see defect note below |
+| date, datetime, localdatetime, duration constructors | OK | date() is a real Temporal(Date): midnight-truncated, accepts string/int/temporal/map |
+| temporal component access (.year .month .day .hour ...) | OK | on date, datetime, and localdatetime |
 
-**Known defects (open tasks):** `date()` returns a comparable YYYYMMDD
-integer for string args (component access misreads it as epoch-millis:
-`date('2024-01-02').year` returns 1970) and NULL for int/temporal args --
-including BI Q16's own spelling. The fix (a real Date temporal) flips
-rows pinned by the cross-engine parity references, which encode the same
-bug, so it is parked as task 135 pending coordinated reference
-re-emission. Duration components were fixed (Neo4j group convention,
-plural accessors); temporal accessors stay singular.
+The YYYYMMDD-integer `date()` (whose component access misread the value
+as epoch-millis and whose int/temporal arguments were NULL -- BI Q16's
+own spelling) was retired: `date()` now builds a midnight-truncated
+Temporal(Date), converging with the Rust engine's model. Q16's empty SF1
+reference was verified DATA-TRUE on the Rust side, so the migration
+landed against existing references. Duration components follow the Neo4j
+group convention (plural accessors); temporal accessors stay singular.
 
 ## Write / DDL / session surface
 

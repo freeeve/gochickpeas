@@ -431,7 +431,13 @@ func TestGraphResolvedFunctions(t *testing.T) {
 
 func TestTemporalFunctions(t *testing.T) {
 	g := testGraph(t)
-	wantInt(t, g, "date('2020-03-15')", 20200315)
+	// date() is a real Temporal(Date): midnight-truncated epoch millis
+	// with working component accessors (the YYYYMMDD integer is retired).
+	wantInt(t, g, "date('2020-03-15').year", 2020)
+	wantInt(t, g, "date('2020-03-15').month", 3)
+	wantInt(t, g, "date('2020-03-15').day", 15)
+	wantInt(t, g, "date(1584267000000).epochMillis", 1584230400000)
+	wantInt(t, g, "date(datetime('2020-03-15T10:30:00')).epochMillis", 1584230400000)
 	wantInt(t, g, "datetime('2020-03-15T10:30:00').year", 2020)
 	wantInt(t, g, "datetime('2020-03-15T10:30:00').month", 3)
 	wantInt(t, g, "datetime('2020-03-15T10:30:00').day", 15)

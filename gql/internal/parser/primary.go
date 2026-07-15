@@ -78,6 +78,23 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 			}
 			return &ast.CountSub{Pattern: pat, Where: where}, nil
 		}
+	case "date", "datetime", "zoned_datetime", "localdatetime", "timestamp", "duration":
+		// A temporal keyword directly followed by a string literal is the
+		// GQL temporal-literal form (DATE '2024-01-01'); it lowers to the
+		// matching constructor function. The function-call spelling has a
+		// '(' here instead, so the forms never collide.
+		if p.peekAt(1).Kind == TokStr {
+			fn := kw
+			if kw == "datetime" || kw == "timestamp" {
+				fn = "zoned_datetime"
+			}
+			p.i++
+			lit, err := p.parseLiteralTok()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.Func{Name: fn, Args: []ast.Expr{&ast.Lit{Value: lit}}}, nil
+		}
 	case "all", "any", "none", "single":
 		// A quantifier with a `var IN` head is a list predicate; anything
 		// else falls through to a plain function call.
@@ -210,8 +227,16 @@ func (p *parser) parseCast() (ast.Expr, error) {
 		fn = "tostring"
 	case "bool", "boolean":
 		fn = "toboolean"
+	case "date":
+		fn = "date"
+	case "datetime", "zoned_datetime", "timestamp":
+		fn = "zoned_datetime"
+	case "localdatetime":
+		fn = "localdatetime"
+	case "duration":
+		fn = "duration"
 	default:
-		return nil, errf(t.Pos, "CAST target %q is not supported (FLOAT, INTEGER, STRING, BOOLEAN)", t.Text)
+		return nil, errf(t.Pos, "CAST target %q is not supported (FLOAT, INTEGER, STRING, BOOLEAN, DATE, DATETIME, DURATION)", t.Text)
 	}
 	if _, err := p.expect(TokRParen, "')' closing the CAST"); err != nil {
 		return nil, err

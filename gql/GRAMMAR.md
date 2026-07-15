@@ -240,8 +240,13 @@ literal      = integer | float | string | 'true' | 'false' | 'null'
   opens a comprehension (the Rust grammar's ordered choice); parenthesize
   a membership test to keep it a literal element. Pattern comprehensions
   stay rejected.
-- `CAST(expr AS FLOAT|INTEGER|STRING|BOOLEAN)` lowers to the matching
-  conversion function (`toFloat` etc.); other target types are rejected.
+- `CAST(expr AS FLOAT|INTEGER|STRING|BOOLEAN|DATE|DATETIME|DURATION)`
+  lowers to the matching conversion/constructor function (`toFloat`,
+  `date`, ...); other target types are rejected.
+- Temporal literals `DATE '...'`, `DATETIME '...'`, `TIMESTAMP '...'`,
+  `DURATION '...'` lower to the constructor functions (a temporal keyword
+  directly followed by a string literal; the call spelling has `(` there,
+  so the forms never collide).
 - `zoned_datetime` is a synonym of `datetime`, and `collect_list` of the
   `collect` aggregate (the GQL-flavored spellings the LDBC corpus uses).
 

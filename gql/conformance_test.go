@@ -273,7 +273,7 @@ func conformanceCorpus() []conformanceProbe {
 		{"C expressions", "case-simple", "RETURN CASE 2 WHEN 1 THEN 'a' WHEN 2 THEN 'b' END AS x", 1, "[b]", "", nil},
 		{"C expressions", "cast-int", "RETURN CAST('42' AS INT) AS x", 1, "[42]", "", nil},
 		{"C expressions", "cast-string", "RETURN CAST(42 AS STRING) AS x", 1, "[42]", "", nil},
-		{"C expressions", "cast-date-target", "RETURN CAST('2024-01-01' AS DATE) AS x", -1, "", "CAST target \"DATE\" is not supported (FLOAT, INTEGER, STRING,", nil},
+		{"C expressions", "cast-date-target", "RETURN CAST('2024-01-01' AS DATE).year AS x", 1, "[2024]", "", nil},
 		{"C expressions", "coalesce", "RETURN coalesce(null, 3) AS x", 1, "[3]", "", nil},
 		{"C expressions", "nullif", "RETURN NULLIF(1, 1) AS x", 1, "[null]", "", nil},
 		{"C expressions", "param-named", "RETURN $n + 1 AS x", 1, "[42]", "", map[string]value.Value{"n": value.Int(41)}},
@@ -281,9 +281,9 @@ func conformanceCorpus() []conformanceProbe {
 		{"C expressions", "string-single-quote", "RETURN 'it''s' AS x", 1, "[it's]", "", nil},
 		{"C expressions", "string-backslash-escape", "RETURN 'a\\nb' AS x", 1, "[a\nb]", "", nil},
 		{"C expressions", "sci-float", "RETURN 1.5e2 AS x", 1, "[150]", "", nil},
-		{"C expressions", "temporal-date-literal", "RETURN DATE '2024-01-01' AS x", -1, "", "unexpected trailing input \"2024-01-01\"", nil},
-		{"C expressions", "temporal-duration-literal", "RETURN DURATION 'PT1H' AS x", -1, "", "unexpected trailing input \"PT1H\"", nil},
-		{"C expressions", "date-func", "RETURN date('2024-01-02').year AS y", 1, "", "", nil},
+		{"C expressions", "temporal-date-literal", "RETURN toString(DATE '2024-01-01') AS x", 1, "[2024-01-01]", "", nil},
+		{"C expressions", "temporal-duration-literal", "RETURN (DURATION 'PT1H').minutes AS x", 1, "[60]", "", nil},
+		{"C expressions", "date-func", "RETURN date('2024-01-02').year AS y", 1, "[2024]", "", nil},
 		{"C expressions", "duration-func", "RETURN duration('PT2H').hours AS h", 1, "[2]", "", nil},
 		// 127 addendum: the ISO string-constructor family (a silently
 		// map-only duration() folded BI Q2's window bounds to null in the
