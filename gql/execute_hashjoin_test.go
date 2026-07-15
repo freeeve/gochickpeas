@@ -342,3 +342,65 @@ func TestValueHashJoinReversedSides(t *testing.T) {
 		"MATCH (p:Person), (a:Account) WHERE p.email + 'z' = a.email + 'z' RETURN p.name AS pn, a.name AS an",
 		true)
 }
+
+// TestHashJoinUniquenessReplayDeepHop is task 114's "case B": the type the
+// clause repeats sits on the build chain's SECOND hop, so the DEEP
+// captured pair is what rejects the conflicting row -- a clause only
+// tracks a type that actually repeats in it, and a test whose repetition
+// touches only hop 1 leaves hop 2's capture handling deletable (the trap
+// rustychickpeas shipped and caught late). Expected row hand-derived: the
+// self-MEM route reuses M(h1,h2) in both branches and must be rejected;
+// only (o=h1, w=h2, y=h3) survives.
+func TestHashJoinUniquenessReplayDeepHop(t *testing.T) {
+	b := chickpeas.NewBuilder(32, 64)
+	tag, _ := b.AddNode("Tag")
+	_ = b.SetProp(tag, "name", "t")
+	mk := func(name string) chickpeas.NodeID {
+		n, _ := b.AddNode("N")
+		_ = b.SetProp(n, "name", name)
+		return n
+	}
+	h1, h2, h3 := mk("h1"), mk("h2"), mk("h3")
+	// u0:U repeats type A against the build's FIRST hop without ever
+	// colliding on endpoints (U is disjoint from the x side), so the build
+	// captures TWO pairs -- A(t,x) at index 0, M(x,y) at index 1 -- and the
+	// M conflict is rejected by the DEEP entry alone.
+	u0, _ := b.AddNode("U")
+	_ = b.SetProp(u0, "name", "u0")
+	b.AddRel(tag, u0, "A")
+	b.AddRel(tag, h1, "A1") // outer branch arm: t -> h1
+	b.AddRel(tag, h1, "A")  // build branch arm: t -> h1
+	b.AddRel(h1, h2, "M")   // shared second hop: used by outer (o->w) AND build (x->y)
+	b.AddRel(h1, h3, "M")
+	b.AddRel(h2, h2, "MEM") // closes onto the y whose build row reused M(h1,h2)
+	for range 16 {
+		b.AddRel(h2, h3, "MEM") // parallel: keeps the connecting hop expensive to chain
+	}
+	// Width fillers: both branches fan (the pivot gate needs a multiply),
+	// but no filler w has a MEM edge, so the expected output stays the one
+	// hand-derived row.
+	for i := range 3 {
+		o, _ := b.AddNode("N")
+		_ = b.SetProp(o, "name", fmt.Sprintf("o%d", i))
+		b.AddRel(tag, o, "A1")
+		x, _ := b.AddNode("N")
+		_ = b.SetProp(x, "name", fmt.Sprintf("x%d", i))
+		b.AddRel(tag, x, "A")
+		for j := range 2 {
+			w, _ := b.AddNode("N")
+			_ = b.SetProp(w, "name", fmt.Sprintf("w%d_%d", i, j))
+			b.AddRel(o, w, "M")
+			y, _ := b.AddNode("N")
+			_ = b.SetProp(y, "name", fmt.Sprintf("y%d_%d", i, j))
+			b.AddRel(x, y, "M")
+		}
+	}
+	g := b.Finalize("hashjoin-deep-uniq-fixture")
+
+	rows := hjCompare(t, g,
+		"MATCH (t:Tag {name: 't'}), (t)-[:A]->(u:U), (t)-[:A1]->(o:N)-[:M]->(w:N), (t)-[:A]->(x:N)-[:M]->(y:N), (w)-[:MEM]->(y) RETURN u.name AS un, o.name AS on, w.name AS wn, y.name AS yn",
+		true)
+	if len(rows) != 1 || !strings.Contains(rows[0], "h3") {
+		t.Fatalf("rows = %v, want exactly the h3 row (the self-MEM route reuses the deep M(h1,h2) pair and must be rejected)", rows)
+	}
+}
