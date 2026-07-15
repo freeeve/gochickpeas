@@ -141,7 +141,7 @@ func TestA13ReprParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("value a13: %v", err)
 	}
-	hV, err := rowsHashV(val)
+	hV, err := RowsHashV(val)
 	if err != nil {
 		t.Fatalf("value hash: %v", err)
 	}

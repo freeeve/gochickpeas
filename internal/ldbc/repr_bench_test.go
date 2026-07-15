@@ -2,18 +2,12 @@
 // the same (uri, count) result three ways -- boxed [][]any, flat-backed
 // [][]any, and flat-backed [][]value.Value -- and reports allocs/op + ns/op so
 // the [][]any -> typed-result decision rests on measurement, not intuition.
-// TestReprHashParity proves the value.Value path hashes byte-identically to the
-// boxed path through canonCellV, so a real migration would keep the 89/89 pins.
+// TestReprHashParity proves the value.Value path (production RowsHashV) hashes
+// byte-identically to the boxed path (RowsHash), so a migration keeps the pins.
 package ldbc
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"math"
-	"sort"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -106,80 +100,17 @@ func BenchmarkReprValueRows(b *testing.B) {
 	}
 }
 
-// canonCellV is the zero-box rowhash encoder reading a value.Value directly --
-// the CanonCell equivalent a real migration would add. It must produce text
-// byte-identical to CanonCell over the same logical values.
-func canonCellV(v value.Value) (string, error) {
-	switch v.Kind() {
-	case value.KindNull:
-		return "null", nil
-	case value.KindBool:
-		if b, _ := v.AsBool(); b {
-			return "1", nil
-		}
-		return "0", nil
-	case value.KindInt:
-		i, _ := v.AsInt()
-		return strconv.FormatInt(i, 10), nil
-	case value.KindFloat:
-		f, _ := v.AsFloat()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return "", fmt.Errorf("rowhash: NaN/Inf cell unsupported (%v)", f)
-		}
-		s := strconv.FormatFloat(f, 'f', 6, 64)
-		s = strings.TrimRight(s, "0")
-		s = strings.TrimSuffix(s, ".")
-		if s == "" || s == "-0" {
-			s = "0"
-		}
-		return s, nil
-	case value.KindStr:
-		s, _ := v.AsStr()
-		return encodeJSONString(s), nil
-	case value.KindList:
-		vs, _ := v.AsList()
-		parts := make([]string, len(vs))
-		for i, c := range vs {
-			enc, err := canonCellV(c)
-			if err != nil {
-				return "", err
-			}
-			parts[i] = enc
-		}
-		return "[" + strings.Join(parts, ",") + "]", nil
-	}
-	return "", fmt.Errorf("rowhash: unsupported value kind %d", v.Kind())
-}
-
-// rowsHashV mirrors RowsHash but over [][]value.Value via canonCellV.
-func rowsHashV(rows [][]value.Value) (string, error) {
-	encoded := make([]string, len(rows))
-	for i, r := range rows {
-		parts := make([]string, len(r))
-		for j, c := range r {
-			enc, err := canonCellV(c)
-			if err != nil {
-				return "", fmt.Errorf("row %d col %d: %w", i, j, err)
-			}
-			parts[j] = enc
-		}
-		encoded[i] = "[" + strings.Join(parts, ",") + "]"
-	}
-	sort.Strings(encoded)
-	sum := sha256.Sum256([]byte(strings.Join(encoded, "\n")))
-	return hex.EncodeToString(sum[:])[:16], nil
-}
-
 // TestReprHashParity locks in that the value.Value result path produces the
-// identical parity hash to the boxed [][]any path -- the precondition for
-// migrating NativeKernel to [][]value.Value without re-pinning the 89/89 gate.
+// identical parity hash to the boxed [][]any path via the production encoders
+// -- the precondition for migrating NativeKernel to [][]value.Value without
+// re-pinning the 89/89 gate.
 func TestReprHashParity(t *testing.T) {
 	uris, counts := synthReprRows(1000)
 	hAny, err := RowsHash(buildBoxed(uris, counts))
 	if err != nil {
 		t.Fatalf("boxed hash: %v", err)
 	}
-	hVal, err := rowsHashV(buildValueRows(uris, counts))
+	hVal, err := RowsHashV(buildValueRows(uris, counts))
 	if err != nil {
 		t.Fatalf("value hash: %v", err)
 	}
