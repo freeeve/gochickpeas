@@ -201,9 +201,9 @@ func TestHoistMembershipForms(t *testing.T) {
 	// Slots over a tree containing the fused comparison node.
 	fused := New(ctx, &ast.Binary{Op: ast.OpLt,
 		LHS: &ast.Prop{Var: "x", Key: "i"}, RHS: lit(10)}, slots, g)
-	refs, hasSlow := Slots(fused)
-	if hasSlow || len(refs) != 1 || refs[0] != 0 {
-		t.Fatalf("fused slots = %v, hasSlow %v", refs, hasSlow)
+	refs, hasSlow, hasWalk := Slots(fused)
+	if hasSlow || hasWalk || len(refs) != 1 || refs[0] != 0 {
+		t.Fatalf("fused slots = %v, hasSlow %v hasWalk %v", refs, hasSlow, hasWalk)
 	}
 }
 
@@ -275,7 +275,7 @@ func TestSlotWalkerAndHoistRecursion(t *testing.T) {
 		Else: &ast.ListExpr{Elems: []ast.Expr{&ast.Var{Name: "x"}}},
 	}
 	c := New(ctx, e, slots, g)
-	refs, hasSlow := Slots(c)
+	refs, hasSlow, _ := Slots(c)
 	if hasSlow || len(refs) == 0 {
 		t.Fatalf("slots = %v hasSlow=%v", refs, hasSlow)
 	}

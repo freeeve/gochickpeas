@@ -50,15 +50,17 @@ func hoistEval(ctx *eval.Ctx, re RowEval, isConst, isCarried func(int) bool, sam
 }
 
 // evalPushdown reports the row slots a bound expression reads (through
-// slots) and whether it contains a node that pins it to the last op level.
-// The compiled form introspects its resolved nodes (a memoized subquery
-// pushes to where its correlated bindings bind); the interpreted form
-// walks the AST conservatively.
-func evalPushdown(re RowEval, e ast.Expr, slots map[string]int, refs *[]int, hasSlow *bool) {
+// slots), whether it contains a node that pins it to the last op level,
+// and whether it walks the graph despite being slot-resolved (a memoized
+// subquery: reads only its memo slots, but every distinct correlation
+// tuple still pays a graph walk). The compiled form introspects its
+// resolved nodes; the interpreted form walks the AST conservatively.
+func evalPushdown(re RowEval, e ast.Expr, slots map[string]int, refs *[]int, hasSlow, hasWalk *bool) {
 	if c, ok := re.(*compile.Compiled); ok {
-		r, slow := compile.Slots(c)
+		r, slow, walk := compile.Slots(c)
 		*refs = append(*refs, r...)
 		*hasSlow = *hasSlow || slow
+		*hasWalk = *hasWalk || walk
 		return
 	}
 	astPushdown(e, slots, refs, hasSlow)

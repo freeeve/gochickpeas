@@ -112,6 +112,7 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 				if c, hit := n.memoI[ik]; hit {
 					count = c
 				} else {
+					SubqueryWalks++
 					count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
 					if n.memoI == nil {
 						n.memoI = map[uint64]int{}
@@ -127,10 +128,12 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 			if c, hit := n.memo[string(n.key)]; hit {
 				count = c
 			} else {
+				SubqueryWalks++
 				count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
 				n.memo[string(n.key)] = count
 			}
 		default:
+			SubqueryWalks++
 			count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
 		}
 		if n.isCount {
@@ -407,3 +410,9 @@ func inResult(xs []value.Value, v value.Value) value.Value {
 	}
 	return value.Bool(false)
 }
+
+// SubqueryWalks counts actual correlated-subquery graph walks (memo
+// misses and unmemoized evaluations) -- the load-independent oracle for
+// predicate-placement tests: a walk that runs before a shrinking op is
+// visible as walk count, never as a row difference.
+var SubqueryWalks int

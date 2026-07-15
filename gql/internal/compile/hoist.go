@@ -199,13 +199,17 @@ func (m *inMembership) resultFor(v value.Value) value.Value {
 // for nodes whose inner references aren't slot-resolved (interpreter
 // fallbacks, functions, subqueries without a memo set). A memoized
 // subquery reads exactly its memo slots, so it can push down to where its
-// correlated bindings bind.
-func Slots(c *Compiled) (refs []int, hasSlow bool) {
-	slotsOf(c.c, &refs, &hasSlow)
-	return refs, hasSlow
+// correlated bindings bind -- but hasWalk reports it separately, because
+// the memo only bounds REPEAT cost: on every distinct correlation tuple
+// the subquery still walks the graph, so its placement must respect walk
+// cost, not just read placement (task 115: classify by what the predicate
+// DOES, not by which evaluation path it takes).
+func Slots(c *Compiled) (refs []int, hasSlow, hasWalk bool) {
+	slotsOf(c.c, &refs, &hasSlow, &hasWalk)
+	return refs, hasSlow, hasWalk
 }
 
-func slotsOf(c cnode, out *[]int, hasSlow *bool) {
+func slotsOf(c cnode, out *[]int, hasSlow, hasWalk *bool) {
 	switch n := c.(type) {
 	case *cLit:
 	case *cSlot:
@@ -215,40 +219,41 @@ func slotsOf(c cnode, out *[]int, hasSlow *bool) {
 	case *cCmpPropConst:
 		*out = append(*out, n.prop.slot)
 	case *cNot:
-		slotsOf(n.e, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
 	case *cNeg:
-		slotsOf(n.e, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
 	case *cBin:
-		slotsOf(n.l, out, hasSlow)
-		slotsOf(n.r, out, hasSlow)
+		slotsOf(n.l, out, hasSlow, hasWalk)
+		slotsOf(n.r, out, hasSlow, hasWalk)
 	case *cList:
 		for _, x := range n.xs {
-			slotsOf(x, out, hasSlow)
+			slotsOf(x, out, hasSlow, hasWalk)
 		}
 	case *cIn:
-		slotsOf(n.e, out, hasSlow)
-		slotsOf(n.list, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
+		slotsOf(n.list, out, hasSlow, hasWalk)
 	case *cInConst:
-		slotsOf(n.e, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
 	case *cInCarried:
-		slotsOf(n.e, out, hasSlow)
-		slotsOf(n.list, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
+		slotsOf(n.list, out, hasSlow, hasWalk)
 	case *cIsNull:
-		slotsOf(n.e, out, hasSlow)
+		slotsOf(n.e, out, hasSlow, hasWalk)
 	case *cCase:
 		if n.operand != nil {
-			slotsOf(n.operand, out, hasSlow)
+			slotsOf(n.operand, out, hasSlow, hasWalk)
 		}
 		for _, w := range n.whens {
-			slotsOf(w[0], out, hasSlow)
-			slotsOf(w[1], out, hasSlow)
+			slotsOf(w[0], out, hasSlow, hasWalk)
+			slotsOf(w[1], out, hasSlow, hasWalk)
 		}
 		if n.els != nil {
-			slotsOf(n.els, out, hasSlow)
+			slotsOf(n.els, out, hasSlow, hasWalk)
 		}
 	case *cSubquery:
 		if n.hasMemo {
 			*out = append(*out, n.memoSlots...)
+			*hasWalk = true
 		} else {
 			*hasSlow = true
 		}
@@ -284,9 +289,9 @@ func hoistConst(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, isConst func(int)
 		return &cIsNull{e: hoistConst(ctx, n.e, g, isConst, sample, slots), negated: n.negated}
 	case *cIn:
 		var refs []int
-		hasSlow := false
-		slotsOf(n.list, &refs, &hasSlow)
-		allConst := !hasSlow
+		hasSlow, hasWalk := false, false
+		slotsOf(n.list, &refs, &hasSlow, &hasWalk)
+		allConst := !hasSlow && !hasWalk // a walking list is never hoist-constant
 		for _, s := range refs {
 			if !isConst(s) {
 				allConst = false
@@ -336,9 +341,9 @@ func hoistCarried(c cnode, isCarried func(int) bool) cnode {
 		return &cIsNull{e: hoistCarried(n.e, isCarried), negated: n.negated}
 	case *cIn:
 		var refs []int
-		hasSlow := false
-		slotsOf(n.list, &refs, &hasSlow)
-		if !hasSlow && len(refs) > 0 {
+		hasSlow, hasWalk := false, false
+		slotsOf(n.list, &refs, &hasSlow, &hasWalk)
+		if !hasSlow && !hasWalk && len(refs) > 0 {
 			carried := true
 			for _, s := range refs {
 				if !isCarried(s) {

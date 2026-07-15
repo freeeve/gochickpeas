@@ -117,14 +117,35 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	for _, c := range conjs {
 		cc := hoistEval(ctx, compileEval(ctx, c, slots), isConst, isCarried, sample, slots)
 		var refs []int
-		hasSlow := false
-		evalPushdown(cc, c, slots, &refs, &hasSlow)
+		hasSlow, hasWalk := false, false
+		evalPushdown(cc, c, slots, &refs, &hasSlow, &hasWalk)
 		level := n - 1
 		if !hasSlow {
 			level = 0
 			for _, s := range refs {
 				if l, ok := slotLevel[s]; ok && l > level {
 					level = l
+				}
+			}
+			// A graph-walking conjunct (a memoized subquery: its memo bounds
+			// only repeat cost -- every distinct correlation tuple still
+			// pays a walk) placed at its binding level would run once per
+			// row the NEXT ops are about to discard. Ops that can only
+			// SHRINK the row set -- rebind expands, existence checks
+			// emitting at most one row per input -- cannot change what the
+			// conjunct is asked about, and a conjunction is
+			// order-independent, so slide the walk forward over them and
+			// stop at the first op that can grow the rows. The early-prune
+			// placement is preserved everywhere it is a win (any op after
+			// the walk that fans out).
+			if hasWalk {
+				for level+1 < n {
+					next := &stage.Ops[level+1]
+					if next.Kind == plan.OpExpand && next.Rebind {
+						level++
+						continue
+					}
+					break
 				}
 			}
 		}

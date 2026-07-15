@@ -168,15 +168,16 @@ func TestSubqueryMemoAndSlots(t *testing.T) {
 	if !c.Eval(ctx, row, slots).IsTruthy() || len(sub.memoI) != 1 {
 		t.Fatal("memo hit")
 	}
-	// Slots: the memoized subquery pushes down to its correlated slots.
-	refs, slow := Slots(c)
-	if slow || len(refs) != 1 || refs[0] != 0 {
-		t.Fatalf("subquery pushdown refs = %v slow = %v", refs, slow)
+	// Slots: the memoized subquery pushes down to its correlated slots --
+	// and reports the walk, so placement can respect walk cost (task 115).
+	refs, slow, walk := Slots(c)
+	if slow || !walk || len(refs) != 1 || refs[0] != 0 {
+		t.Fatalf("subquery pushdown refs = %v slow = %v walk = %v", refs, slow, walk)
 	}
 	// A function keeps last-level placement.
-	refs, slow = Slots(New(ctx, exprOf(t, "size(a)"), slots, g))
+	refs, slow, walk = Slots(New(ctx, exprOf(t, "size(a)"), slots, g))
 	if !slow {
-		t.Fatalf("function is slow, refs = %v", refs)
+		t.Fatalf("function is slow, refs = %v walk = %v", refs, walk)
 	}
 }
 
