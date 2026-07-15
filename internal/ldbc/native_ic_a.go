@@ -251,18 +251,27 @@ func icIC4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		var rows [][]any
+		type cand struct {
+			name  string
+			count int64
+		}
+		var cands []cand
 		for t, c := range inWindow {
 			if !before[t] {
-				rows = append(rows, []any{strAt(g, t, "name"), c})
+				cands = append(cands, cand{strAt(g, t, "name"), c})
 			}
 		}
-		return sortTruncate(rows, 10, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpStrAsc(a[0].(string), b[0].(string)),
-			)
-		}), nil
+		sortByLess(cands, func(a, b cand) bool {
+			return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name))
+		})
+		if len(cands) > 10 {
+			cands = cands[:10]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.name, c.count}
+		}
+		return rows, nil
 	}, nil
 }
 
@@ -304,16 +313,22 @@ func icIC5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(forumCounts))
+		type cand struct{ id, count int64 }
+		cands := make([]cand, 0, len(forumCounts))
 		for f, c := range forumCounts {
-			rows = append(rows, []any{i64At(idCol, f), c})
+			cands = append(cands, cand{i64At(idCol, f), c})
 		}
-		return sortTruncate(rows, 20, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-			)
-		}), nil
+		sortByLess(cands, func(a, b cand) bool {
+			return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.id, b.id))
+		})
+		if len(cands) > 20 {
+			cands = cands[:20]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.id, c.count}
+		}
+		return rows, nil
 	}, nil
 }
 
@@ -362,16 +377,25 @@ func icIC6Rows(g *chickpeas.Snapshot, person chickpeas.NodeID) ([][]any, error) 
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
-	for t, c := range counts {
-		rows = append(rows, []any{strAt(g, t, "name"), c})
+	type cand struct {
+		name  string
+		count int64
 	}
-	return sortTruncate(rows, 10, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpStrAsc(a[0].(string), b[0].(string)),
-		)
-	}), nil
+	cands := make([]cand, 0, len(counts))
+	for t, c := range counts {
+		cands = append(cands, cand{strAt(g, t, "name"), c})
+	}
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name))
+	})
+	if len(cands) > 10 {
+		cands = cands[:10]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.name, c.count}
+	}
+	return rows, nil
 }
 
 // icIC7 -- the 20 most recent likers of the seed's messages (latest
@@ -410,20 +434,26 @@ func icIC7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(best))
+		type cand struct{ ms, id, isNew int64 }
+		cands := make([]cand, 0, len(best))
 		for liker, rec := range best {
 			isNew := int64(1)
 			if friends[liker] {
 				isNew = 0
 			}
-			rows = append(rows, []any{rec.ms, i64At(idCol, liker), isNew})
+			cands = append(cands, cand{rec.ms, i64At(idCol, liker), isNew})
 		}
-		return sortTruncate(rows, 20, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[0].(int64), b[0].(int64)),
-				cmpI64Asc(a[1].(int64), b[1].(int64)),
-			)
-		}), nil
+		sortByLess(cands, func(a, b cand) bool {
+			return cmpChain(cmpI64Desc(a.ms, b.ms), cmpI64Asc(a.id, b.id))
+		})
+		if len(cands) > 20 {
+			cands = cands[:20]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.ms, c.id, c.isNew}
+		}
+		return rows, nil
 	}, nil
 }
 
