@@ -7,12 +7,14 @@
 package exec
 
 import (
+	"cmp"
+	"math"
+	"slices"
 	"strconv"
 
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
-	"math"
 )
 
 // aggState is one aggregate accumulator, allocated once per group per
@@ -211,6 +213,9 @@ type aggregator struct {
 	hasMinMax   bool
 	hasCollect  bool
 	kinds       []plan.AggKind
+	// pctC holds each percentile aggregate's compiled constant second
+	// argument (nil for every other kind), evaluated once at finalize.
+	pctC []RowEval
 
 	// keyScratch/gkScratch/dkScratch are the per-update key buffers, reused
 	// so routing a row to an existing group (or a seen DISTINCT value)
@@ -238,8 +243,13 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 		switch ac.Kind {
 		case plan.AggMin, plan.AggMax:
 			a.hasMinMax = true
-		case plan.AggCollect:
+		case plan.AggCollect, plan.AggPercentileCont, plan.AggPercentileDisc:
 			a.hasCollect = true
+		}
+		if ac.Arg2 != nil {
+			a.pctC = append(a.pctC, compileEval(ctx, ac.Arg2, slots))
+		} else {
+			a.pctC = append(a.pctC, nil)
 		}
 	}
 	return a
@@ -434,6 +444,11 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 			if !arg.IsNull() {
 				items[j] = append(items[j], arg)
 			}
+		case plan.AggPercentileCont, plan.AggPercentileDisc:
+			// Percentiles are over numbers; non-numeric args skip, like avg.
+			if _, ok := arg.AsFloat(); ok {
+				items[j] = append(items[j], arg)
+			}
 		default:
 			states[j].update(arg, present)
 		}
@@ -494,6 +509,8 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 				row[proj.Aggs[j].OutIdx] = mm[j]
 			case plan.AggCollect:
 				row[proj.Aggs[j].OutIdx] = value.List(items[j])
+			case plan.AggPercentileCont, plan.AggPercentileDisc:
+				row[proj.Aggs[j].OutIdx] = percentileOf(ctx, a.pctC[j], items[j], a.kinds[j] == plan.AggPercentileCont)
 			default:
 				row[proj.Aggs[j].OutIdx] = states[j].finalize()
 			}
@@ -536,4 +553,39 @@ func (a *aggSink) close() {}
 
 func (a *aggSink) finalize() [][]value.Value {
 	return a.agg.finalize(a.ctx, a.proj, a.slots)
+}
+
+// percentileOf finalizes one percentile aggregate: sort the group's
+// collected numeric values and pick per Neo4j semantics -- cont
+// interpolates linearly between the two straddling values (always Float),
+// disc takes the nearest-rank collected value unchanged. An empty group
+// or a percentile outside [0,1] is Null.
+func percentileOf(ctx *eval.Ctx, pc RowEval, vals []value.Value, cont bool) value.Value {
+	if pc == nil || len(vals) == 0 {
+		return value.Null()
+	}
+	p, ok := pc.Eval(ctx, nil, nil).AsFloat()
+	if !ok || p < 0 || p > 1 {
+		return value.Null()
+	}
+	slices.SortStableFunc(vals, func(a, b value.Value) int {
+		af, _ := a.AsFloat()
+		bf, _ := b.AsFloat()
+		return cmp.Compare(af, bf)
+	})
+	n := len(vals)
+	if !cont {
+		// Nearest rank: ceil(p*n) clamped to [1, n], 1-based.
+		idx := int(math.Ceil(p * float64(n)))
+		if idx < 1 {
+			idx = 1
+		}
+		return vals[idx-1]
+	}
+	rank := p * float64(n-1)
+	lo := int(math.Floor(rank))
+	hi := int(math.Ceil(rank))
+	lov, _ := vals[lo].AsFloat()
+	hiv, _ := vals[hi].AsFloat()
+	return value.Float(lov + (hiv-lov)*(rank-float64(lo)))
 }

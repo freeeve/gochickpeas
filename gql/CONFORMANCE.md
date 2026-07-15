@@ -95,7 +95,7 @@ pattern rejects for the same reason.
 |---|---|---|
 | count(*) / count / sum / avg / min / max / collect (+ DISTINCT) | OK | collect_list alias too |
 | stddev_samp / stddev_pop (+ DISTINCT) | OK | Welford; 0 on empty/single, matching Neo4j |
-| percentile_* | reject | two-arg aggregate machinery pending |
+| percentile_cont / percentile_disc (+ DISTINCT) | OK | constant percentile; cont interpolates (Float), disc nearest-rank; empty/out-of-range -> null |
 | size, substring, left, right, upper, lower | OK | |
 | char_length, cardinality, trim, ltrim, rtrim | OK | char_length counts runes |
 | normalize | reject | needs unicode tables (x/text); deliberate |

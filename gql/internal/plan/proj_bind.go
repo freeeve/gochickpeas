@@ -476,8 +476,23 @@ func extractAgg(expr ast.Expr, outIdx int) (AggCol, error) {
 		kind = AggStddevSamp
 	case "stddev_pop":
 		kind = AggStddevPop
+	case "percentile_cont", "percentilecont":
+		kind = AggPercentileCont
+	case "percentile_disc", "percentiledisc":
+		kind = AggPercentileDisc
 	default:
 		return AggCol{}, planErrf("aggregate function `%s` is not supported (Tier 1)", f.Name)
+	}
+	if kind == AggPercentileCont || kind == AggPercentileDisc {
+		if f.Star || len(f.Args) != 2 {
+			return AggCol{}, planErrf("`%s(...)` takes exactly two arguments (a value and a percentile)", f.Name)
+		}
+		// The percentile is per-query, not per-row: a constant literal
+		// (number or parameter) keeps the accumulator single-valued.
+		if _, ok := f.Args[1].(*ast.Lit); !ok {
+			return AggCol{}, planErrf("`%s(...)` requires a constant percentile", f.Name)
+		}
+		return AggCol{Kind: kind, Arg: f.Args[0], Arg2: f.Args[1], Distinct: f.Distinct, OutIdx: outIdx}, nil
 	}
 	var arg ast.Expr
 	switch {

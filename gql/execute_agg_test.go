@@ -506,3 +506,95 @@ func TestStddevAggregates(t *testing.T) {
 		t.Fatalf("empty stddev_pop = %v, want 0", got)
 	}
 }
+
+// TestPercentileAggregates pins percentile_cont/percentile_disc (Neo4j
+// semantics): cont interpolates linearly (Float), disc picks the
+// nearest-rank collected value, DISTINCT dedups before ranking,
+// non-numeric args skip, an empty group and an out-of-range percentile
+// are null, and the percentile must be a constant.
+func TestPercentileAggregates(t *testing.T) {
+	g := socialGraph(t)
+	one := func(q string) value.Value {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no row: %s", q)
+		}
+		v, _ := r.GetAt(0)
+		return v
+	}
+	// Ages sorted: 25, 30, 35, 40.
+	if v := one("MATCH (p:Person) RETURN percentile_cont(p.age, 0.5) AS m"); !value.Equal(v, value.Float(32.5)) {
+		t.Fatalf("cont(0.5) = %v, want 32.5", v)
+	}
+	if v := one("MATCH (p:Person) RETURN percentile_cont(p.age, 0) AS m"); !value.Equal(v, value.Float(25)) {
+		t.Fatalf("cont(0) = %v, want 25.0", v)
+	}
+	if v := one("MATCH (p:Person) RETURN percentile_cont(p.age, 1) AS m"); !value.Equal(v, value.Float(40)) {
+		t.Fatalf("cont(1) = %v, want 40.0", v)
+	}
+	// disc returns the collected value itself (an Int here).
+	if v := one("MATCH (p:Person) RETURN percentile_disc(p.age, 0.5) AS m"); !value.Equal(v, value.Int(30)) {
+		t.Fatalf("disc(0.5) = %v, want 30", v)
+	}
+	if v := one("MATCH (p:Person) RETURN percentile_disc(p.age, 0) AS m"); !value.Equal(v, value.Int(25)) {
+		t.Fatalf("disc(0) = %v, want 25", v)
+	}
+	if v := one("MATCH (p:Person) RETURN percentile_disc(p.age, 1) AS m"); !value.Equal(v, value.Int(40)) {
+		t.Fatalf("disc(1) = %v, want 40", v)
+	}
+	// DISTINCT dedups before ranking: [1,2,2,10] p=0.75 -> 4.0 plain
+	// (rank 2.25 over 4 values), 6.0 distinct (rank 1.5 over 3).
+	if v := one("FOR x IN [1,2,2,10] RETURN percentile_cont(x, 0.75) AS m"); !value.Equal(v, value.Float(4)) {
+		t.Fatalf("cont(0.75) multiset = %v, want 4.0", v)
+	}
+	if v := one("FOR x IN [1,2,2,10] RETURN percentile_cont(DISTINCT x, 0.75) AS m"); !value.Equal(v, value.Float(6)) {
+		t.Fatalf("cont(0.75) DISTINCT = %v, want 6.0", v)
+	}
+	// Non-numeric values skip (like avg).
+	if v := one("FOR x IN [1, 'a', 3] RETURN percentile_cont(x, 0.5) AS m"); !value.Equal(v, value.Float(2)) {
+		t.Fatalf("cont over mixed = %v, want 2.0", v)
+	}
+	// Grouped: Acme {30, 35} -> 32.5; Globex {40} -> 40.
+	rows := runBoth(t, g,
+		"MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN c.name AS cn, percentile_cont(p.age, 0.5) AS m ORDER BY cn")
+	want := map[string]float64{"Acme": 32.5, "Globex": 40}
+	n := 0
+	for r := range rows.All() {
+		n++
+		cv, _ := r.Get("cn")
+		cn, _ := cv.AsStr()
+		mv, _ := r.Get("m")
+		if !value.Equal(mv, value.Float(want[cn])) {
+			t.Fatalf("group %s = %v, want %v", cn, mv, want[cn])
+		}
+	}
+	if n != 2 {
+		t.Fatalf("groups = %d", n)
+	}
+	// Empty input and out-of-range percentile are null.
+	if v := one("MATCH (p:Person {name: 'Zed'}) RETURN percentile_cont(p.age, 0.5) AS m"); !v.IsNull() {
+		t.Fatalf("empty group = %v, want null", v)
+	}
+	if v := one("MATCH (p:Person) RETURN percentile_cont(p.age, 1.5) AS m"); !v.IsNull() {
+		t.Fatalf("out-of-range p = %v, want null", v)
+	}
+	// The percentile must be a constant literal; arity is two.
+	if _, err := Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age, p.age) AS m"); err == nil {
+		t.Fatal("non-constant percentile must be a plan error")
+	}
+	if _, err := Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age) AS m"); err == nil {
+		t.Fatal("one-arg percentile must be a plan error")
+	}
+	// A parameter percentile works (it is a constant per execution).
+	rows2, err := RunWithParams(g, "MATCH (p:Person) RETURN percentile_disc(p.age, $p) AS m",
+		map[string]value.Value{"p": value.Float(0.5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, _ := rows2.Next()
+	if v, _ := r2.GetAt(0); !value.Equal(v, value.Int(30)) {
+		t.Fatalf("param percentile = %v, want 30", v)
+	}
+}

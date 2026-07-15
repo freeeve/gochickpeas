@@ -164,12 +164,22 @@ const (
 	// matching Neo4j's stdev/stdevp).
 	AggStddevSamp
 	AggStddevPop
+	// AggPercentileCont / AggPercentileDisc are the two-argument
+	// percentile aggregates: numeric values collect per group and sort at
+	// finalize; cont interpolates linearly (always Float), disc picks the
+	// nearest-rank collected value (Neo4j semantics). Empty group or a
+	// percentile outside [0,1] finalizes to Null.
+	AggPercentileCont
+	AggPercentileDisc
 )
 
 // AggCol is one aggregate output column.
 type AggCol struct {
-	Kind     AggKind
-	Arg      ast.Expr // nil for count(*)
+	Kind AggKind
+	Arg  ast.Expr // nil for count(*)
+	// Arg2 is the percentile aggregates' second argument, a plan-time
+	// constant literal (a number or a parameter).
+	Arg2     ast.Expr
 	Distinct bool
 	OutIdx   int
 }
