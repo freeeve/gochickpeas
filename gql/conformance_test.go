@@ -280,7 +280,7 @@ func conformanceCorpus() []conformanceProbe {
 		{"C expressions", "temporal-date-literal", "RETURN DATE '2024-01-01' AS x", -1, "", "unexpected trailing input \"2024-01-01\"", nil},
 		{"C expressions", "temporal-duration-literal", "RETURN DURATION 'PT1H' AS x", -1, "", "unexpected trailing input \"PT1H\"", nil},
 		{"C expressions", "date-func", "RETURN date('2024-01-02').year AS y", 1, "", "", nil},
-		{"C expressions", "duration-func", "RETURN duration('PT2H').hour AS h", 1, "", "", nil},
+		{"C expressions", "duration-func", "RETURN duration('PT2H').hours AS h", 1, "[2]", "", nil},
 		{"C expressions", "list-literal", "RETURN [1, 2, 3] AS x", 1, "", "", nil},
 		{"C expressions", "map-literal", "RETURN {a: 1, b: 'x'} AS m", 1, "", "", nil},
 		{"C expressions", "list-index", "RETURN [10,20,30][1] AS x", 1, "[20]", "", nil},

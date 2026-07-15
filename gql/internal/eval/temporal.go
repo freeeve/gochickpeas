@@ -318,6 +318,37 @@ func Component(millis int64, key string) (int64, bool) {
 	return 0, false
 }
 
+// DurationComponent is a duration component accessor on a (months, days,
+// millis) duration, with the groups independent (Neo4j's convention): the
+// months group answers years/quarters/months (months is the group TOTAL,
+// so duration({years: 1}).months = 12), the days group weeks/days, and
+// the millis group hours/minutes/seconds/milliseconds (each the group
+// total at that unit, so PT2H reads .minutes = 120). ok=false for an
+// unknown component.
+func DurationComponent(months, days, millis int64, key string) (int64, bool) {
+	switch key {
+	case "years":
+		return months / 12, true
+	case "quarters":
+		return months / 3, true
+	case "months":
+		return months, true
+	case "weeks":
+		return days / 7, true
+	case "days":
+		return days, true
+	case "hours":
+		return millis / 3_600_000, true
+	case "minutes":
+		return millis / 60_000, true
+	case "seconds":
+		return millis / 1000, true
+	case "milliseconds":
+		return millis, true
+	}
+	return 0, false
+}
+
 // ApplyDuration applies a duration (months, days, millis) to an
 // epoch-millis temporal, sign = +1 (add) or -1 (subtract). Months are a
 // calendar add (day clamped to the target month length, e.g. Jan 31 + 1

@@ -118,3 +118,45 @@ func TestDurationFastPathOverflowMatchesTree(t *testing.T) {
 		t.Fatal("representable fast-path shift filtered everything")
 	}
 }
+
+// TestDurationComponents pins the duration accessors (119 audit defect 2:
+// every component read null). Neo4j's group convention: months group
+// answers years/months (group totals), days group weeks/days, millis
+// group hours/minutes/seconds -- each the group total at that unit. The
+// singular spellings stay null (temporal accessors are singular, duration
+// accessors plural), pinned so the two vocabularies never blur.
+func TestDurationComponents(t *testing.T) {
+	b := chickpeas.NewBuilder(2, 1)
+	if _, err := b.AddNode("N"); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize()
+	one := func(q string) value.Value {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no row: %s", q)
+		}
+		v, _ := r.GetAt(0)
+		return v
+	}
+	for q, want := range map[string]int64{
+		"RETURN duration('PT2H').hours AS x":          2,
+		"RETURN duration('PT2H').minutes AS x":        120,
+		"RETURN duration({hours: 2}).hours AS x":      2,
+		"RETURN duration({years: 1}).months AS x":     12,
+		"RETURN duration({days: 15}).weeks AS x":      2,
+		"RETURN duration('P1DT2H30M').minutes AS x":   150,
+		"RETURN duration('P1DT2H30M').days AS x":      1,
+		"RETURN duration({minutes: 90}).seconds AS x": 5400,
+	} {
+		if got, ok := one(q).AsInt(); !ok || got != want {
+			t.Fatalf("%s = %v, want %d", q, one(q), want)
+		}
+	}
+	// Singular spellings stay null on durations.
+	if !one("RETURN duration('PT2H').hour AS x").IsNull() {
+		t.Fatal("duration .hour (singular) must stay null -- duration accessors are plural")
+	}
+}

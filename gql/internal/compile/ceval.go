@@ -350,6 +350,12 @@ func cevalProp(n *cProp, row []value.Value) value.Value {
 			return value.Int(comp)
 		}
 		return value.Null()
+	case value.KindDuration:
+		mo, d, ms, _ := base.AsDuration()
+		if comp, ok := eval.DurationComponent(mo, d, ms, n.reader.key); ok {
+			return value.Int(comp)
+		}
+		return value.Null()
 	}
 	return value.Null()
 }

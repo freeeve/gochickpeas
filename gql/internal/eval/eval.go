@@ -132,6 +132,11 @@ func propRead(ctx *Ctx, base value.Value, key string) value.Value {
 	case value.KindInt:
 		ms, _ := base.AsInt()
 		return temporalComponentOf(ms, key)
+	case value.KindDuration:
+		mo, d, ms, _ := base.AsDuration()
+		if c, ok := DurationComponent(mo, d, ms, key); ok {
+			return value.Int(c)
+		}
 	}
 	return value.Null()
 }
