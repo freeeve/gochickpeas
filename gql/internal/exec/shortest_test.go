@@ -284,3 +284,113 @@ func TestMissingWeightColumnTakesBFS(t *testing.T) {
 		t.Fatalf("real property COST ran %d weighted searches, want 1", n)
 	}
 }
+
+// TestUnitWeightDijkstraDifferential cross-checks the two shortest-path
+// machines against each other on identical semantics (task 140, the
+// technique returned from the sibling engine): an all-1.0 weight COLUMN is
+// a live unit-weight Dijkstra -- the structural dispatch cannot degrade it
+// to BFS without scanning values -- so weighted cost == BFS hop count on
+// every pair, including under hop caps (where the weighted engine keys
+// (node, hops) state). The weightedSearches counter guards that Dijkstra
+// actually ran: if a future classifier learns to detect unit-valued
+// columns, this differential silently stops testing and must be rebuilt.
+func TestUnitWeightDijkstraDifferential(t *testing.T) {
+	rng := rand.New(rand.NewSource(140))
+	shapes := []func(b *chickpeas.Builder, n int) int{
+		func(b *chickpeas.Builder, n int) int {
+			c := 0
+			for range n * 3 {
+				if _, err := b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R"); err == nil {
+					c++
+				}
+			}
+			return c
+		},
+		func(b *chickpeas.Builder, n int) int {
+			c := 0
+			for i := 1; i < n; i += 2 {
+				if _, err := b.AddRel(0, chickpeas.NodeID(i), "R"); err == nil {
+					c++
+				}
+			}
+			for range n {
+				if _, err := b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R"); err == nil {
+					c++
+				}
+			}
+			return c
+		},
+		func(b *chickpeas.Builder, n int) int {
+			c := 0
+			for i := 0; i+1 < n; i++ {
+				if _, err := b.AddRel(chickpeas.NodeID(i), chickpeas.NodeID(i+1), "R"); err == nil {
+					c++
+				}
+			}
+			for range n / 4 {
+				if _, err := b.AddRel(chickpeas.NodeID(rng.Intn(n)), chickpeas.NodeID(rng.Intn(n)), "R"); err == nil {
+					c++
+				}
+			}
+			return c
+		},
+	}
+	caps := []uint64{1, 2, 3, 1<<63 - 1}
+	before := weightedSearches
+	for si, shape := range shapes {
+		const n = 120
+		b := chickpeas.NewBuilder(n, n*4)
+		for range n {
+			if _, err := b.AddNode("N"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		nRels := shape(b, n)
+		for i := range nRels {
+			if err := b.SetRelPropAt(i, "w", 1.0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx := &eval.Ctx{G: graph.New(b.Finalize())}
+		rm := ctx.G.CompileRelMatcher([]string{"R"})
+		scr := newSPScratch()
+		for _, dir := range []graph.Direction{graph.Outgoing, graph.Incoming, graph.Both} {
+			for trial := range 250 {
+				a := graph.NodeID(rng.Intn(n))
+				bb := graph.NodeID(rng.Intn(n))
+				hopCap := caps[trial%len(caps)]
+				bsp := &plan.SpStage{Dir: dir, Types: []string{"R"}}
+				wsp := &plan.SpStage{
+					PathSlot: 2, From: 0, To: 1, Dir: dir, Types: []string{"R"},
+					Weight: &ast.CostSpec{Kind: ast.CostProperty, Prop: "w"},
+				}
+				if hopCap != 1<<63-1 {
+					c := hopCap
+					bsp.Max = &c
+					wsp.Max = &c
+				}
+				path, found := shortestPath(ctx, a, bb, bsp, rm, nil, scr)
+				rows := runSPStage(ctx, wsp, [][]value.Value{{value.Node(a), value.Node(bb), value.Null()}})
+				if !found {
+					if len(rows) != 0 {
+						t.Fatalf("shape %d dir %v cap %d (%d,%d): BFS unreachable but Dijkstra found a path", si, dir, hopCap, a, bb)
+					}
+					continue
+				}
+				if len(rows) != 1 {
+					t.Fatalf("shape %d dir %v cap %d (%d,%d): BFS length %d but Dijkstra found nothing", si, dir, hopCap, a, bb, len(path.nodes)-1)
+				}
+				wnodes, _, ok := rows[0][2].AsPath()
+				if !ok {
+					t.Fatalf("shape %d (%d,%d): weighted row carries no path", si, a, bb)
+				}
+				if got, want := len(wnodes)-1, len(path.nodes)-1; got != want {
+					t.Fatalf("shape %d dir %v cap %d (%d,%d): Dijkstra %d hops, BFS %d", si, dir, hopCap, a, bb, got, want)
+				}
+			}
+		}
+	}
+	if weightedSearches == before {
+		t.Fatal("the weighted engine never ran -- the differential is not testing Dijkstra")
+	}
+}
