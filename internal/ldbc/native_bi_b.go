@@ -216,32 +216,51 @@ func biQ18(g *chickpeas.Snapshot) ([][]any, error) {
 		endpoints.Insert(p)
 	}
 	pairs := g.CommonNeighborCounts(interested, chickpeas.Both, g.Match("KNOWS"), endpoints)
-	knowsOf := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
-	var rows [][]any
+	// Collect survivors as typed rows, sort+truncate typed, and box only the
+	// top 20 -- the candidate set is far larger than the output, so boxing
+	// every pair into []any before truncation dominated the allocations.
+	type cand struct {
+		id1, id2, count int64
+	}
+	var cands []cand
+	// One reused KNOWS-membership set, rebuilt when the source changes
+	// (CommonNeighborCounts groups a source's pairs contiguously; a reordering
+	// would only rebuild redundantly, never mis-filter). clear() reuses the
+	// map's buckets, so no per-source map allocation.
+	known := map[chickpeas.NodeID]bool{}
+	var lastSource chickpeas.NodeID
+	haveSource := false
 	for _, pr := range pairs {
 		if pr.Source == pr.Target {
 			continue
 		}
-		known := knowsOf[pr.Source]
-		if known == nil {
-			known = map[chickpeas.NodeID]bool{}
+		if !haveSource || pr.Source != lastSource {
+			clear(known)
 			for f := range g.Neighbors(pr.Source, chickpeas.Both, "KNOWS") {
 				known[f] = true
 			}
-			knowsOf[pr.Source] = known
+			lastSource, haveSource = pr.Source, true
 		}
 		if known[pr.Target] {
 			continue
 		}
-		rows = append(rows, []any{i64At(idCol, pr.Source), i64At(idCol, pr.Target), int64(pr.Count)})
+		cands = append(cands, cand{i64At(idCol, pr.Source), i64At(idCol, pr.Target), int64(pr.Count)})
 	}
-	return sortTruncate(rows, 20, func(a, b []any) bool {
+	sortByLess(cands, func(a, b cand) bool {
 		return cmpChain(
-			cmpI64Desc(a[2].(int64), b[2].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-			cmpI64Asc(a[1].(int64), b[1].(int64)),
+			cmpI64Desc(a.count, b.count),
+			cmpI64Asc(a.id1, b.id1),
+			cmpI64Asc(a.id2, b.id2),
 		)
-	}), nil
+	})
+	if len(cands) > 20 {
+		cands = cands[:20]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id1, c.id2, c.count}
+	}
+	return rows, nil
 }
 
 // interactionKey is the undirected person-pair key of Q19's projected
