@@ -293,7 +293,12 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	p1ToP2 := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	// Distinct (author, liker) pairs, held in a flat pair-set rather than a
+	// map-of-maps: the inner sets were only iterated (to enumerate distinct
+	// likers and sum their scores), never probed for membership, so one flat
+	// dedup set avoids allocating an inner map per author.
+	type authorLiker struct{ p1, p2 chickpeas.NodeID }
+	seen := map[authorLiker]bool{}
 	var likers []chickpeas.NodeID // message's liker list, reused per message
 	for m1 := range g.Neighbors(target, chickpeas.Incoming, "HAS_TAG") {
 		likers = likers[:0]
@@ -304,38 +309,30 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 			continue
 		}
 		for p1 := range g.Neighbors(m1, chickpeas.Outgoing, "HAS_CREATOR") {
-			set := p1ToP2[p1]
-			if set == nil {
-				set = map[chickpeas.NodeID]bool{}
-				p1ToP2[p1] = set
-			}
 			for _, l := range likers {
-				set[l] = true
+				seen[authorLiker{p1, l}] = true
 			}
 		}
 	}
+	// One pass over the distinct pairs: score each liker lazily (once) and
+	// accumulate it into its author's authority sum.
 	likerScore := map[chickpeas.NodeID]int64{}
-	for _, p2set := range p1ToP2 {
-		for p2 := range p2set {
-			if _, done := likerScore[p2]; done {
-				continue
-			}
-			var s int64
-			for m2 := range g.Neighbors(p2, chickpeas.Incoming, "HAS_CREATOR") {
+	sum := map[chickpeas.NodeID]int64{}
+	for pair := range seen {
+		sc, done := likerScore[pair.p2]
+		if !done {
+			for m2 := range g.Neighbors(pair.p2, chickpeas.Incoming, "HAS_CREATOR") {
 				for range g.Neighbors(m2, chickpeas.Incoming, "LIKES") {
-					s++
+					sc++
 				}
 			}
-			likerScore[p2] = s
+			likerScore[pair.p2] = sc
 		}
+		sum[pair.p1] += sc
 	}
 	type cand struct{ id, score int64 }
-	cands := make([]cand, 0, len(p1ToP2))
-	for p1, p2set := range p1ToP2 {
-		var s int64
-		for p2 := range p2set {
-			s += likerScore[p2]
-		}
+	cands := make([]cand, 0, len(sum))
+	for p1, s := range sum {
 		cands = append(cands, cand{i64At(idCol, p1), s})
 	}
 	sortByLess(cands, func(a, b cand) bool {
