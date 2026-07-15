@@ -77,6 +77,11 @@ type Plan struct {
 	// has no qualifying tie (the common case). Alt itself never carries an
 	// Alt.
 	Alt *Plan
+	// Ties is how many auto-parameterized anchor ties the primary pass
+	// collected. Alt covers the first; a count above one means the rest
+	// stayed on the static fallback (the measurement for whether a fuller
+	// choice mechanism would ever fire).
+	Ties int
 }
 
 // specKind discriminates a stageSpec.

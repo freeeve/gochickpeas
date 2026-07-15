@@ -45,6 +45,7 @@ func Build(q *ast.Query, g graph.Graph) (*Plan, error) {
 	// The adaptive chooser scores primary vs sibling by real first-hop
 	// fan-out and falls back to the primary whenever it cannot score, so
 	// extra unflipped ties cost nothing.
+	p.Ties = len(pc.ties)
 	if len(pc.ties) >= 1 {
 		alt, err := buildWithInColsCtx(q, nil, g, &planCtx{forceReverse: pc.ties[0]})
 		if err == nil && alt != nil {
