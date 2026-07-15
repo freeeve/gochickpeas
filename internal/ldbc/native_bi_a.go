@@ -338,9 +338,10 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 		return [][]any{}, nil
 	}
 	related := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	var ctags []chickpeas.NodeID // comment's tag list, reused per comment
 	for msg := range g.Neighbors(target, chickpeas.Incoming, "HAS_TAG") {
 		for comment := range g.Neighbors(msg, chickpeas.Incoming, "REPLY_OF") {
-			var ctags []chickpeas.NodeID
+			ctags = ctags[:0]
 			hasTarget := false
 			for t := range g.Neighbors(comment, chickpeas.Outgoing, "HAS_TAG") {
 				if t == target {
@@ -361,16 +362,27 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(related))
-	for rt, cs := range related {
-		rows = append(rows, []any{strAt(g, rt, "name"), int64(len(cs))})
+	// Typed rows, boxing only the top 100 -- related spans every co-occurring
+	// tag, far more than the output.
+	type cand struct {
+		name  string
+		count int64
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpStrAsc(a[0].(string), b[0].(string)),
-		)
-	}), nil
+	cands := make([]cand, 0, len(related))
+	for rt, cs := range related {
+		cands = append(cands, cand{strAt(g, rt, "name"), int64(len(cs))})
+	}
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.name, c.count}
+	}
+	return rows, nil
 }
 
 // biQ8 -- central person for a tag (Che_Guevara, 2011-07-20..25
@@ -437,6 +449,7 @@ func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
 	perPerson := map[chickpeas.NodeID]tm{}
 	posts, ok := g.NodesWithLabel("Post")
 	if ok {
+		var stack []chickpeas.NodeID // reply-tree DFS scratch, reused per post
 		for post := range posts.Iter() {
 			pd := i64At(dayCol, post)
 			if pd < startDay || pd > endDay {
@@ -447,7 +460,7 @@ func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
 				continue
 			}
 			var msgs int64
-			stack := []chickpeas.NodeID{post}
+			stack = append(stack[:0], post)
 			for len(stack) > 0 {
 				n := stack[len(stack)-1]
 				stack = stack[:len(stack)-1]
@@ -468,16 +481,24 @@ func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
 			perPerson[creator] = e
 		}
 	}
-	rows := make([][]any, 0, len(perPerson))
+	// Typed rows, sorted/truncated typed, boxing only the top 100 -- perPerson
+	// spans every in-window thread initiator, far more than the output.
+	type cand struct{ id, threads, msgs int64 }
+	cands := make([]cand, 0, len(perPerson))
 	for p, e := range perPerson {
-		rows = append(rows, []any{i64At(idCol, p), e.threads, e.msgs})
+		cands = append(cands, cand{i64At(idCol, p), e.threads, e.msgs})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[2].(int64), b[2].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.msgs, b.msgs), cmpI64Asc(a.id, b.id))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id, c.threads, c.msgs}
+	}
+	return rows, nil
 }
 
 // biQ11 -- friend triangles (India, 2012-09-29..2013-01-01 inclusive).
