@@ -206,21 +206,30 @@ func biQ2(g *chickpeas.Snapshot) ([][]any, error) {
 			c2[k] += v
 		}
 	}
-	rows := make([][]any, 0, len(qualifying))
+	type cand struct {
+		name           string
+		n1, n2, absDif int64
+	}
+	cands := make([]cand, 0, len(qualifying))
 	for t := range qualifying {
 		n1, n2 := c1[t], c2[t]
 		diff := n1 - n2
 		if diff < 0 {
 			diff = -diff
 		}
-		rows = append(rows, []any{strAt(g, t, "name"), n1, n2, diff})
+		cands = append(cands, cand{strAt(g, t, "name"), n1, n2, diff})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[3].(int64), b[3].(int64)),
-			cmpStrAsc(a[0].(string), b[0].(string)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.absDif, b.absDif), cmpStrAsc(a.name, b.name))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.name, c.n1, c.n2, c.absDif}
+	}
+	return rows, nil
 }
 
 // biQ5 -- most active posters of a topic (Abbas_I_of_Persia). Score
@@ -253,16 +262,22 @@ func biQ5(g *chickpeas.Snapshot) ([][]any, error) {
 			agg[person] = e
 		}
 	}
-	rows := make([][]any, 0, len(agg))
+	type cand struct{ id, r, l, m, score int64 }
+	cands := make([]cand, 0, len(agg))
 	for p, s := range agg {
-		rows = append(rows, []any{i64At(idCol, p), s.r, s.l, s.m, s.m + 2*s.r + 10*s.l})
+		cands = append(cands, cand{i64At(idCol, p), s.r, s.l, s.m, s.m + 2*s.r + 10*s.l})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[4].(int64), b[4].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.score, b.score), cmpI64Asc(a.id, b.id))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id, c.r, c.l, c.m, c.score}
+	}
+	return rows, nil
 }
 
 // biQ6 -- most authoritative users on a topic (Arnold_Schwarzenegger).
@@ -279,8 +294,9 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 		return nil, err
 	}
 	p1ToP2 := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	var likers []chickpeas.NodeID // message's liker list, reused per message
 	for m1 := range g.Neighbors(target, chickpeas.Incoming, "HAS_TAG") {
-		var likers []chickpeas.NodeID
+		likers = likers[:0]
 		for liker := range g.Neighbors(m1, chickpeas.Incoming, "LIKES") {
 			likers = append(likers, liker)
 		}
@@ -313,20 +329,26 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 			likerScore[p2] = s
 		}
 	}
-	rows := make([][]any, 0, len(p1ToP2))
+	type cand struct{ id, score int64 }
+	cands := make([]cand, 0, len(p1ToP2))
 	for p1, p2set := range p1ToP2 {
 		var s int64
 		for p2 := range p2set {
 			s += likerScore[p2]
 		}
-		rows = append(rows, []any{i64At(idCol, p1), s})
+		cands = append(cands, cand{i64At(idCol, p1), s})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.score, b.score), cmpI64Asc(a.id, b.id))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id, c.score}
+	}
+	return rows, nil
 }
 
 // biQ7 -- related topics (Enrique_Iglesias). Distinct comments replying
