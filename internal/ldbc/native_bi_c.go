@@ -49,13 +49,21 @@ func biQ3(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		return false
 	}
-	var rows [][]any
+	type cand struct {
+		forumID, cdate, personID, count int64
+		title                           string
+	}
+	var cands []cand
+	// Reused across the forum/post walk: msgs (distinct class-tagged messages
+	// per forum, cleared per forum) and stack (reply-tree DFS, reset per post).
+	msgs := map[chickpeas.NodeID]bool{}
+	var stack []chickpeas.NodeID
 	for city := range g.Neighbors(country, chickpeas.Incoming, "IS_PART_OF") {
 		for person := range g.Neighbors(city, chickpeas.Incoming, "IS_LOCATED_IN") {
 			for forum := range g.Neighbors(person, chickpeas.Incoming, "HAS_MODERATOR") {
-				msgs := map[chickpeas.NodeID]bool{}
+				clear(msgs)
 				for post := range g.Neighbors(forum, chickpeas.Outgoing, "CONTAINER_OF") {
-					stack := []chickpeas.NodeID{post}
+					stack = append(stack[:0], post)
 					for len(stack) > 0 {
 						n := stack[len(stack)-1]
 						stack = stack[:len(stack)-1]
@@ -68,20 +76,25 @@ func biQ3(g *chickpeas.Snapshot) ([][]any, error) {
 					}
 				}
 				if len(msgs) > 0 {
-					rows = append(rows, []any{
-						i64At(idCol, forum), strAt(g, forum, "title"),
-						i64At(cdCol, forum), i64At(idCol, person), int64(len(msgs)),
+					cands = append(cands, cand{
+						i64At(idCol, forum), i64At(cdCol, forum),
+						i64At(idCol, person), int64(len(msgs)), strAt(g, forum, "title"),
 					})
 				}
 			}
 		}
 	}
-	return sortTruncate(rows, 20, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[4].(int64), b[4].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.forumID, b.forumID))
+	})
+	if len(cands) > 20 {
+		cands = cands[:20]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.forumID, c.title, c.cdate, c.personID, c.count}
+	}
+	return rows, nil
 }
 
 // biQ4 -- top message creators (forums created after 2010-01-29). The
@@ -135,16 +148,24 @@ func biQ4(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(members))
+	// Typed top-k: members spans every member of the top-100 forums, far more
+	// than the 100 output rows, so box only the survivors.
+	type cand struct{ id, count int64 }
+	cands := make([]cand, 0, len(members))
 	for p := range members {
-		rows = append(rows, []any{i64At(idCol, p), msgCount[p]})
+		cands = append(cands, cand{i64At(idCol, p), msgCount[p]})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.id, b.id))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id, c.count}
+	}
+	return rows, nil
 }
 
 // biQ10 -- experts in social circle (person 3470, China, MusicalArtist,
@@ -174,12 +195,13 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 	}
 	type expertTag struct{ expert, tag chickpeas.NodeID }
 	counts := map[expertTag]map[chickpeas.NodeID]bool{}
+	var tags []chickpeas.NodeID // message's tag list, reused per message
 	for expert, d := range dist {
 		if d < minDist || d > maxDist || !inCountry[expert] {
 			continue
 		}
 		for msg := range g.Neighbors(expert, chickpeas.Incoming, "HAS_CREATOR") {
-			var tags []chickpeas.NodeID
+			tags = tags[:0]
 			anyClass := false
 			for t := range g.Neighbors(msg, chickpeas.Outgoing, "HAS_TAG") {
 				if classTags[t] {
@@ -201,17 +223,26 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
-	for k, msgs := range counts {
-		rows = append(rows, []any{i64At(idCol, k.expert), strAt(g, k.tag, "name"), int64(len(msgs))})
+	// Typed top-k: box only the top 100 of every (expert,tag) group.
+	type cand struct {
+		id, count int64
+		name      string
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[2].(int64), b[2].(int64)),
-			cmpStrAsc(a[1].(string), b[1].(string)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	cands := make([]cand, 0, len(counts))
+	for k, msgs := range counts {
+		cands = append(cands, cand{i64At(idCol, k.expert), int64(len(msgs)), strAt(g, k.tag, "name")})
+	}
+	sortByLess(cands, func(a, b cand) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name), cmpI64Asc(a.id, b.id))
+	})
+	if len(cands) > 100 {
+		cands = cands[:100]
+	}
+	rows := make([][]any, len(cands))
+	for i, c := range cands {
+		rows[i] = []any{c.id, c.name, c.count}
+	}
+	return rows, nil
 }
 
 // biQ15 -- weighted interaction path (persons 14 -> 16, forums created
@@ -406,14 +437,20 @@ func biQ17(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
+	type outRow struct{ id, count int64 }
+	ranked := make([]outRow, 0, len(counts))
 	for p, ms := range counts {
-		rows = append(rows, []any{i64At(idCol, p), int64(len(ms))})
+		ranked = append(ranked, outRow{i64At(idCol, p), int64(len(ms))})
 	}
-	return sortTruncate(rows, 10, func(a, b []any) bool {
-		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-		)
-	}), nil
+	sortByLess(ranked, func(a, b outRow) bool {
+		return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.id, b.id))
+	})
+	if len(ranked) > 10 {
+		ranked = ranked[:10]
+	}
+	rows := make([][]any, len(ranked))
+	for i, c := range ranked {
+		rows[i] = []any{c.id, c.count}
+	}
+	return rows, nil
 }
