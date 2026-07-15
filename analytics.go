@@ -31,9 +31,14 @@ func ind(directed bool) Direction {
 
 // SSSP is single-source shortest paths over forward rels with additive
 // weights from the weightKey rel property ("" = unit weights); unreachable
-// nodes get +Inf. Wraps Dijkstra.
+// nodes get +Inf. Unit weights make every distance the hop count, so that
+// case runs the BFS -- a unit-weight Dijkstra pays a heap push and pop
+// plus map probes per relationship to rediscover the ordering a BFS queue
+// gives for free (the same dispatch the COST-constant path search takes).
+// A weight key that resolves no column also means unit weights.
 func (g *Snapshot) SSSP(source NodeID, directed bool, weightKey string) []float64 {
-	weight := func(_ NodeID, _ RelRef) float64 { return 1 }
+	out := make([]float64, g.CSRIDSpace())
+	var weight WeightFn
 	if weightKey != "" {
 		if col, ok := g.RelCol(weightKey); ok {
 			f64s := col.F64()
@@ -45,8 +50,18 @@ func (g *Snapshot) SSSP(source NodeID, directed bool, weightKey string) []float6
 			}
 		}
 	}
+	if weight == nil {
+		dists := g.BFSDistances(source, fwd(directed), MatchAll(), -1)
+		for v := range out {
+			if d, ok := dists[NodeID(v)]; ok {
+				out[v] = float64(d)
+			} else {
+				out[v] = math.Inf(1)
+			}
+		}
+		return out
+	}
 	sp := g.Dijkstra(source, fwd(directed), MatchAll(), weight)
-	out := make([]float64, g.CSRIDSpace())
 	for v := range out {
 		if d, ok := sp.Distance(NodeID(v)); ok {
 			out[v] = d

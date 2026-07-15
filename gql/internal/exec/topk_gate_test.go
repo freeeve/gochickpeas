@@ -94,3 +94,34 @@ func TestTopKCompositeKeyUngated(t *testing.T) {
 		t.Fatalf("composite-key path diverged:\n%v\nvs\n%v", gated, ungated)
 	}
 }
+
+// TestSPScratchEpochSafety pins the two epoch-stamp traps the
+// rustychickpeas 097 port hit (their 126 report): (1) lazily-grown dense
+// scratch must never stamp new slots with a value a FUTURE search will
+// use as its epoch (zero-fill + epochs that never take 0 is the
+// invariant); (2) epoch wraparound clears the stamps rather than
+// colliding with survivors.
+func TestSPScratchEpochSafety(t *testing.T) {
+	scr := newSPScratch()
+	fs := scr.begin(4)
+	scr.gen[2] = fs // a reached node in the small search
+	fs2 := scr.begin(8)
+	if fs2 == 0 || fs2+1 == 0 {
+		t.Fatal("an epoch took 0, the never-stamped sentinel")
+	}
+	for i := range 8 {
+		if scr.gen[i] == fs2 || scr.gen[i] == fs2+1 {
+			t.Fatalf("slot %d reads as reached in a fresh search (phantom stamp)", i)
+		}
+	}
+	// Wraparound: force the counter to the clear threshold and verify
+	// survivors from the pre-wrap era cannot alias the new epoch.
+	scr.gen[1] = scr.cur // stamp under the current era
+	scr.cur = ^uint32(0) - 2
+	fs3 := scr.begin(8)
+	for i := range 8 {
+		if scr.gen[i] == fs3 || scr.gen[i] == fs3+1 {
+			t.Fatalf("slot %d survived the epoch wrap as reached", i)
+		}
+	}
+}

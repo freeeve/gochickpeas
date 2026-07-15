@@ -148,3 +148,53 @@ func TestAnalyticsSparseIDs(t *testing.T) {
 		t.Fatal("sparse sssp length")
 	}
 }
+
+// TestSSSPUnitWeightsMatchDijkstra pins the unit-weight BFS dispatch (the
+// third spelling of the constant-weight-Dijkstra bug, found via the
+// rustychickpeas re-grep prescription: it hid in the procedure surface,
+// not the path stage): SSSP with no weight key must equal a unit-weight
+// Dijkstra on every node, +Inf included.
+func TestSSSPUnitWeightsMatchDijkstra(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 256)
+	for range 40 {
+		if _, err := b.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := uint64(0xABCD)
+	next := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+	for range 120 {
+		b.AddRel(chickpeas.NodeID(next()%40), chickpeas.NodeID(next()%40), "R")
+	}
+	g := b.Finalize()
+	for _, directed := range []bool{true, false} {
+		got := g.SSSP(3, directed, "")
+		dir := chickpeas.Both
+		if directed {
+			dir = chickpeas.Outgoing
+		}
+		ref := g.Dijkstra(3, dir, chickpeas.MatchAll(), func(chickpeas.NodeID, chickpeas.RelRef) float64 { return 1 })
+		for v := range got {
+			want, ok := ref.Distance(chickpeas.NodeID(v))
+			if !ok {
+				want = math.Inf(1)
+			}
+			if got[v] != want {
+				t.Fatalf("directed=%v node %d: BFS sssp %v != unit dijkstra %v", directed, v, got[v], want)
+			}
+		}
+	}
+	// A weight key with no column is unit weights too.
+	got := g.SSSP(3, true, "nosuchkey")
+	ref := g.SSSP(3, true, "")
+	for v := range got {
+		if got[v] != ref[v] {
+			t.Fatalf("missing-column weights diverge at %d: %v vs %v", v, got[v], ref[v])
+		}
+	}
+}
