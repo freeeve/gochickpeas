@@ -27,7 +27,7 @@ ISO GQL. Legend:
 | UNION DISTINCT keyword | OK | the default, spelled explicitly |
 | EXCEPT / INTERSECT | OK | distinct-set semantics |
 | OTHERWISE | reject | |
-| CALL { subquery }, CALL (imports) { } | OK | |
+| CALL { subquery }, CALL (imports) { } | OK | scope list is authoritative for every UNION branch; CALL () { } imports nothing (outer refs inside are bind errors) |
 | CALL proc(...) YIELD | OK | fixed registry: wcc, algo.*, fts.search, geo.* |
 | USE graph | reject | single-graph embedded engine |
 | EXPLAIN / PROFILE prefix | OK | |
