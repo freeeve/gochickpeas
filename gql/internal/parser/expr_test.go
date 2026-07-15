@@ -311,17 +311,52 @@ func TestParamsParse(t *testing.T) {
 	}
 }
 
-func TestStringsNoEscapeProcessing(t *testing.T) {
-	e := retExpr(t, `RETURN 'a\nb' AS s`)
-	l := e.(*ast.Lit)
-	if l.Value != ast.StrLit(`a\nb`) {
-		t.Fatalf("string kept raw: %+v", l.Value)
+func TestStringEscapeProcessing(t *testing.T) {
+	// (Flipped from TestStringsNoEscapeProcessing: escapes now process --
+	// task 122 lifted the GRAMMAR.md restriction.)
+	if e := retExpr(t, `RETURN 'a\nb' AS s`); e.(*ast.Lit).Value != ast.StrLit("a\nb") {
+		t.Fatalf("backslash-n = %+v", e)
+	}
+	if e := retExpr(t, `RETURN 'it''s' AS s`); e.(*ast.Lit).Value != ast.StrLit("it's") {
+		t.Fatalf("quote doubling = %+v", e)
+	}
+	if e := retExpr(t, `RETURN 'u:\u0041' AS s`); e.(*ast.Lit).Value != ast.StrLit("u:A") {
+		t.Fatalf("unicode escape = %+v", e)
+	}
+	if e := retExpr(t, `RETURN 'back\\slash' AS s`); e.(*ast.Lit).Value != ast.StrLit(`back\slash`) {
+		t.Fatalf("escaped backslash = %+v", e)
 	}
 	e2 := retExpr(t, `RETURN "double 'quoted'" AS s`)
 	if e2.(*ast.Lit).Value != ast.StrLit("double 'quoted'") {
 		t.Fatalf("double-quoted = %+v", e2)
 	}
 	mustErr(t, "RETURN 'unterminated", "unterminated string")
+	mustErr(t, `RETURN 'bad \q escape' AS s`, "unknown string escape")
+	mustErr(t, `RETURN '\u12' AS s`, "four hex digits")
+}
+
+func TestLexerConformanceAdditions(t *testing.T) {
+	// Scientific floats, both spellings; `1e` stays int + ident (error here).
+	if e := retExpr(t, "RETURN 1.5e2 AS x"); e.(*ast.Lit).Value != ast.FloatLit(150) {
+		t.Fatalf("1.5e2 = %+v", e)
+	}
+	if e := retExpr(t, "RETURN 2E-1 AS x"); e.(*ast.Lit).Value != ast.FloatLit(0.2) {
+		t.Fatalf("2E-1 = %+v", e)
+	}
+	// Comments, line and block.
+	if e := retExpr(t, "RETURN /* mid */ 7 AS x // tail"); e.(*ast.Lit).Value != ast.IntLit(7) {
+		t.Fatalf("comments = %+v", e)
+	}
+	mustErr(t, "RETURN /* open 1", "unterminated block comment")
+	// Unicode identifiers.
+	if _, err := Parse("MATCH (héllo) RETURN héllo"); err != nil {
+		t.Fatalf("unicode ident: %v", err)
+	}
+	// Backtick-delimited identifiers (spaces allowed).
+	if _, err := Parse("MATCH (n:`Weird Label`) RETURN n"); err != nil {
+		t.Fatalf("delimited ident: %v", err)
+	}
+	mustErr(t, "MATCH (n:`unterminated) RETURN n", "unterminated delimited identifier")
 }
 
 func TestExcludedSurfaceRejections(t *testing.T) {

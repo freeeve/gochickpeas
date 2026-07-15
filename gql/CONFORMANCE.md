@@ -85,9 +85,9 @@ pattern rejects for the same reason.
 | map literal {k: v} | OK | |
 | pattern comprehension / reduce / map projection | reject | pointer errors suggest rewrites |
 | temporal literals DATE '...' / DURATION '...' | reject | constructor functions only |
-| scientific-notation floats (1.5e2) | reject | GRAMMAR.md lexical restriction |
-| string escapes ('' doubling, backslash) | divergent | no escape processing (GRAMMAR.md); backslash stays literal |
-| comments // and /* */ | reject | GRAMMAR.md: no comments |
+| scientific-notation floats (1.5e2, 2E-1) | OK | |
+| string escapes ('' doubling, backslash incl. \\uXXXX) | OK | unknown escapes error |
+| comments // and /* */ | OK | block comments must terminate |
 
 ## Functions
 
@@ -129,6 +129,7 @@ ROLLBACK.
 Zero panics across the corpus, including 200-deep nesting, 300-term
 boolean chains, unterminated strings, overflow literals, empty input, and
 near-miss keywords. Division by zero returns null. Unicode string
-literals work; unicode identifiers and backtick-quoted identifiers reject
-(byte-oriented lexer; the error shows a mangled byte -- known quality
-issue).
+literals, unicode identifiers, and backtick-delimited identifiers all
+work (ISO delimits identifiers with double quotes -- a string quote here,
+so backtick is the divergent spelling; reserved words stay reserved even
+delimited).

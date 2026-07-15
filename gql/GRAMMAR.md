@@ -10,15 +10,24 @@ Cypher spellings **[cypher]**.
 
 Notation: EBNF-ish; `[x]` optional, `x*` repetition, `|` alternation,
 quoted text literal and case-insensitive. Whitespace separates tokens and
-is otherwise insignificant; there are no comments **[restriction]**.
+is otherwise insignificant. Comments: `//` to end of line, `/* ... */`
+(non-nesting, must terminate).
 
 ## Lexical rules
 
 ```
-ident   = (ALPHA | '_') (ALPHA | DIGIT | '_')*        -- not a reserved word
+ident   = (LETTER | '_') (LETTER | DIGIT | '_')*       -- unicode letters; not a reserved word
+        | '`' (!'`' ANY)+ '`'                          -- delimited (spaces etc.); reserved
+                                                       -- checks still apply by text [divergence:
+                                                       -- ISO delimits with double quotes, which
+                                                       -- are a string quote here]
 integer = DIGIT+
-float   = DIGIT+ '.' DIGIT+                            -- 1..3 lexes as int '..' int
-string  = "'" (!"'" ANY)* "'" | '"' (!'"' ANY)* '"'    -- NO escape processing
+float   = DIGIT+ '.' DIGIT+ [EXP] | DIGIT+ EXP         -- EXP = ('e'|'E') ['+'|'-'] DIGIT+;
+                                                       -- 1..3 lexes as int '..' int; `1e` with no
+                                                       -- digits stays int + ident
+string  = "'" char* "'" | '"' char* '"'                -- quote doubling ('') and backslash
+                                                       -- escapes: \\ \' \" \` \n \t \r \uXXXX;
+                                                       -- an unknown escape is an error
 param   = '$' identchar+                               -- name skips the reserved check ($end ok)
 ```
 

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("MATCH()RETURN 0//LIMIT 0")

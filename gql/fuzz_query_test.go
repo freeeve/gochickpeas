@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/value"
+	"strings"
 )
 
 var (
@@ -179,8 +180,11 @@ func FuzzQuery(f *testing.F) {
 			}
 		}
 
-		// LIMIT bounds the row count.
-		if m := fuzzLimit.FindStringSubmatch(q); m != nil && !multiPart {
+		// LIMIT bounds the row count. The scan is textual, so a query
+		// containing a comment may have commented its LIMIT out -- skip
+		// the invariant there (comments landed with task 122).
+		hasComment := strings.Contains(q, "//") || strings.Contains(q, "/*")
+		if m := fuzzLimit.FindStringSubmatch(q); m != nil && !multiPart && !hasComment {
 			n, _ := strconv.Atoi(m[1])
 			if len(keys) > n {
 				t.Fatalf("LIMIT %d yielded %d rows for %q", n, len(keys), q)
