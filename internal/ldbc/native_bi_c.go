@@ -193,8 +193,14 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 	for t := range g.Neighbors(tc, chickpeas.Incoming, "HAS_TYPE") {
 		classTags[t] = true
 	}
+	// Distinct messages per (expert, tag), counted via a flat (expert, tag,
+	// message) dedup set plus a per-group counter incremented on first sight,
+	// rather than a map-of-maps: the inner sets were only read for their
+	// length, so this avoids allocating an inner map per (expert, tag) group.
 	type expertTag struct{ expert, tag chickpeas.NodeID }
-	counts := map[expertTag]map[chickpeas.NodeID]bool{}
+	type expertTagMsg struct{ expert, tag, msg chickpeas.NodeID }
+	seen := map[expertTagMsg]bool{}
+	counts := map[expertTag]int64{}
 	var tags []chickpeas.NodeID // message's tag list, reused per message
 	for expert, d := range dist {
 		if d < minDist || d > maxDist || !inCountry[expert] {
@@ -213,13 +219,11 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 				continue
 			}
 			for _, t := range tags {
-				k := expertTag{expert, t}
-				set := counts[k]
-				if set == nil {
-					set = map[chickpeas.NodeID]bool{}
-					counts[k] = set
+				triple := expertTagMsg{expert, t, msg}
+				if !seen[triple] {
+					seen[triple] = true
+					counts[expertTag{expert, t}]++
 				}
-				set[msg] = true
 			}
 		}
 	}
@@ -229,8 +233,8 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 		name      string
 	}
 	cands := make([]cand, 0, len(counts))
-	for k, msgs := range counts {
-		cands = append(cands, cand{i64At(idCol, k.expert), int64(len(msgs)), strAt(g, k.tag, "name")})
+	for k, c := range counts {
+		cands = append(cands, cand{i64At(idCol, k.expert), c, strAt(g, k.tag, "name")})
 	}
 	sortByLess(cands, func(a, b cand) bool {
 		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name), cmpI64Asc(a.id, b.id))

@@ -359,7 +359,13 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 	if !ok {
 		return [][]any{}, nil
 	}
-	related := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	// Distinct comments per related tag, counted via a flat (tag, comment)
+	// pair-set rather than a map-of-maps: the inner sets were only read for
+	// their length, so one flat dedup set plus a per-tag counter incremented
+	// on first sight avoids allocating an inner map per co-occurring tag.
+	type rtComment struct{ rt, comment chickpeas.NodeID }
+	seen := map[rtComment]bool{}
+	counts := map[chickpeas.NodeID]int64{}
 	var ctags []chickpeas.NodeID // comment's tag list, reused per comment
 	for msg := range g.Neighbors(target, chickpeas.Incoming, "HAS_TAG") {
 		for comment := range g.Neighbors(msg, chickpeas.Incoming, "REPLY_OF") {
@@ -375,24 +381,23 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 				continue
 			}
 			for _, rt := range ctags {
-				set := related[rt]
-				if set == nil {
-					set = map[chickpeas.NodeID]bool{}
-					related[rt] = set
+				pair := rtComment{rt, comment}
+				if !seen[pair] {
+					seen[pair] = true
+					counts[rt]++
 				}
-				set[comment] = true
 			}
 		}
 	}
-	// Typed rows, boxing only the top 100 -- related spans every co-occurring
+	// Typed rows, boxing only the top 100 -- counts spans every co-occurring
 	// tag, far more than the output.
 	type cand struct {
 		name  string
 		count int64
 	}
-	cands := make([]cand, 0, len(related))
-	for rt, cs := range related {
-		cands = append(cands, cand{strAt(g, rt, "name"), int64(len(cs))})
+	cands := make([]cand, 0, len(counts))
+	for rt, c := range counts {
+		cands = append(cands, cand{strAt(g, rt, "name"), c})
 	}
 	sortByLess(cands, func(a, b cand) bool {
 		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name))
