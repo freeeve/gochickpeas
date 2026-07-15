@@ -9,6 +9,7 @@
 package gql
 
 import (
+	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -89,6 +90,19 @@ func TestParallelRelMultiplicityConsistency(t *testing.T) {
 	q := "MATCH (x:X)-[:R1]->(m:M), (m)-[:R2]->(a:AN), (x)-[:R3]->(a) RETURN count(*) AS n"
 	if n := oneCount(t, g2, q); n != 2 {
 		t.Fatalf("semijoin close count = %d, want 2 (per-rel multiplicity)", n)
+	}
+	// Plan-shape guard (task 152): the count above only defends the semijoin's
+	// per-rel multiplicity if the close actually TAKES the rebind-semijoin
+	// rewrite. Without this, a planner regression to an enumerated/reversed or
+	// kernel arrangement -- which still counts 2 -- would leave the test green
+	// while no longer exercising the semijoin emission at all. Assert the plan
+	// carries the [into bound] marker so such a regression turns this red.
+	ex, err := Explain(g2, q)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if !strings.Contains(ex, "[into bound]") {
+		t.Fatalf("semijoin close no longer plans as a rebind semijoin -- [into bound] absent, so count 2 stops exercising the semijoin multiplicity path:\n%s", ex)
 	}
 }
 
