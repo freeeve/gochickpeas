@@ -55,7 +55,8 @@ func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		}
 		posts, _ := g.NodesWithLabel("Post")
 		reach := g.Neighborhood(person, chickpeas.Both, g.Match("KNOWS"), 2, 2)
-		var rows [][]any
+		type cand struct{ id, score int64 }
+		var cands []cand
 		for foaf := range reach.Iter() {
 			bmon, bdom := i64At(bmonCol, foaf), i64At(bdomCol, foaf)
 			if !((bmon == month && bdom >= 21) || (bmon == next && bdom < 22)) {
@@ -79,14 +80,19 @@ func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 					uncommon++
 				}
 			}
-			rows = append(rows, []any{i64At(idCol, foaf), common - uncommon})
+			cands = append(cands, cand{i64At(idCol, foaf), common - uncommon})
 		}
-		return sortTruncate(rows, 10, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-			)
-		}), nil
+		sortByLess(cands, func(a, b cand) bool {
+			return cmpChain(cmpI64Desc(a.score, b.score), cmpI64Asc(a.id, b.id))
+		})
+		if len(cands) > 10 {
+			cands = cands[:10]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.id, c.score}
+		}
+		return rows, nil
 	}, nil
 }
 
@@ -129,7 +135,11 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 		}
 		reach := g.Neighborhood(person, chickpeas.Both, g.Match("KNOWS"), 1, 2)
-		var rows [][]any
+		type cand struct {
+			id, from int64
+			name     string
+		}
+		var cands []cand
 		for p := range reach.Iter() {
 			for e := range g.Rels(p, chickpeas.Outgoing, "WORK_AT") {
 				if !inCountry[e.Neighbor] {
@@ -139,16 +149,24 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				if !ok || from >= year {
 					continue
 				}
-				rows = append(rows, []any{i64At(idCol, p), strAt(g, e.Neighbor, "name"), from})
+				cands = append(cands, cand{i64At(idCol, p), from, strAt(g, e.Neighbor, "name")})
 			}
 		}
-		return sortTruncate(rows, 10, func(a, b []any) bool {
+		sortByLess(cands, func(a, b cand) bool {
 			return cmpChain(
-				cmpI64Asc(a[2].(int64), b[2].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-				-cmpStrAsc(a[1].(string), b[1].(string)),
+				cmpI64Asc(a.from, b.from),
+				cmpI64Asc(a.id, b.id),
+				-cmpStrAsc(a.name, b.name),
 			)
-		}), nil
+		})
+		if len(cands) > 10 {
+			cands = cands[:10]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.id, c.name, c.from}
+		}
+		return rows, nil
 	}, nil
 }
 
@@ -179,7 +197,8 @@ func icIC12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			return false
 		}
 		posts, _ := g.NodesWithLabel("Post")
-		var rows [][]any
+		type cand struct{ id, count int64 }
+		var cands []cand
 		for friend := range g.Neighbors(person, chickpeas.Both, "KNOWS") {
 			var count int64
 			for c := range g.Neighbors(friend, chickpeas.Incoming, "HAS_CREATOR") {
@@ -199,15 +218,20 @@ func icIC12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 			if count > 0 {
-				rows = append(rows, []any{i64At(idCol, friend), count})
+				cands = append(cands, cand{i64At(idCol, friend), count})
 			}
 		}
-		return sortTruncate(rows, 20, func(a, b []any) bool {
-			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-			)
-		}), nil
+		sortByLess(cands, func(a, b cand) bool {
+			return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.id, b.id))
+		})
+		if len(cands) > 20 {
+			cands = cands[:20]
+		}
+		rows := make([][]any, len(cands))
+		for i, c := range cands {
+			rows[i] = []any{c.id, c.count}
+		}
+		return rows, nil
 	}, nil
 }
 
