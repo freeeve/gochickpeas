@@ -12,6 +12,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"math"
 )
 
 // aggState is one aggregate accumulator, allocated once per group per
@@ -26,6 +27,8 @@ type aggState struct {
 	sumF    float64
 	avgSum  float64
 	avgN    int64
+	sdMean  float64
+	sdM2    float64
 	kind    plan.AggKind
 	isFloat bool
 	any     bool
@@ -52,6 +55,15 @@ func (s *aggState) update(arg value.Value, present bool) {
 		if f, ok := arg.AsFloat(); ok {
 			s.avgSum += f
 			s.avgN++
+		}
+	case plan.AggStddevSamp, plan.AggStddevPop:
+		// Welford: numerically stable single pass; non-numeric args skip,
+		// like avg.
+		if f, ok := arg.AsFloat(); ok {
+			s.avgN++
+			d := f - s.sdMean
+			s.sdMean += d / float64(s.avgN)
+			s.sdM2 += d * (f - s.sdMean)
 		}
 	}
 	// AggMin/AggMax/AggCollect are folded on the aggregator's overflow slabs,
@@ -82,6 +94,16 @@ func (s *aggState) finalize() value.Value {
 			return value.Null()
 		}
 		return value.Float(s.avgSum / float64(s.avgN))
+	case plan.AggStddevSamp:
+		if s.avgN < 2 {
+			return value.Float(0) // Neo4j's stdev: 0 on empty/single
+		}
+		return value.Float(math.Sqrt(s.sdM2 / float64(s.avgN-1)))
+	case plan.AggStddevPop:
+		if s.avgN == 0 {
+			return value.Float(0)
+		}
+		return value.Float(math.Sqrt(s.sdM2 / float64(s.avgN)))
 	}
 	// AggMin/AggMax/AggCollect finalize off the aggregator's overflow slabs.
 	return value.Null()

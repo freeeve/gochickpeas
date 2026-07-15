@@ -159,6 +159,11 @@ const (
 	AggMax
 	// AggCollect is collect(x).
 	AggCollect
+	// AggStddevSamp / AggStddevPop are the sample / population standard
+	// deviations (Welford accumulation; insufficient rows finalize to 0,
+	// matching Neo4j's stdev/stdevp).
+	AggStddevSamp
+	AggStddevPop
 )
 
 // AggCol is one aggregate output column.

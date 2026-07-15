@@ -47,6 +47,9 @@ func (s *SnapshotGraph) HasLabel(node chickpeas.NodeID, label string) bool {
 	return s.g.HasLabel(node, label)
 }
 
+// LabelNames lists the graph's labels.
+func (s *SnapshotGraph) LabelNames() []string { return s.g.Labels() }
+
 // NodesWithLabel is the shared label-index set; nil when the label is
 // unknown.
 func (s *SnapshotGraph) NodesWithLabel(label string) *nodeset.Set {

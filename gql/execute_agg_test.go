@@ -10,6 +10,7 @@ import (
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"math"
 )
 
 // intCol collects an integer column preserving result order.
@@ -367,5 +368,51 @@ func TestSumInt64Overflow(t *testing.T) {
 	empty := chickpeas.NewBuilder(1, 1).Finalize()
 	if v := sumOf(empty); v.IsNull() {
 		t.Fatalf("empty sum = %v, want 0", v)
+	}
+}
+
+// TestStddevAggregates pins the Welford accumulators against hand-derived
+// values (121): Person ages 25/30/35 -- samp = sqrt(50/2) = 5, pop =
+// sqrt(50/3); DISTINCT collapses duplicates first; empty and single
+// groups finalize to 0, matching Neo4j.
+func TestStddevAggregates(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 2)
+	for _, age := range []int64{25, 30, 35, 35} { // 35 duplicated for DISTINCT
+		n, err := b.AddNode("P")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(n, "age", age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lone, err := b.AddNode("Lone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = b.SetProp(lone, "age", int64(50))
+	g := b.Finalize()
+	one := func(q string) float64 {
+		t.Helper()
+		rows := runBoth(t, g, q)
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatalf("no row: %s", q)
+		}
+		v, _ := r.GetAt(0)
+		f, _ := v.AsFloat()
+		return f
+	}
+	if got := one("MATCH (p:P) RETURN stddev_samp(DISTINCT p.age) AS s"); got != 5 {
+		t.Fatalf("stddev_samp(DISTINCT) = %v, want 5", got)
+	}
+	if got, want := one("MATCH (p:P) RETURN stddev_pop(DISTINCT p.age) AS s"), math.Sqrt(50.0/3); math.Abs(got-want) > 1e-12 {
+		t.Fatalf("stddev_pop(DISTINCT) = %v, want %v", got, want)
+	}
+	if got := one("MATCH (p:Lone) RETURN stddev_samp(p.age) AS s"); got != 0 {
+		t.Fatalf("single-row stddev_samp = %v, want 0", got)
+	}
+	if got := one("MATCH (p:Nope) RETURN stddev_pop(p.age) AS s"); got != 0 {
+		t.Fatalf("empty stddev_pop = %v, want 0", got)
 	}
 }

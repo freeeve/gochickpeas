@@ -78,7 +78,7 @@ pattern rejects for the same reason.
 | SAME / ALL_DIFFERENT / PROPERTY_EXISTS | reject | unknown function |
 | CASE (searched + simple) | OK | |
 | CAST to INT/FLOAT/STRING/BOOL | OK | temporal targets reject |
-| COALESCE | OK | NULLIF rejects |
+| COALESCE, NULLIF | OK | |
 | $name parameters | OK | positional parameters reject |
 | list literal / index / slice / comprehension | OK | |
 | all/any/none/single(x IN l WHERE p) | OK | |
@@ -94,21 +94,28 @@ pattern rejects for the same reason.
 | Group | Status | Notes |
 |---|---|---|
 | count(*) / count / sum / avg / min / max / collect (+ DISTINCT) | OK | collect_list alias too |
-| stddev_* / percentile_* | reject | |
+| stddev_samp / stddev_pop (+ DISTINCT) | OK | Welford; 0 on empty/single, matching Neo4j |
+| percentile_* | reject | two-arg aggregate machinery pending |
 | size, substring, left, right, upper, lower | OK | |
-| char_length / cardinality / trim / ltrim / rtrim / normalize | reject | |
+| char_length, cardinality, trim, ltrim, rtrim | OK | char_length counts runes |
+| normalize | reject | needs unicode tables (x/text); deliberate |
 | abs, ceil, floor, round, sign, sqrt | OK | |
-| mod / power / exp / ln / log10 / trig | reject | |
+| mod, power, exp, ln, log10, sin/cos/tan/asin/acos/atan, degrees, radians | OK | non-finite results fold to null |
 | toInteger, toFloat, toString, toBoolean, coalesce, range | OK | |
 | id, type, startNode, endNode, nodes, relationships, length | OK | |
-| element_id / labels / properties / head / last / tail | reject | |
+| element_id, labels, head, last, tail | OK | |
+| properties | reject | needs a column-enumeration engine API; deliberate |
 | date, datetime, localdatetime, duration constructors | OK | see defect note below |
 | temporal component access (.year .month .day .hour ...) | OK on datetime/localdatetime | see defect note below |
 
 **Known defects (open tasks):** `date()` returns a comparable YYYYMMDD
-integer, and component access then misreads it as epoch-millis --
-`date('2024-01-02').year` returns 1970. Duration values answer null for
-every component (`duration({hours: 2}).hours` is null).
+integer for string args (component access misreads it as epoch-millis:
+`date('2024-01-02').year` returns 1970) and NULL for int/temporal args --
+including BI Q16's own spelling. The fix (a real Date temporal) flips
+rows pinned by the cross-engine parity references, which encode the same
+bug, so it is parked as task 135 pending coordinated reference
+re-emission. Duration components were fixed (Neo4j group convention,
+plural accessors); temporal accessors stay singular.
 
 ## Write / DDL / session surface
 

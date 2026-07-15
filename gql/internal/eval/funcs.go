@@ -46,6 +46,29 @@ const (
 	FuncCoalesce
 	FuncLower
 	FuncUpper
+	FuncCharLength
+	FuncCardinality
+	FuncTrim
+	FuncLTrim
+	FuncRTrim
+	FuncMod
+	FuncPower
+	FuncExp
+	FuncLn
+	FuncLog10
+	FuncSin
+	FuncCos
+	FuncTan
+	FuncAsin
+	FuncAcos
+	FuncAtan
+	FuncDegrees
+	FuncRadians
+	FuncNullIf
+	FuncHead
+	FuncLast
+	FuncTail
+	FuncElementID
 )
 
 // ResolveFuncOp resolves a scalar-function name (case-insensitive); ok is
@@ -104,6 +127,52 @@ func ResolveFuncOp(name string) (FuncOp, bool) {
 		return FuncLower, true
 	case "upper", "toupper":
 		return FuncUpper, true
+	case "char_length", "character_length":
+		return FuncCharLength, true
+	case "cardinality":
+		return FuncCardinality, true
+	case "trim":
+		return FuncTrim, true
+	case "ltrim":
+		return FuncLTrim, true
+	case "rtrim":
+		return FuncRTrim, true
+	case "mod":
+		return FuncMod, true
+	case "power", "pow":
+		return FuncPower, true
+	case "exp":
+		return FuncExp, true
+	case "ln":
+		return FuncLn, true
+	case "log10":
+		return FuncLog10, true
+	case "sin":
+		return FuncSin, true
+	case "cos":
+		return FuncCos, true
+	case "tan":
+		return FuncTan, true
+	case "asin":
+		return FuncAsin, true
+	case "acos":
+		return FuncAcos, true
+	case "atan":
+		return FuncAtan, true
+	case "degrees":
+		return FuncDegrees, true
+	case "radians":
+		return FuncRadians, true
+	case "nullif":
+		return FuncNullIf, true
+	case "head":
+		return FuncHead, true
+	case "last":
+		return FuncLast, true
+	case "tail":
+		return FuncTail, true
+	case "element_id", "elementid":
+		return FuncElementID, true
 	}
 	return 0, false
 }
@@ -117,7 +186,7 @@ func IsKnownScalarFunc(name string) bool {
 		return true
 	}
 	l := strings.ToLower(name)
-	return l == "startnode" || l == "endnode" || l == "type"
+	return l == "startnode" || l == "endnode" || l == "type" || l == "labels"
 }
 
 // evalScalarFunc evaluates a non-aggregate function call. Aggregates never
@@ -152,6 +221,22 @@ func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]i
 				if name, ok := ctx.G.RelTypeAt(pos); ok {
 					return value.Str(name)
 				}
+			}
+		}
+		return value.Null()
+	case "labels":
+		// Composed from the label registry + membership: label counts are
+		// small, so the per-call sweep beats adding a per-node enumeration
+		// to the graph seam.
+		if len(argv) > 0 {
+			if id, ok := argv[0].AsNode(); ok {
+				var out []value.Value
+				for _, l := range ctx.G.LabelNames() {
+					if ctx.G.HasLabel(id, l) {
+						out = append(out, value.Str(l))
+					}
+				}
+				return value.List(out)
 			}
 		}
 		return value.Null()
@@ -362,6 +447,124 @@ func ApplyFunc(op FuncOp, argv []value.Value) value.Value {
 			return value.Str(strings.ToLower(s))
 		}
 		return value.Str(strings.ToUpper(s))
+	case FuncCharLength:
+		if s, ok := arg(argv, 0).AsStr(); ok {
+			return value.Int(int64(utf8.RuneCountInString(s)))
+		}
+		return value.Null()
+	case FuncCardinality:
+		if l, ok := arg(argv, 0).AsList(); ok {
+			return value.Int(int64(len(l)))
+		}
+		if m, ok := arg(argv, 0).AsMap(); ok {
+			return value.Int(int64(len(m)))
+		}
+		return value.Null()
+	case FuncTrim, FuncLTrim, FuncRTrim:
+		s, ok := arg(argv, 0).AsStr()
+		if !ok {
+			return value.Null()
+		}
+		switch op {
+		case FuncTrim:
+			return value.Str(strings.TrimSpace(s))
+		case FuncLTrim:
+			return value.Str(strings.TrimLeft(s, " \t\n\r"))
+		default:
+			return value.Str(strings.TrimRight(s, " \t\n\r"))
+		}
+	case FuncMod:
+		if a, ok := arg(argv, 0).AsInt(); ok {
+			if b, ok := arg(argv, 1).AsInt(); ok && b != 0 {
+				return value.Int(a % b)
+			}
+			if bf, ok := arg(argv, 1).AsFloat(); ok && bf != 0 {
+				return value.Float(math.Mod(float64(a), bf))
+			}
+			return value.Null()
+		}
+		if a, ok := arg(argv, 0).AsFloat(); ok {
+			if b, ok := arg(argv, 1).AsFloat(); ok && b != 0 {
+				return value.Float(math.Mod(a, b))
+			}
+		}
+		return value.Null()
+	case FuncPower:
+		a, ok1 := arg(argv, 0).AsFloat()
+		b, ok2 := arg(argv, 1).AsFloat()
+		if !ok1 || !ok2 {
+			return value.Null()
+		}
+		return value.Float(math.Pow(a, b))
+	case FuncExp, FuncLn, FuncLog10, FuncSin, FuncCos, FuncTan,
+		FuncAsin, FuncAcos, FuncAtan, FuncDegrees, FuncRadians:
+		x, ok := arg(argv, 0).AsFloat()
+		if !ok {
+			return value.Null()
+		}
+		var r float64
+		switch op {
+		case FuncExp:
+			r = math.Exp(x)
+		case FuncLn:
+			r = math.Log(x)
+		case FuncLog10:
+			r = math.Log10(x)
+		case FuncSin:
+			r = math.Sin(x)
+		case FuncCos:
+			r = math.Cos(x)
+		case FuncTan:
+			r = math.Tan(x)
+		case FuncAsin:
+			r = math.Asin(x)
+		case FuncAcos:
+			r = math.Acos(x)
+		case FuncAtan:
+			r = math.Atan(x)
+		case FuncDegrees:
+			r = x * 180 / math.Pi
+		default:
+			r = x * math.Pi / 180
+		}
+		if math.IsNaN(r) || math.IsInf(r, 0) {
+			return value.Null()
+		}
+		return value.Float(r)
+	case FuncNullIf:
+		a, b := arg(argv, 0), arg(argv, 1)
+		if value.Equal(a, b) {
+			return value.Null()
+		}
+		return a
+	case FuncHead:
+		if l, ok := arg(argv, 0).AsList(); ok && len(l) > 0 {
+			return l[0]
+		}
+		return value.Null()
+	case FuncLast:
+		if l, ok := arg(argv, 0).AsList(); ok && len(l) > 0 {
+			return l[len(l)-1]
+		}
+		return value.Null()
+	case FuncTail:
+		if l, ok := arg(argv, 0).AsList(); ok {
+			if len(l) <= 1 {
+				return value.List(nil)
+			}
+			out := make([]value.Value, len(l)-1)
+			copy(out, l[1:])
+			return value.List(out)
+		}
+		return value.Null()
+	case FuncElementID:
+		if id, ok := arg(argv, 0).AsNode(); ok {
+			return value.Str(strconv.FormatUint(uint64(id), 10))
+		}
+		if pos, ok := arg(argv, 0).AsRel(); ok {
+			return value.Str("r" + strconv.FormatUint(uint64(pos), 10))
+		}
+		return value.Null()
 	}
 	return value.Null()
 }

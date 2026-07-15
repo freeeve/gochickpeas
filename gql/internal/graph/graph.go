@@ -39,6 +39,10 @@ type Graph interface {
 
 	// HasLabel reports whether node carries label.
 	HasLabel(node chickpeas.NodeID, label string) bool
+	// LabelNames lists every label the graph defines (the labels()
+	// function composes per-node label lists from this plus HasLabel;
+	// label counts are small).
+	LabelNames() []string
 	// NodesWithLabel is the label scan's id set (shared; nil when the label
 	// is unknown).
 	NodesWithLabel(label string) *nodeset.Set
