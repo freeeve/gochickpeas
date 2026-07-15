@@ -154,6 +154,8 @@ func fmtLabelExpr(e *ast.LabelExpr) string {
 	switch e.Kind {
 	case ast.LabelName:
 		return e.Name
+	case ast.LabelWild:
+		return "%"
 	case ast.LabelAnd:
 		return "(" + fmtLabelExpr(e.L) + "&" + fmtLabelExpr(e.R) + ")"
 	case ast.LabelOr:

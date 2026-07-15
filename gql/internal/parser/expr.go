@@ -64,14 +64,20 @@ func (p *parser) parseBP(minBP int) (ast.Expr, error) {
 		if !ok || bp <= minBP {
 			return lhs, nil
 		}
+		isMod := p.peek().Kind == TokPercent
 		p.i += width
 		rhs, rerr := p.parseBP(bp)
 		if rerr != nil {
 			return nil, rerr
 		}
-		if isIn {
+		switch {
+		case isMod:
+			// `a % b` is parse-time sugar for mod(a, b) -- one evaluation
+			// path, multiplicative precedence.
+			lhs = &ast.Func{Name: "mod", Args: []ast.Expr{lhs, rhs}}
+		case isIn:
 			lhs = &ast.In{Expr: lhs, List: rhs}
-		} else {
+		default:
 			lhs = &ast.Binary{Op: op, LHS: lhs, RHS: rhs}
 		}
 	}
@@ -149,6 +155,8 @@ func (p *parser) peekInfix() (op ast.BinOp, bp, width int, isIn, ok bool) {
 		return ast.OpMul, bpMul, 1, false, true
 	case TokSlash:
 		return ast.OpDiv, bpMul, 1, false, true
+	case TokPercent:
+		return ast.OpMul, bpMul, 1, false, true // op unused: %% builds mod(a,b)
 	}
 	return 0, 0, 0, false, false
 }

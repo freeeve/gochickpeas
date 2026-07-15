@@ -187,6 +187,9 @@ type MatchStage struct {
 	// uniqueness scope spanning its comma patterns and any planner splits
 	// (ISO GQL's DIFFERENT EDGES default / openCypher rel isomorphism).
 	Scope uint32
+	// Walk is the REPEATABLE ELEMENTS match mode: this clause's expands
+	// take no part in relationship-uniqueness marking.
+	Walk bool
 }
 
 // RelUniq is a rel-binding op's MATCH-scope relationship-uniqueness

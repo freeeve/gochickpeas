@@ -30,20 +30,22 @@ const (
 	TokComma    // ,
 	TokDot      // .
 	TokDotDot   // ..
-	TokColon    // :
-	TokPipe     // |
-	TokAmp      // &
-	TokBang     // !
-	TokEq       // =
-	TokNeq      // <>
-	TokLt       // <
-	TokLte      // <=
-	TokGt       // >
-	TokGte      // >=
-	TokPlus     // +
-	TokMinus    // -
-	TokStar     // *
-	TokSlash    // /
+	TokQuestion
+	TokPercent
+	TokColon // :
+	TokPipe  // |
+	TokAmp   // &
+	TokBang  // !
+	TokEq    // =
+	TokNeq   // <>
+	TokLt    // <
+	TokLte   // <=
+	TokGt    // >
+	TokGte   // >=
+	TokPlus  // +
+	TokMinus // -
+	TokStar  // *
+	TokSlash // /
 )
 
 // Token is one lexed token; Pos is the byte offset in the input.

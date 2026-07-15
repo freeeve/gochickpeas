@@ -59,6 +59,10 @@ type Match struct {
 	// each quantified segment. TRAIL needs no flag -- it is the engine's
 	// native traversal semantics.
 	Acyclic bool
+	// Repeatable is the REPEATABLE ELEMENTS match mode: relationship
+	// uniqueness is NOT enforced within the clause (walk semantics).
+	// DIFFERENT EDGES needs no flag -- it is the engine default.
+	Repeatable bool
 }
 
 // With is the projection boundary: project columns forward, then
@@ -216,6 +220,9 @@ type NodePat struct {
 	// PropExprs are non-literal inline property values ({name: tagVar}).
 	// The desugar pass lowers each to a WHERE equality before planning.
 	PropExprs []PropExprEntry
+	// Where is the element pattern's inline predicate ((v:L WHERE expr));
+	// the desugar pass conjoins it onto the clause WHERE.
+	Where Expr
 }
 
 // PropEntry is one literal inline property.
@@ -242,6 +249,8 @@ const (
 	LabelOr
 	// LabelNot is `!a` (operand in L).
 	LabelNot
+	// LabelWild is `%`: the node carries at least one label.
+	LabelWild
 )
 
 // LabelExpr is a boolean label expression tree: label tests combined with
@@ -285,6 +294,9 @@ type RelPat struct {
 	// Length is non-nil for a quantified relationship (-[:T]->{1,3}, *, +);
 	// nil is a single fixed hop.
 	Length *VarLength
+	// Where is the element pattern's inline predicate ([r:T WHERE expr]);
+	// the desugar pass conjoins it onto the clause WHERE.
+	Where Expr
 }
 
 // VarLength is a quantifier's bound spec. Nil bounds mean unspecified

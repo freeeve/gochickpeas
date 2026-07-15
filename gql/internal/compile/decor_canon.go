@@ -111,6 +111,8 @@ func canonLabelExpr(sb *strings.Builder, e *ast.LabelExpr) bool {
 			return false
 		}
 		sb.WriteByte(')')
+	case ast.LabelWild:
+		sb.WriteString(":w")
 	case ast.LabelNot:
 		sb.WriteString(":not(")
 		if !canonLabelExpr(sb, e.L) {

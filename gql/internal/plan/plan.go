@@ -109,7 +109,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 				if i == last {
 					w = c.Where
 				}
-				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional, acyclic: c.Acyclic, scope: scope})
+				cur = append(cur, stageSpec{kind: specMatch, pattern: &c.Patterns[i], where: w, optional: c.Optional, acyclic: c.Acyclic, walk: c.Repeatable, scope: scope})
 			}
 		case *ast.PathBind:
 			scope++

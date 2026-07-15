@@ -24,7 +24,8 @@ func markRelUniqueness(stages []Stage) {
 	var infos []info
 	for si, stage := range stages {
 		ms, ok := stage.(*MatchStage)
-		if !ok {
+		if !ok || ms.Walk {
+			// REPEATABLE ELEMENTS: walk semantics, no uniqueness pairs.
 			continue
 		}
 		for oi := range ms.Ops {

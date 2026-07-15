@@ -270,7 +270,7 @@ func less4(d1 uint8, c1 uint64, f1 float64, i1 int, d2 uint8, c2 uint64, f2 floa
 // The shared anchor is scanned in the first arm and bound-referenced in
 // the second; the WHERE rides the second arm so it applies once everything
 // binds. Result-identical: identical nodes/rels, re-rooted.
-func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph, prefix string, scope uint32) (*stageSpec, *stageSpec, bool) {
+func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[string]bool, g graph.Graph, prefix string, scope uint32, walk bool) (*stageSpec, *stageSpec, bool) {
 	n := len(pattern.Hops)
 	nodeAt := func(i int) *ast.NodePat {
 		if i == 0 {
@@ -340,8 +340,8 @@ func trySplitInterior(si int, pattern *ast.Pattern, where ast.Expr, bound map[st
 	}
 	right := ast.Pattern{Start: anchor}
 	right.Hops = append(right.Hops, pattern.Hops[k:]...)
-	return &stageSpec{kind: specMatch, pattern: &left, scope: scope},
-		&stageSpec{kind: specMatch, pattern: &right, where: where, scope: scope},
+	return &stageSpec{kind: specMatch, pattern: &left, scope: scope, walk: walk},
+		&stageSpec{kind: specMatch, pattern: &right, where: where, scope: scope, walk: walk},
 		true
 }
 
@@ -386,7 +386,7 @@ func splitAnchors(specs []stageSpec, inCols []string, g graph.Graph, allowVarLen
 			eligible = false
 		}
 		if eligible {
-			if a, b, ok := trySplitInterior(si, spec.pattern, spec.where, bound, g, prefix, spec.scope); ok {
+			if a, b, ok := trySplitInterior(si, spec.pattern, spec.where, bound, g, prefix, spec.scope, spec.walk); ok {
 				specBinds(a, bound)
 				specBinds(b, bound)
 				out = append(out, *a, *b)

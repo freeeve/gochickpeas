@@ -220,6 +220,10 @@ func punct(src string, i int) (TokKind, int, bool) {
 		return TokStar, 1, true
 	case '/':
 		return TokSlash, 1, true
+	case '?':
+		return TokQuestion, 1, true
+	case '%':
+		return TokPercent, 1, true
 	}
 	return TokEOF, 0, false
 }

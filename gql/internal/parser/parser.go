@@ -270,6 +270,17 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 	if err := p.expectKw("match"); err != nil {
 		return nil, err
 	}
+	// Match modes: DIFFERENT EDGES is the engine default (accepted as a
+	// no-op); REPEATABLE ELEMENTS switches the clause to walk semantics
+	// (no relationship-uniqueness enforcement).
+	repeatable := false
+	switch {
+	case p.peekKw("repeatable") && kwIs(p.peekAt(1), "elements"):
+		p.i += 2
+		repeatable = true
+	case p.peekKw("different") && kwIs(p.peekAt(1), "edges"):
+		p.i += 2
+	}
 	// `ident =` introduces a path binding (a pattern starts with '(').
 	if p.peek().Kind == TokIdent && !reserved[strings.ToLower(p.peek().Text)] && p.peekAt(1).Kind == TokEq {
 		pathVar, _ := p.identName("a path variable")
@@ -338,7 +349,7 @@ func (p *parser) parseMatch() (ast.Clause, error) {
 	if werr != nil {
 		return nil, werr
 	}
-	return &ast.Match{Patterns: patterns, Where: where, Optional: optional, Acyclic: acyclic}, nil
+	return &ast.Match{Patterns: patterns, Where: where, Optional: optional, Acyclic: acyclic, Repeatable: repeatable}, nil
 }
 
 // parseCostSpec parses the COST <expr> weight of a weighted path search.

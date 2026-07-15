@@ -408,7 +408,7 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 	if stageWhere != nil {
 		*matchWheres = append(*matchWheres, stageWhere)
 	}
-	return &MatchStage{Ops: ops, Where: stageWhere, Optional: spec.optional, PathBind: pathBind, Scope: spec.scope}, nil
+	return &MatchStage{Ops: ops, Where: stageWhere, Optional: spec.optional, PathBind: pathBind, Scope: spec.scope, Walk: spec.walk}, nil
 }
 
 // startScanSource picks the anchor's scan source: an id seek from a WHERE

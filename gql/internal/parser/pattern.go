@@ -62,6 +62,16 @@ func (p *parser) parseNodePat() (*ast.NodePat, error) {
 		}
 		n.Props, n.PropExprs = props, propExprs
 	}
+	// Inline element predicate: (v:L WHERE expr) -- desugar conjoins it
+	// onto the clause WHERE.
+	if p.peekKw("where") {
+		p.i++
+		w, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		n.Where = w
+	}
 	if _, err := p.expect(TokRParen, "')' closing a node pattern"); err != nil {
 		return nil, err
 	}
@@ -107,6 +117,13 @@ func (p *parser) parseLabelNot() (*ast.LabelExpr, error) {
 		negs++
 	}
 	var le *ast.LabelExpr
+	if p.acceptTok(TokPercent) {
+		le = &ast.LabelExpr{Kind: ast.LabelWild}
+		for range negs {
+			le = &ast.LabelExpr{Kind: ast.LabelNot, L: le}
+		}
+		return le, nil
+	}
 	if p.acceptTok(TokLParen) {
 		inner, err := p.parseLabelOr()
 		if err != nil {
@@ -252,6 +269,16 @@ func (p *parser) parseRelDetail(rel *ast.RelPat) error {
 		}
 		rel.Props, rel.PropExprs = props, propExprs
 	}
+	// Inline element predicate: [r:T WHERE expr] -- desugar conjoins it
+	// onto the clause WHERE.
+	if p.peekKw("where") {
+		p.i++
+		w, err := p.parseExpr()
+		if err != nil {
+			return err
+		}
+		rel.Where = w
+	}
 	if _, err := p.expect(TokRBracket, "']' closing a relationship pattern"); err != nil {
 		return err
 	}
@@ -262,6 +289,10 @@ func (p *parser) parseRelDetail(rel *ast.RelPat) error {
 // {m,n} / {m,} / {,n} / {m} (exact) / * ({0,}) / + ({1,}).
 func (p *parser) parseQuantifier(rel *ast.RelPat) error {
 	switch p.peek().Kind {
+	case TokQuestion:
+		p.i++
+		zero, one := uint64(0), uint64(1)
+		rel.Length = &ast.VarLength{Min: &zero, Max: &one}
 	case TokStar:
 		p.i++
 		rel.Length = &ast.VarLength{}

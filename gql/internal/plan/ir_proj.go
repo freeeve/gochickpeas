@@ -101,6 +101,7 @@ type stageSpec struct {
 	optional bool
 	pathVar  string // named-path bind ("" none)
 	acyclic  bool   // ACYCLIC path mode (specMatch only)
+	walk     bool   // REPEATABLE ELEMENTS: no rel uniqueness in this clause
 	// scope identifies the source MATCH clause for relationship
 	// uniqueness: comma patterns share it; planner splits inherit it.
 	scope uint32

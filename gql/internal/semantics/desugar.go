@@ -137,6 +137,13 @@ func lowerPatternProps(p *ast.Pattern, where *ast.Expr, ctr *int) error {
 }
 
 func lowerNodeProps(n *ast.NodePat, where *ast.Expr, ctr *int) {
+	// An inline element predicate ((v WHERE expr)) conjoins onto the
+	// clause WHERE -- the predicate may reference any clause variable, so
+	// the clause boundary is its ISO evaluation point anyway.
+	if n.Where != nil {
+		andInto(where, n.Where)
+		n.Where = nil
+	}
 	if len(n.PropExprs) == 0 {
 		return
 	}
@@ -148,6 +155,13 @@ func lowerNodeProps(n *ast.NodePat, where *ast.Expr, ctr *int) {
 }
 
 func lowerRelProps(r *ast.RelPat, where *ast.Expr, ctr *int) error {
+	if r.Where != nil {
+		if r.Length != nil {
+			return planErrf("an inline predicate on a variable-length relationship is not supported (Tier 1)")
+		}
+		andInto(where, r.Where)
+		r.Where = nil
+	}
 	if len(r.PropExprs) == 0 {
 		return nil
 	}

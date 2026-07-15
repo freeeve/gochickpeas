@@ -16,7 +16,7 @@ ISO GQL. Legend:
 | Construct | Status | Notes |
 |---|---|---|
 | MATCH / OPTIONAL MATCH / multiple MATCH | OK | |
-| MATCH modes (REPEATABLE ELEMENTS, DIFFERENT EDGES) | reject | DIFFERENT EDGES is the engine default; the keywords do not parse |
+| MATCH modes (REPEATABLE ELEMENTS, DIFFERENT EDGES) | OK | DIFFERENT EDGES = default; REPEATABLE ELEMENTS = walk semantics per clause |
 | FILTER expr | OK | `FILTER WHERE` form rejects |
 | LET x = e [, ...] | OK | |
 | FOR x IN list | OK | WITH ORDINALITY / WITH OFFSET reject |
@@ -37,16 +37,15 @@ ISO GQL. Legend:
 | Construct | Status | Notes |
 |---|---|---|
 | node patterns: (), (v), (:L), props, combinations | OK | |
-| WHERE inside node/rel element pattern | reject | write the clause WHERE instead |
+| WHERE inside node/rel element pattern | OK | desugars to the clause WHERE |
 | label expressions \| & ! ( ) and : conjunction | OK | |
-| % label wildcard | reject | |
+| % label wildcard | OK | at least one label; composes with & ! ( ) |
 | edge patterns -[]->, <-[]-, -[]- (+ abbreviated) | OK | |
 | undirected ~[]~ family, <-[]-> any-directed | reject | -[]- covers the both-directions case |
 | rel type alternation :A\|B | OK | |
 | rel type negation :!A | reject | |
 | inline rel properties {k: v} | reject | Tier 1: use a WHERE conjunct |
-| quantifiers {m,n} {m,} {,n} {m} * + | OK | see multiplicity note below |
-| ? quantifier | reject | |
+| quantifiers {m,n} {m,} {,n} {m} * + ? | OK | see multiplicity note below |
 | quantified parenthesized path patterns | reject | patterns are linear node (rel node)* |
 | named paths p = ... | OK | single-hop or bounded quantified only |
 | path modes TRAIL / ACYCLIC | OK | TRAIL is the engine default |
@@ -65,7 +64,7 @@ pattern rejects for the same reason.
 
 | Construct | Status | Notes |
 |---|---|---|
-| arithmetic + - * / (precedence, unary -) | OK | `%` and `^` reject |
+| arithmetic + - * / % (precedence, unary -) | OK | % sugars to mod(); `^` rejects |
 | string concat via + | OK (divergent spelling) | ISO `\|\|` rejects |
 | comparisons = <> < <= > >= | OK | |
 | AND / OR / NOT | OK | XOR rejects |

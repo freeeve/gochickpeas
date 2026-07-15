@@ -166,6 +166,14 @@ func evalLabelExpr(ctx *Ctx, n uint32, e *ast.LabelExpr) bool {
 	switch e.Kind {
 	case ast.LabelName:
 		return ctx.G.HasLabel(n, e.Name)
+	case ast.LabelWild:
+		// %: the node carries at least one label (label counts are small).
+		for _, l := range ctx.G.LabelNames() {
+			if ctx.G.HasLabel(n, l) {
+				return true
+			}
+		}
+		return false
 	case ast.LabelAnd:
 		return evalLabelExpr(ctx, n, e.L) && evalLabelExpr(ctx, n, e.R)
 	case ast.LabelOr:

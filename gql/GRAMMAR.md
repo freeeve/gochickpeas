@@ -274,3 +274,18 @@ unchanged, and adding syntax later is parser-only work.
 - `GROUP BY` is implicit (Cypher-style, by the non-aggregate projection
   keys); the explicit GQL `GROUP BY` clause is not accepted
   **[restriction]** -- revisit if the corpus needs it.
+
+## Task 123 additions (GPML batch)
+
+- Element patterns take an inline predicate: `(v:L {..} WHERE expr)` and
+  `[r:T {..} WHERE expr]` -- desugared onto the clause WHERE (the ISO
+  evaluation point), so the predicate may reference any clause variable.
+  Not allowed on a variable-length relationship.
+- `?` is the {0,1} quantifier.
+- `%` in a label expression is the any-label wildcard (at least one
+  label), composing with `&`, `|`, `!`, parentheses.
+- MATCH modes parse: `DIFFERENT EDGES` (the engine default, a no-op) and
+  `REPEATABLE ELEMENTS` (walk semantics: relationship uniqueness is not
+  enforced within that clause).
+- `%` in expression position is the modulo operator, multiplicative
+  precedence, parse-time sugar for `mod(a, b)`.
