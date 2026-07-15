@@ -105,6 +105,12 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 // versus a roaring bitmap's per-range containers for the same membership.
 type semiCache map[graph.NodeID][]uint32
 
+// semijoinSetBuilds counts reverse-neighbor-set materializations -- the
+// build-once oracle for the semijoin memo: a stage of N rows probing one
+// constant target must build exactly ONE set (the invariant neighborhood
+// materialized once, membership per row); N builds means the memo is dead.
+var semijoinSetBuilds int
+
 // buildSemijoins recognizes each bound-target rebind expand with no named
 // relationship as an existence semijoin: probe from's membership in
 // neighbors(to, flip(dir), types) O(1) per row. Multiplicity-identical to
@@ -132,6 +138,7 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm
 	set, ok := cache[target]
 	if !ok {
 		if ctx.G.NodeMatcherAccepts(m, target) {
+			semijoinSetBuilds++
 			set = reverseNeighborSet(ctx, target, op.Dir, rm, buf)
 		}
 		cache[target] = set
