@@ -52,7 +52,23 @@ type projSink struct {
 	kBase   int
 	kRowbuf []value.Value
 	kBuf    []value.Value
+	// kGate marks the payload-gated top-k path: every ORDER BY key is a
+	// bare output column and no DISTINCT dedups on the full row, so the
+	// keys can evaluate alone and the heap can refuse a candidate BEFORE
+	// its remaining columns are built (most candidates die on one
+	// comparison once the heap fills).
+	kGate bool
 }
+
+// topkPayloadBuilds counts full projected payload constructions on the
+// gated top-k path -- the load-independent oracle: ORDER BY v ASC LIMIT k
+// over ascending input builds exactly k payloads, not one per row.
+// disableTopkGate pins differential tests to the unguarded
+// build-then-offer flow (the reference the gate must match exactly).
+var (
+	topkPayloadBuilds int
+	disableTopkGate   bool
+)
 
 func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
 	p := &projSink{
@@ -95,6 +111,13 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 				p.kScope[c] = p.kBase + i
 			}
 			p.kBuf = make([]value.Value, nk)
+			p.kGate = !proj.Distinct && !disableTopkGate
+			for k := range proj.OrderBy {
+				if p.kColIdx[k] < 0 {
+					p.kGate = false // composite key: needs the whole row
+					break
+				}
+			}
 		} else {
 			// No ORDER BY: arrival order is output order, so retention
 			// past skip+limit can never surface.
@@ -125,6 +148,34 @@ func (p *projSink) pushKeys(out, row []value.Value) []value.Value {
 
 func (p *projSink) push(row []value.Value) {
 	if p.limitCap >= 0 && len(p.outs) >= p.limitCap {
+		return
+	}
+	// Gated top-k: evaluate only the key columns and ask the heap first;
+	// a refused candidate never builds its remaining columns (nor touches
+	// the arena). Skipping is byte-identical to offer-then-pop (see
+	// wouldAccept), so the surviving rows match the unguarded path
+	// exactly.
+	if p.kGate {
+		for k := range p.proj.OrderBy {
+			p.kBuf[k] = p.returns[p.kColIdx[k]].Eval(p.ctx, row, p.slots)
+		}
+		if !p.topk.wouldAccept(p.kBuf) {
+			p.topk.seq++ // rejected offers still order future arrivals
+			return
+		}
+		topkPayloadBuilds++
+		out := p.oArena.alloc()
+		for k := range p.proj.OrderBy {
+			out[p.kColIdx[k]] = p.kBuf[k]
+		}
+		for i, c := range p.returns {
+			if !p.kGateCol(i) {
+				out[i] = c.Eval(p.ctx, row, p.slots)
+			}
+		}
+		if !p.topk.offer(p.pushKeys(out, row), out) {
+			p.oArena.rollback()
+		}
 		return
 	}
 	out := p.oArena.alloc()
@@ -159,6 +210,17 @@ func (p *projSink) push(row []value.Value) {
 	if p.needM {
 		p.ms = append(p.ms, p.mArena.copyRow(row))
 	}
+}
+
+// kGateCol reports whether output column i is one of the gated path's
+// already-evaluated key columns.
+func (p *projSink) kGateCol(i int) bool {
+	for k := range p.kColIdx {
+		if p.kColIdx[k] == i {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *projSink) close() {}
@@ -210,6 +272,33 @@ func (t *topKRows) cmpEntries(a, b int) int {
 // offer admits the row when it belongs in the current top bound, copying
 // its keys (the caller's buffer is reused). Reports whether the row was
 // retained.
+// wouldAccept reports whether an offer carrying keys could be admitted,
+// consulted BEFORE the payload is built: true under capacity; once full,
+// only when keys sort strictly before the worst survivor. A key TIE
+// loses -- a new candidate's arrival sequence is larger than every
+// admitted row's, so a tied offer would be popped immediately -- which
+// makes skipping a rejected candidate byte-identical to offering it, and
+// preserves stability across a tie straddling the LIMIT boundary (the
+// kept rows' relative order never changes).
+func (t *topKRows) wouldAccept(keys []value.Value) bool {
+	if t.bound == 0 {
+		return false
+	}
+	if t.n < t.bound {
+		return true
+	}
+	for k := 0; k < t.nk; k++ {
+		ord := value.OrderCmp(keys[k], t.keys[k])
+		if t.desc[k] {
+			ord = -ord
+		}
+		if ord != 0 {
+			return ord < 0
+		}
+	}
+	return false
+}
+
 func (t *topKRows) offer(keys []value.Value, out []value.Value) bool {
 	seq := t.seq
 	t.seq++
