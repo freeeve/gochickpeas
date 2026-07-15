@@ -360,6 +360,108 @@ func countHits(run []NodeID, target NodeID) int {
 	return n
 }
 
+// AppendRelsBetweenMatch appends the stored CSR position of each m-matched
+// dir relationship between u and v to dst, preserving parallel-relationship
+// multiplicity -- the bound-both-endpoints position seek behind a named-rel
+// rebind expand. Like CountNeighborsMatch it scans whichever endpoint's run
+// is shorter (v's reverse run lists the same relationships as u's forward
+// run), so the cost is the smaller endpoint's degree rather than always the
+// from-side's full degree. Positions come out in the stored (outgoing)
+// frame regardless of which side was scanned, so a subsequent property read
+// by position is correct. Each direction's appended segment is sorted
+// ascending, matching the forward-scan emission order so the seek is
+// order-identical to the enumerate-and-filter path.
+func (g *Snapshot) AppendRelsBetweenMatch(dst []uint32, u, v NodeID, dir Direction, m RelMatch) []uint32 {
+	if dir == Outgoing || dir == Both {
+		dst = g.appendDirPosMatch(dst, u, v, true, m)
+	}
+	if dir == Incoming || dir == Both {
+		dst = g.appendDirPosMatch(dst, u, v, false, m)
+	}
+	return dst
+}
+
+// appendDirPosMatch appends one direction's u->v matched relationship
+// positions, side-picked by run length. out reports whether u is the source
+// (the forward frame); the reverse run of v lists the same relationships.
+// The reverse (v-side) scan is taken only when inToOut is populated -- that
+// is the only state in which an incoming position maps to its outgoing
+// (stored) frame, so it is the only state in which a relationship position
+// is ever read (endpoints, type, properties all index the outgoing frame).
+// With no rel properties inToOut is empty, positions are unread, and the
+// forward scan keeps the frame identical to the enumerate path.
+func (g *Snapshot) appendDirPosMatch(dst []uint32, u, v NodeID, out bool, m RelMatch) []uint32 {
+	base := len(dst)
+	flipOK := len(g.inToOut) > 0
+	// Typed-view tier: both endpoints have a contiguous per-type run; scan
+	// the shorter one.
+	if tcU := m.tp.view(out); tcU != nil {
+		loU, hiU := relRange(tcU.offsets, u)
+		if tcV := m.tp.view(!out); flipOK && tcV != nil {
+			if loV, hiV := relRange(tcV.offsets, v); hiV-loV < hiU-loU {
+				dst = appendPosEq(dst, tcV.nbrs, tcV.poss, loV, hiV, u)
+				return sortTailU32(dst, base)
+			}
+		}
+		dst = appendPosEq(dst, tcU.nbrs, tcU.poss, loU, hiU, v)
+		return sortTailU32(dst, base)
+	}
+	// Below-floor tier: single type with payload-proportional run views; the
+	// run poss carry the stored frame the same way. Side-pick by run length.
+	if m.tp != nil {
+		if trU := m.tp.runs(out); trU != nil {
+			loU, hiU := trU.runRange(u)
+			if trV := m.tp.runs(!out); flipOK && trV != nil {
+				if loV, hiV := trV.runRange(v); hiV-loV < hiU-loU {
+					dst = appendPosEq(dst, trV.nbrs, trV.poss, loV, hiV, u)
+					return sortTailU32(dst, base)
+				}
+			}
+			dst = appendPosEq(dst, trU.nbrs, trU.poss, loU, hiU, v)
+			return sortTailU32(dst, base)
+		}
+	}
+	// Scan fallback (multi-type / match-all matcher): u's primary run with
+	// per-rel type tests, positions mapped to the stored frame for incoming.
+	offsets, nbrs, types, posMap := g.outOffsets, g.outNbrs, g.outTypes, []uint32(nil)
+	if !out {
+		offsets, nbrs, types, posMap = g.inOffsets, g.inNbrs, g.inTypes, g.inToOut
+	}
+	lo, hi := relRange(offsets, u)
+	for k := lo; k < hi; k++ {
+		if nbrs[k] == v && m.matches(types[k]) {
+			pos := uint32(k)
+			if k < len(posMap) {
+				pos = posMap[k]
+			}
+			dst = append(dst, pos)
+		}
+	}
+	return dst
+}
+
+// appendPosEq appends poss[k] for each k in [lo, hi) whose neighbor equals
+// target -- the matching relationships of a bound pair within one scanned
+// run.
+func appendPosEq(dst []uint32, nbrs []NodeID, poss []uint32, lo, hi int, target NodeID) []uint32 {
+	for k := lo; k < hi; k++ {
+		if nbrs[k] == target {
+			dst = append(dst, poss[k])
+		}
+	}
+	return dst
+}
+
+// sortTailU32 sorts dst[base:] ascending in place (a no-op for the common
+// single-relationship pair), so a side-picked reverse scan yields the same
+// order as the forward scan.
+func sortTailU32(dst []uint32, base int) []uint32 {
+	if len(dst)-base > 1 {
+		slices.Sort(dst[base:])
+	}
+	return dst
+}
+
 // buildTypedCSR restricts one direction's CSR to a single type in one
 // linear pass, preserving per-node relative order. poss carries each kept
 // relationship's property-read position: the raw index, or posMap[index]

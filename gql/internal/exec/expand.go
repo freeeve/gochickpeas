@@ -44,21 +44,27 @@ func expandCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *
 	// neighbor.
 	start := len(*nodes)
 	if op.RelSlot != plan.NoSlot {
+		// Bound-both-endpoints named expand: the target is fixed, so match it
+		// once and seek the (from, bound) relationship positions directly --
+		// scanning the lower-degree endpoint -- instead of enumerating from's
+		// whole degree and filtering to bound. Each parallel relationship is
+		// one appended position (the named side of the enumeration/existence
+		// boundary keeps per-relationship bindings observable).
+		if native && haveBound {
+			if !ctx.G.NodeMatcherAccepts(m, bound) {
+				return
+			}
+			boundPairSeeks++
+			relStart := len(*rels)
+			*rels = sg.AppendRelsBetween(*rels, fromID, bound, op.Dir, rm)
+			for range (*rels)[relStart:] {
+				*nodes = append(*nodes, bound)
+			}
+			return
+		}
 		relStart := len(*rels)
 		*nodes, *rels = ctx.G.AppendRelationshipsMatched(*nodes, *rels, fromID, op.Dir, rm)
 		if native {
-			if haveBound {
-				w := start
-				for i, nb := range (*nodes)[start:] {
-					if nb == bound {
-						(*nodes)[w] = nb
-						(*rels)[relStart+(w-start)] = (*rels)[relStart+i]
-						w++
-					}
-				}
-				*nodes = (*nodes)[:w]
-				*rels = (*rels)[:relStart+(w-start)]
-			}
 			*nodes, *rels = sg.FilterMatchedTail(m, *nodes, start, *rels, relStart)
 			return
 		}
@@ -110,6 +116,13 @@ type semiCache map[graph.NodeID][]uint32
 // constant target must build exactly ONE set (the invariant neighborhood
 // materialized once, membership per row); N builds means the memo is dead.
 var semijoinSetBuilds int
+
+// boundPairSeeks counts bound-both-endpoints named-expand position seeks --
+// the dispatch oracle for the seek path: a named rebind expand over a bound
+// target must reach the seek (this counter climbs) rather than fall back to
+// enumerating the from-node's whole degree. A stage of N such rows registers
+// N seeks; 0 means the seek is not firing.
+var boundPairSeeks int
 
 // buildSemijoins recognizes each bound-target rebind expand with no named
 // relationship as an existence semijoin: probe from's membership in

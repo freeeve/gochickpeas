@@ -201,6 +201,14 @@ func (s *SnapshotGraph) CountNeighborsMatched(u, v chickpeas.NodeID, dir chickpe
 	return s.g.CountNeighborsMatch(u, v, dir, m.m)
 }
 
+// AppendRelsBetween appends the stored CSR positions of each m-matched dir
+// relationship between u and v to poss (multiplicity preserved), scanning
+// the lower-degree endpoint -- the bound-pair position seek that lets a
+// named-rel rebind expand skip enumerating the from-node's whole degree.
+func (s *SnapshotGraph) AppendRelsBetween(poss []uint32, u, v chickpeas.NodeID, dir chickpeas.Direction, m *RelMatcher) []uint32 {
+	return s.g.AppendRelsBetweenMatch(poss, u, v, dir, m.m)
+}
+
 // ChainRootsVia resolves the chain-collapse capability through the core
 // structural checks: one rel type, tried against each candidate label.
 func (s *SnapshotGraph) ChainRootsVia(types []string, dir chickpeas.Direction, labels []string) (chickpeas.RootsVia, bool) {
