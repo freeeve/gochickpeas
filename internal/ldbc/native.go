@@ -14,7 +14,22 @@ import (
 	"strings"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// canonRowV encodes one value.Value row to its rowhash/v1 array form, matching
+// CanonCell(any([]any(row))) over the equivalent boxed row.
+func canonRowV(row []value.Value) (string, error) {
+	parts := make([]string, len(row))
+	for j, c := range row {
+		enc, err := CanonCellV(c)
+		if err != nil {
+			return "", err
+		}
+		parts[j] = enc
+	}
+	return "[" + strings.Join(parts, ",") + "]", nil
+}
 
 // LoadNativeManifest reads a native_variants.tsv (tab-separated, 6
 // columns, #-prefixed and blank lines skipped) into ManifestRows with an
@@ -63,6 +78,12 @@ func LoadNativeManifest(path string) ([]ManifestRow, error) {
 // work the parity check verified.
 type NativeKernel func(g *chickpeas.Snapshot) (func() ([][]any, error), error)
 
+// NativeKernelV is the value.Value result form -- the migration target
+// ([[155]] option V). Cells are value.Value (scalars stored inline, zero-box)
+// rather than boxed into any; a valued kernel verifies through VerifyCellV,
+// which hashes byte-identically to the boxed path.
+type NativeKernelV func(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error)
+
 // simpleKernel adapts a query with no untimed prepare phase: every run
 // does the full work, matching the rcp-native timings whose closures
 // recompute everything per iteration.
@@ -72,25 +93,145 @@ func simpleKernel(rows func(g *chickpeas.Snapshot) ([][]any, error)) NativeKerne
 	}
 }
 
+// simpleKernelV is simpleKernel for a value.Value kernel.
+func simpleKernelV(rows func(g *chickpeas.Snapshot) ([][]value.Value, error)) NativeKernelV {
+	return func(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
+		return func() ([][]value.Value, error) { return rows(g) }, nil
+	}
+}
+
+// nativeEntry holds a kernel in exactly one representation -- boxed (legacy) or
+// valued (migrated). The family-by-family port flips entries from boxed to
+// valued; PrepareNative dispatches on whichever is set, so the parity gate
+// stays green throughout the migration.
+type nativeEntry struct {
+	boxed  NativeKernel
+	valued NativeKernelV
+}
+
 // nativeRegistry maps "Family/Query" to its kernel. Families register
 // from their own files' init functions.
-var nativeRegistry = map[string]NativeKernel{}
+var nativeRegistry = map[string]nativeEntry{}
 
-// registerNative adds one kernel at init time; a duplicate id is a
+// registerNative adds one boxed kernel at init time; a duplicate id is a
 // programming error.
 func registerNative(family, query string, k NativeKernel) {
 	id := family + "/" + query
 	if _, dup := nativeRegistry[id]; dup {
 		panic("duplicate native kernel " + id)
 	}
-	nativeRegistry[id] = k
+	nativeRegistry[id] = nativeEntry{boxed: k}
 }
 
-// NativeKernelFor looks up the kernel for a manifest row.
-func NativeKernelFor(family, query string) (NativeKernel, bool) {
-	k, ok := nativeRegistry[family+"/"+query]
-	return k, ok
+// registerNativeV adds one migrated value.Value kernel at init time.
+func registerNativeV(family, query string, k NativeKernelV) {
+	id := family + "/" + query
+	if _, dup := nativeRegistry[id]; dup {
+		panic("duplicate native kernel " + id)
+	}
+	nativeRegistry[id] = nativeEntry{valued: k}
+}
+
+// HasNativeKernel reports whether a kernel is registered for (family, query)
+// in either representation.
+func HasNativeKernel(family, query string) bool {
+	_, ok := nativeRegistry[family+"/"+query]
+	return ok
 }
 
 // NativeKernelCount reports how many per-query kernels are registered.
 func NativeKernelCount() int { return len(nativeRegistry) }
+
+// PreparedKernel is a kernel prepared (untimed) on a snapshot, hiding whether
+// its rows are boxed or valued. Run executes the work (timed loops call it
+// repeatedly); Verify and RowCount read the most recent Run.
+type PreparedKernel interface {
+	Run() error
+	Verify(row ManifestRow) (match bool, detail string, err error)
+	RowCount() int
+	// EncodedRows returns each row's rowhash/v1 canonical string (unsorted) --
+	// the per-row multiset the debug diff harness compares, representation
+	// independent.
+	EncodedRows() ([]string, error)
+}
+
+type boxedPrepared struct {
+	run   func() ([][]any, error)
+	cells [][]any
+}
+
+func (p *boxedPrepared) Run() error {
+	cells, err := p.run()
+	if err != nil {
+		return err
+	}
+	p.cells = cells
+	return nil
+}
+func (p *boxedPrepared) Verify(row ManifestRow) (bool, string, error) {
+	return VerifyCell(row, p.cells)
+}
+func (p *boxedPrepared) RowCount() int { return len(p.cells) }
+func (p *boxedPrepared) EncodedRows() ([]string, error) {
+	out := make([]string, len(p.cells))
+	for i, r := range p.cells {
+		s, err := CanonCell(any([]any(r)))
+		if err != nil {
+			return nil, err
+		}
+		out[i] = s
+	}
+	return out, nil
+}
+
+type valuePrepared struct {
+	run   func() ([][]value.Value, error)
+	cells [][]value.Value
+}
+
+func (p *valuePrepared) Run() error {
+	cells, err := p.run()
+	if err != nil {
+		return err
+	}
+	p.cells = cells
+	return nil
+}
+func (p *valuePrepared) Verify(row ManifestRow) (bool, string, error) {
+	return VerifyCellV(row, p.cells)
+}
+func (p *valuePrepared) RowCount() int { return len(p.cells) }
+func (p *valuePrepared) EncodedRows() ([]string, error) {
+	out := make([]string, len(p.cells))
+	for i, r := range p.cells {
+		s, err := canonRowV(r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = s
+	}
+	return out, nil
+}
+
+// PrepareNative looks up the kernel for a manifest row and runs its untimed
+// prepare phase on g. ok=false means no kernel is registered; a non-nil error
+// is a prepare failure. The returned PreparedKernel routes verify and timing to
+// the correct representation.
+func PrepareNative(row ManifestRow, g *chickpeas.Snapshot) (pk PreparedKernel, ok bool, err error) {
+	entry, ok := nativeRegistry[row.Family+"/"+row.Query]
+	if !ok {
+		return nil, false, nil
+	}
+	if entry.valued != nil {
+		run, err := entry.valued(g)
+		if err != nil {
+			return nil, true, err
+		}
+		return &valuePrepared{run: run}, true, nil
+	}
+	run, err := entry.boxed(g)
+	if err != nil {
+		return nil, true, err
+	}
+	return &boxedPrepared{run: run}, true, nil
+}

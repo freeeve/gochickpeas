@@ -95,8 +95,7 @@ func run() error {
 	emitted := 0
 	for _, row := range rows {
 		id := row.Family + "/" + row.Query
-		kernel, ok := ldbc.NativeKernelFor(row.Family, row.Query)
-		if !ok {
+		if !ldbc.HasNativeKernel(row.Family, row.Query) {
 			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: "no native kernel yet"})
 			fmt.Printf("%-16s SKIP  no native kernel yet\n", id)
 			continue
@@ -115,20 +114,20 @@ func run() error {
 
 		// Prepare is untimed (mirrors what the rcp-native harness
 		// builds outside its timer); the runnable is what parity
-		// checks and the timed loop measure.
-		krun, err := kernel(g)
+		// checks and the timed loop measure. PrepareNative hides whether
+		// the kernel is boxed or migrated to value.Value.
+		pk, _, err := ldbc.PrepareNative(row, g)
 		if err != nil {
 			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: err.Error()})
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
 			continue
 		}
-		cells, err := krun()
-		if err != nil {
+		if err := pk.Run(); err != nil {
 			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: err.Error()})
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
 			continue
 		}
-		match, detail, err := ldbc.VerifyCell(row, cells)
+		match, detail, err := pk.Verify(row)
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
 		}
@@ -137,34 +136,32 @@ func run() error {
 			fmt.Printf("%-16s DIFF  %s\n", id, detail)
 			continue
 		}
-		outcomes = append(outcomes, outcome{row: row, status: "MATCH", rows: len(cells)})
+		rowCount := pk.RowCount()
+		outcomes = append(outcomes, outcome{row: row, status: "MATCH", rows: rowCount})
 		if *verifyOnly {
-			fmt.Printf("%-16s MATCH (%d rows)\n", id, len(cells))
+			fmt.Printf("%-16s MATCH (%d rows)\n", id, rowCount)
 			continue
 		}
 
-		samples, err := ldbc.TimeSamples(*runs, func() error {
-			_, err := krun()
-			return err
-		})
+		samples, err := ldbc.TimeSamples(*runs, pk.Run)
 		if err != nil {
 			return fmt.Errorf("%s (timed run): %w", id, err)
 		}
-		rec := ldbc.CellRecord(row, cellID, stamp, samples, len(cells), g)
+		rec := ldbc.CellRecord(row, cellID, stamp, samples, rowCount, g)
 		if err := enc.Encode(rec); err != nil {
 			return err
 		}
 		emitted++
 		fmt.Printf("%-16s MATCH %9.3f ms  (min %.3f, p75 %.3f, n=%d, %d rows)\n",
-			id, rec.Ms, rec.MsMin, rec.MsP75, rec.MsN, len(cells))
+			id, rec.Ms, rec.MsMin, rec.MsP75, rec.MsN, rowCount)
 
-		nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { _, err := krun(); return err })
+		nAllocs, nBytes, err := ldbc.MeasureAllocs(pk.Run)
 		if err != nil {
 			return fmt.Errorf("%s (profiled run): %w", id, err)
 		}
 		if err := profEnc.Encode(ldbc.ProfileRecord{
 			Family: row.Family, Query: row.Query, Engine: "gochickpeas (go)",
-			Allocs: nAllocs, Bytes: nBytes, Rows: len(cells), Measure: ldbc.ProfileMeasure,
+			Allocs: nAllocs, Bytes: nBytes, Rows: rowCount, Measure: ldbc.ProfileMeasure,
 			EngineCommit: stamp.Commit, EngineDate: stamp.Date,
 		}); err != nil {
 			return err

@@ -30,20 +30,19 @@ func BenchmarkNativeKernel(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	k, ok := NativeKernelFor(fam, query)
+	pk, ok, err := PrepareNative(ManifestRow{Family: fam, Query: query}, g)
 	if !ok {
 		b.Fatalf("no kernel %s", id)
 	}
-	run, err := k(g)
 	if err != nil {
 		b.Fatal(err)
 	}
-	if _, err := run(); err != nil {
+	if err := pk.Run(); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := run(); err != nil {
+		if err := pk.Run(); err != nil {
 			b.Fatal(err)
 		}
 	}

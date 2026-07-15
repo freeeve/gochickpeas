@@ -31,15 +31,17 @@ func TestDebugNativeQuery(t *testing.T) {
 			family, q = query[:i], query[i+1:]
 		}
 	}
-	kernel, ok := NativeKernelFor(family, q)
+	pk, ok, err := PrepareNative(ManifestRow{Family: family, Query: q}, g)
 	if !ok {
 		t.Fatalf("no kernel %s", query)
 	}
-	run, err := kernel(g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := run()
+	if err := pk.Run(); err != nil {
+		t.Fatal(err)
+	}
+	gotEnc, err := pk.EncodedRows()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,11 @@ func TestDebugNativeQuery(t *testing.T) {
 		}
 		return m
 	}
-	gm, wm := enc(got), enc(want)
+	gm, wm := map[string]int{}, enc(want)
+	for _, s := range gotEnc {
+		gm[s]++
+	}
+	got := gotEnc
 	for s, n := range gm {
 		if wm[s] != n {
 			t.Errorf("got %dx %s (want %dx)", n, s, wm[s])
@@ -93,21 +99,20 @@ func BenchmarkDebugNativeQuery(b *testing.B) {
 			family, q = query[:i], query[i+1:]
 		}
 	}
-	kernel, ok := NativeKernelFor(family, q)
+	pk, ok, err := PrepareNative(ManifestRow{Family: family, Query: q}, g)
 	if !ok {
 		b.Fatalf("no kernel %s", query)
 	}
-	run, err := kernel(g)
 	if err != nil {
 		b.Fatal(err)
 	}
-	if _, err := run(); err != nil { // warm lazy indexes outside the loop
+	if err := pk.Run(); err != nil { // warm lazy indexes outside the loop
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := run(); err != nil {
+		if err := pk.Run(); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -11,10 +11,11 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 func init() {
-	registerNative("SPB", "a13", simpleKernel(spbA13))
+	registerNativeV("SPB", "a13", simpleKernelV(spbA13))
 	registerNative("SPB", "a14", simpleKernel(spbA14))
 	registerNative("SPB", "a15", simpleKernel(spbA15))
 	registerNative("SPB", "a16", simpleKernel(spbA16))
@@ -26,10 +27,10 @@ func init() {
 // spbA13 (advanced q13): distinct (work, tag) pairs for works
 // category-linked to either pinned category with a dateModified; tags
 // without a uri (blank nodes) drop after the DISTINCT.
-func spbA13(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA13(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	type pair struct{ w, t chickpeas.NodeID }
 	var pairs []pair
@@ -57,7 +58,11 @@ func spbA13(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		return a.t < b.t
 	})
-	var rows [][]any
+	// Zero-box result: two value.Str cells per surviving row appended into one
+	// pre-sized flat backing (upper bound = every pair survives), then carved
+	// into fixed-cap row views -- a small constant number of allocations
+	// regardless of row count. See [[155]].
+	cells := make([]value.Value, 0, len(pairs)*2)
 	var last pair
 	for i, p := range pairs {
 		if i > 0 && p == last {
@@ -65,8 +70,13 @@ func spbA13(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		last = p
 		if tagURI, ok := g.Prop(p.t, "uri").Str(); ok {
-			rows = append(rows, []any{spbURIOf(g, p.w), tagURI})
+			cells = append(cells, value.Str(spbURIOf(g, p.w)), value.Str(tagURI))
 		}
+	}
+	n := len(cells) / 2
+	rows := make([][]value.Value, n)
+	for i := range rows {
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }

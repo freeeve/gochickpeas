@@ -50,7 +50,7 @@ func NativeKernelSources() ([]KernelSource, error) {
 	}
 	out := make([]KernelSource, 0, len(idx.regs))
 	for _, r := range idx.regs {
-		if _, ok := NativeKernelFor(r.family, r.query); !ok {
+		if !HasNativeKernel(r.family, r.query) {
 			return nil, fmt.Errorf("extracted %s/%s is not in the kernel registry", r.family, r.query)
 		}
 		ks, err := idx.slice(r.family, r.query, r.fn)
@@ -144,7 +144,7 @@ func (idx *srcIndex) indexFile(name string, file *ast.File) error {
 			if !ok {
 				return true
 			}
-			if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "registerNative" || len(call.Args) != 3 {
+			if id, ok := call.Fun.(*ast.Ident); !ok || (id.Name != "registerNative" && id.Name != "registerNativeV") || len(call.Args) != 3 {
 				return true
 			}
 			family, okF := stringLit(call.Args[0])
@@ -203,13 +203,13 @@ func stringLit(e ast.Expr) (string, bool) {
 }
 
 // kernelFuncName unwraps the registered kernel expression: a bare
-// function identifier or a simpleKernel(ident) adapter.
+// function identifier or a simpleKernel/simpleKernelV(ident) adapter.
 func kernelFuncName(e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.Ident:
 		return v.Name
 	case *ast.CallExpr:
-		if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "simpleKernel" && len(v.Args) == 1 {
+		if id, ok := v.Fun.(*ast.Ident); ok && (id.Name == "simpleKernel" || id.Name == "simpleKernelV") && len(v.Args) == 1 {
 			if arg, ok := v.Args[0].(*ast.Ident); ok {
 				return arg.Name
 			}
