@@ -96,7 +96,16 @@ func spbA22(g *chickpeas.Snapshot) ([][]any, error) {
 // count of distinct dateCreated calendar days; [uri, days] count
 // descending then uri.
 func spbA23(g *chickpeas.Snapshot) ([][]any, error) {
-	byTag := map[chickpeas.NodeID]map[int64]bool{}
+	// Distinct calendar days per tag, held in a flat (tag, day) pair-set plus a
+	// per-tag counter bumped on first sight rather than a map-of-maps: the inner
+	// day sets were only read for their length, so one flat set avoids an inner
+	// map per tag.
+	type tagDay struct {
+		t   chickpeas.NodeID
+		day int64
+	}
+	seen := map[tagDay]bool{}
+	counts := map[chickpeas.NodeID]int64{}
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord).Iter() {
 		if !spbHasNeighborWithURI(g, w, "category", spbCategory) {
 			continue
@@ -126,18 +135,17 @@ func spbA23(g *chickpeas.Snapshot) ([][]any, error) {
 		day := dayFromCivil(y, m, d)
 		for _, pred := range spbTagPreds {
 			for t := range g.Neighbors(w, chickpeas.Outgoing, pred) {
-				set := byTag[t]
-				if set == nil {
-					set = map[int64]bool{}
-					byTag[t] = set
+				pair := tagDay{t, day}
+				if !seen[pair] {
+					seen[pair] = true
+					counts[t]++
 				}
-				set[day] = true
 			}
 		}
 	}
-	rows := make([][]any, 0, len(byTag))
-	for t, days := range byTag {
-		rows = append(rows, []any{spbURIOf(g, t), int64(len(days))})
+	rows := make([][]any, 0, len(counts))
+	for t, c := range counts {
+		rows = append(rows, []any{spbURIOf(g, t), c})
 	}
 	spbSortKV(rows)
 	return rows, nil
@@ -191,7 +199,16 @@ func spbA25(g *chickpeas.Snapshot) ([][]any, error) {
 	if !ok {
 		return [][]any{}, nil
 	}
-	days := map[chickpeas.NodeID]map[string]bool{}
+	// Distinct dateCreated days per co-occurring entity, held in a flat
+	// (who, day) pair-set plus a per-entity counter bumped on first sight
+	// rather than a map-of-maps: the inner day sets were only read for their
+	// length, so one flat set avoids an inner map per entity.
+	type whoDay struct {
+		who chickpeas.NodeID
+		day string
+	}
+	seen := map[whoDay]bool{}
+	counts := map[chickpeas.NodeID]int64{}
 	for cw := range g.Neighbors(a, chickpeas.Incoming, "about") {
 		if !g.HasLabel(cw, "CreativeWork") {
 			continue
@@ -205,21 +222,20 @@ func spbA25(g *chickpeas.Snapshot) ([][]any, error) {
 			if who == a {
 				continue
 			}
-			set := days[who]
-			if set == nil {
-				set = map[string]bool{}
-				days[who] = set
+			pair := whoDay{who, day}
+			if !seen[pair] {
+				seen[pair] = true
+				counts[who]++
 			}
-			set[day] = true
 		}
 	}
 	type row struct {
 		who chickpeas.NodeID
 		n   int64
 	}
-	rows := make([]row, 0, len(days))
-	for who, set := range days {
-		rows = append(rows, row{who, int64(len(set))})
+	rows := make([]row, 0, len(counts))
+	for who, c := range counts {
+		rows = append(rows, row{who, c})
 	}
 	sortByLess(rows, func(a, b row) bool {
 		if a.n != b.n {
