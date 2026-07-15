@@ -37,10 +37,15 @@ func Build(q *ast.Query, g graph.Graph) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Exactly one qualifying auto-param anchor tie -> build the sibling with
-	// that pattern's orientation flipped. More than one would need a plan per
-	// combination; we leave those on the static (average-degree) fallback.
-	if len(pc.ties) == 1 {
+	// One or more qualifying auto-param anchor ties -> build the sibling
+	// with the FIRST tie's orientation flipped, leaving any further ties
+	// static. A full 2^n sibling set is out of the question, but one
+	// sibling for the earliest-planned tie strictly dominates giving up:
+	// the query with MORE value-blind decisions used to get LESS help.
+	// The adaptive chooser scores primary vs sibling by real first-hop
+	// fan-out and falls back to the primary whenever it cannot score, so
+	// extra unflipped ties cost nothing.
+	if len(pc.ties) >= 1 {
 		alt, err := buildWithInColsCtx(q, nil, g, &planCtx{forceReverse: pc.ties[0]})
 		if err == nil && alt != nil {
 			p.Alt = alt
@@ -52,7 +57,11 @@ func Build(q *ast.Query, g graph.Graph) (*Plan, error) {
 // BuildWithInCols plans a query whose branches each begin with inCols
 // already bound, carried in from an outer scope (a CALL {} subquery plans
 // its body with inCols = its import list). Adaptive anchoring is scoped to
-// the top-level Build pass; a subquery body plans on the static fallback.
+// the top-level Build pass BY DECISION, not accident: a subquery body
+// executes once per outer row, so a per-execution anchor probe there
+// would run per row rather than per statement -- the probe's O(1)-ish
+// budget assumes statement frequency. Subquery bodies stay on the static
+// fallback until a per-row-amortized scoring exists.
 func BuildWithInCols(q *ast.Query, inCols []string, g graph.Graph) (*Plan, error) {
 	return buildWithInColsCtx(q, inCols, g, &planCtx{})
 }

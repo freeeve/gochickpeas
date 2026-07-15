@@ -156,10 +156,16 @@ func chooseAdaptivePlan(p *plan.Plan, ctx *eval.Ctx, gr graph.Graph) *plan.Plan 
 		return p
 	}
 	if da < dp {
+		adaptiveAltPicked++
 		return p.Alt
 	}
 	return p
 }
+
+// adaptiveAltPicked counts sibling selections, so tests can assert a path
+// actually CONSULTED the adaptive choice (rows are identical either way,
+// making the wiring invisible to a result assertion).
+var adaptiveAltPicked int
 
 // anchorFanout is the summed real first-hop degree of a plan's parameter-seek
 // anchor over the nodes the bound parameter now resolves to. ok is false when

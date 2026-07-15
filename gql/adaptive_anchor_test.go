@@ -109,3 +109,55 @@ func TestAdaptiveAnchorPicksPerValue(t *testing.T) {
 		t.Fatalf("(a2,b2): chose anchor %q, want A (a2 is the selective end)", got)
 	}
 }
+
+// TestAdaptiveAnchorViaPrepared pins the Prepared.Execute wiring: the
+// prepared-statement path is the canonical parameter-sniffing shape (one
+// plan, many value sets), and it used to build the sibling and ignore it.
+// Rows are identical under either plan, so the assertion is the chooser's
+// fired counter: an Execute whose values invert the degree asymmetry must
+// consult and pick the sibling.
+func TestAdaptiveAnchorViaPrepared(t *testing.T) {
+	snap := adaptiveFixture(t)
+	pr, err := Prepare(snap, "MATCH (a:A {k: 'a1'})-[:R]->(b:B {k: 'b1'}) RETURN a.k AS ak, b.k AS bk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The lifted literals ('a1','b1') make B the selective end: the
+	// primary plan was built value-blind, so ONE of the two value sets
+	// must flip to the sibling. Run both; the counter must move.
+	before := adaptiveAltPicked
+	if _, err := pr.Execute(snap, nil); err != nil {
+		t.Fatal(err)
+	}
+	prep2, err := Prepare(snap, "MATCH (a:A {k: 'a2'})-[:R]->(b:B {k: 'b2'}) RETURN a.k AS ak, b.k AS bk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prep2.Execute(snap, nil); err != nil {
+		t.Fatal(err)
+	}
+	if adaptiveAltPicked == before {
+		t.Fatal("Prepared.Execute never consulted the adaptive sibling (wiring gap): one of the two inverted value sets must pick it")
+	}
+}
+
+// TestAdaptiveAnchorTwoTies pins the >=1-tie sibling: a query with TWO
+// param-seek patterns used to drop to the static fallback entirely (more
+// value-blind decisions, less help). Now the first tie gets its flipped
+// sibling; the second stays static by design.
+func TestAdaptiveAnchorTwoTies(t *testing.T) {
+	snap := adaptiveFixture(t)
+	gr := graph.New(snap)
+	q, err := parser.Parse("MATCH (a:A {k: 'a1'})-[:R]->(b:B {k: 'b1'}) MATCH (c:A {k: 'a2'})-[:R]->(d:B {k: 'b2'}) RETURN a.k, c.k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	semantics.AutoParameterize(q)
+	p, err := plan.Build(q, gr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Alt == nil {
+		t.Fatal("two anchor ties must still build the first tie's sibling, not drop to the static fallback")
+	}
+}

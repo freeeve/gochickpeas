@@ -47,11 +47,15 @@ func Prepare(g *chickpeas.Snapshot, query string) (*Prepared, error) {
 // Execute runs the prepared plan against g with explicit $name parameter
 // values (an unsupplied parameter reads as null); the stored lifted
 // constants rebind automatically. For an EXPLAIN/PROFILE query this
-// returns the rendered plan instead.
+// returns the rendered plan instead. The adaptive anchor choice runs here
+// exactly as on the cached path: a statement prepared once and executed
+// many times with different parameter values is the canonical
+// parameter-sniffing shape, so the value-resolved sibling choice matters
+// MOST on this path.
 func (pr *Prepared) Execute(g *chickpeas.Snapshot, params map[string]value.Value) (*Rows, error) {
 	gr := graph.New(g)
 	ctx := &eval.Ctx{G: gr, Params: pr.lifted, Named: params, ForceInterp: forceInterp}
-	return execPlan(gr, pr.plan, pr.mode, pr.planTime, ctx)
+	return execPlan(gr, chooseAdaptivePlan(pr.plan, ctx, gr), pr.mode, pr.planTime, ctx)
 }
 
 // Columns is the output column names the plan produces, in order.
