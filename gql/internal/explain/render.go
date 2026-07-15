@@ -152,8 +152,13 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 				line(out, ind, "Filter ("+fmtExpr(s.Where)+")", at(opEsts, len(s.Ops)), at(opRows, len(s.Ops)))
 			}
 		case *plan.HashJoinStage:
-			label := fmt.Sprintf("HashJoin (key=%s, probe %s)", nameOf(s.KeySlot, names),
-				fmtHop(nameOf(s.Probe.From, names), s.Probe.Dir, s.Probe.Types, nameOf(s.Probe.To, names), ""))
+			var label string
+			if s.KeyProbe != nil {
+				label = fmt.Sprintf("ValueHashJoin (key %s = %s)", fmtExpr(s.KeyBuild), fmtExpr(s.KeyProbe))
+			} else {
+				label = fmt.Sprintf("HashJoin (key=%s, probe %s)", nameOf(s.KeySlot, names),
+					fmtHop(nameOf(s.Probe.From, names), s.Probe.Dir, s.Probe.Types, nameOf(s.Probe.To, names), ""))
+			}
 			line(out, ind, label, singleEst(numse, ti), singleCount(numsp, ti))
 			for _, bs := range s.Build {
 				for oi := range bs.Ops {

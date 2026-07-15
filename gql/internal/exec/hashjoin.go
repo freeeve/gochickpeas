@@ -33,10 +33,12 @@ type hjRow struct {
 	pairs []hjPair
 }
 
-// hjTable is one build's result, indexed by the key slot's node.
+// hjTable is one build's result, indexed by the key slot's node (expand-
+// keyed joins) or the key expression's encoded value (value-keyed joins).
 type hjTable struct {
 	rows  []hjRow
 	byKey map[graph.NodeID][]int32
+	byVal map[string][]int32
 }
 
 // hashJoinSink is the stage's row sink.
@@ -55,6 +57,10 @@ type hashJoinSink struct {
 	keyBuf  []byte
 	nbuf    []graph.NodeID
 	count   *uint64
+	// keyProbe is the value-keyed join's outer-side key (nil for the
+	// expand-keyed form); valBuf is its encoding scratch.
+	keyProbe RowEval
+	valBuf   []byte
 }
 
 func newHashJoinSink(ctx *eval.Ctx, seg *plan.Segment, hj *plan.HashJoinStage, next rowSink, uniq *uniqEnv, count *uint64) *hashJoinSink {
@@ -77,6 +83,9 @@ func newHashJoinSink(ctx *eval.Ctx, seg *plan.Segment, hj *plan.HashJoinStage, n
 			h.where = append(h.where, compileEval(ctx, c, seg.Slots))
 		}
 	}
+	if hj.KeyProbe != nil {
+		h.keyProbe = compileEval(ctx, hj.KeyProbe, seg.Slots)
+	}
 	return h
 }
 
@@ -92,6 +101,19 @@ func (h *hashJoinSink) push(row []value.Value) {
 		h.tables[string(k)] = t
 	}
 	if len(t.rows) == 0 {
+		return
+	}
+	// Value-keyed probe: the outer row's key value looks the bucket up
+	// directly -- no expand, no probe uniqueness (no relationship binds).
+	// A null key never matches, per the consumed equality's semantics.
+	if h.keyProbe != nil {
+		v := h.keyProbe.Eval(h.ctx, row, h.slots)
+		if v.IsNull() {
+			return
+		}
+		h.valBuf = value.AppendKey(h.valBuf[:0], v)
+		copy(h.buf, row)
+		h.emitRows(t, t.byVal[string(h.valBuf)], nil, 0, 0)
 		return
 	}
 	from, ok := row[h.hj.Probe.From].AsNode()
@@ -126,45 +148,53 @@ func (h *hashJoinSink) push(row []value.Value) {
 				continue
 			}
 		}
-		for _, ri := range idxs {
-			r := &t.rows[ri]
-			blocked := false
-			for _, p := range r.pairs {
-				if p.check && h.uniq.used(p.scope, p.a, p.b) {
-					blocked = true
-					break
-				}
+		h.emitRows(t, idxs, pu, pa, pb)
+	}
+}
+
+// emitRows binds each hit row's payload into the buffered outer row and
+// emits it through the pair replay protocol: captured Check pairs replay
+// against the outer used-pair env, captured live pairs (plus the probe
+// hop's own, when there is one) push for downstream ops.
+func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, pb graph.NodeID) {
+	for _, ri := range idxs {
+		r := &t.rows[ri]
+		blocked := false
+		for _, p := range r.pairs {
+			if p.check && h.uniq.used(p.scope, p.a, p.b) {
+				blocked = true
+				break
 			}
-			if blocked {
-				continue
-			}
-			for i, s := range h.hj.PayloadSlots {
-				h.buf[s] = r.vals[i]
-			}
-			mark := len(h.uniq.stack)
-			if pu != nil && pu.Contribute {
-				h.uniq.stack = append(h.uniq.stack, uniqKey{scope: pu.Scope, a: pa, b: pb, check: pu.Check})
-			}
-			for _, p := range r.pairs {
-				if p.live {
-					h.uniq.stack = append(h.uniq.stack, uniqKey{scope: p.scope, a: p.a, b: p.b, check: p.check})
-				}
-			}
-			pass := true
-			for _, w := range h.where {
-				if !w.Eval(h.ctx, h.buf, h.slots).IsTruthy() {
-					pass = false
-					break
-				}
-			}
-			if pass {
-				if h.count != nil {
-					*h.count++
-				}
-				h.next.push(h.buf)
-			}
-			h.uniq.stack = h.uniq.stack[:mark]
 		}
+		if blocked {
+			continue
+		}
+		for i, s := range h.hj.PayloadSlots {
+			h.buf[s] = r.vals[i]
+		}
+		mark := len(h.uniq.stack)
+		if pu != nil && pu.Contribute {
+			h.uniq.stack = append(h.uniq.stack, uniqKey{scope: pu.Scope, a: pa, b: pb, check: pu.Check})
+		}
+		for _, p := range r.pairs {
+			if p.live {
+				h.uniq.stack = append(h.uniq.stack, uniqKey{scope: p.scope, a: p.a, b: p.b, check: p.check})
+			}
+		}
+		pass := true
+		for _, w := range h.where {
+			if !w.Eval(h.ctx, h.buf, h.slots).IsTruthy() {
+				pass = false
+				break
+			}
+		}
+		if pass {
+			if h.count != nil {
+				*h.count++
+			}
+			h.next.push(h.buf)
+		}
+		h.uniq.stack = h.uniq.stack[:mark]
 	}
 }
 
@@ -183,7 +213,13 @@ func (h *hashJoinSink) build(row []value.Value) *hjTable {
 	for _, s := range h.hj.ExtSlots {
 		ext[s] = true
 	}
-	var sink rowSink = &hjBuildSink{t: t, hj: h.hj, uniq: benv}
+	bs := &hjBuildSink{t: t, hj: h.hj, uniq: benv}
+	if h.hj.KeyBuild != nil {
+		t.byVal = map[string][]int32{}
+		bs.keyBuild = compileEval(h.ctx, h.hj.KeyBuild, h.seg.Slots)
+		bs.ctx, bs.slots = h.ctx, h.seg.Slots
+	}
+	var sink rowSink = bs
 	for i := len(h.hj.Build) - 1; i >= 0; i-- {
 		sink = buildStageSink(h.ctx, h.seg, h.hj.Build[i], sink, func(s int) bool { return ext[s] }, seed, nil, benv)
 	}
@@ -199,12 +235,29 @@ type hjBuildSink struct {
 	t    *hjTable
 	hj   *plan.HashJoinStage
 	uniq *uniqEnv
+	// keyBuild is the value-keyed join's branch-side key (nil for the
+	// expand-keyed form).
+	keyBuild RowEval
+	ctx      *eval.Ctx
+	slots    map[string]int
+	valBuf   []byte
 }
 
 func (b *hjBuildSink) push(row []value.Value) {
-	key, ok := row[b.hj.KeySlot].AsNode()
-	if !ok {
-		return
+	var key graph.NodeID
+	if b.keyBuild != nil {
+		// A null build key can never equal any probe value: drop the row.
+		v := b.keyBuild.Eval(b.ctx, row, b.slots)
+		if v.IsNull() {
+			return
+		}
+		b.valBuf = value.AppendKey(b.valBuf[:0], v)
+	} else {
+		var ok bool
+		key, ok = row[b.hj.KeySlot].AsNode()
+		if !ok {
+			return
+		}
 	}
 	r := hjRow{vals: make([]value.Value, len(b.hj.PayloadSlots))}
 	for i, s := range b.hj.PayloadSlots {
@@ -218,7 +271,11 @@ func (b *hjBuildSink) push(row []value.Value) {
 	}
 	idx := int32(len(b.t.rows))
 	b.t.rows = append(b.t.rows, r)
-	b.t.byKey[key] = append(b.t.byKey[key], idx)
+	if b.keyBuild != nil {
+		b.t.byVal[string(b.valBuf)] = append(b.t.byVal[string(b.valBuf)], idx)
+	} else {
+		b.t.byKey[key] = append(b.t.byKey[key], idx)
+	}
 }
 
 func (b *hjBuildSink) close() {}

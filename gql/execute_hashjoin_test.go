@@ -150,13 +150,15 @@ func TestHashJoinOptionalDownstream(t *testing.T) {
 	hjCompare(t, g, hjBaseQuery+" OPTIONAL MATCH (p)-[:OPT]->(q:Q) RETURN a.name AS an, p.name AS pn, q.name AS qn", true)
 }
 
-func TestHashJoinNoConnectingOpRejected(t *testing.T) {
+func TestHashJoinValueKeyWithinScope(t *testing.T) {
 	g := hashJoinGraph(t)
-	// No connecting expand between the branches: only a value predicate
-	// relates them, so the rewrite must not fire (no zero-key joins).
+	// No connecting expand between the branches -- but the value predicate
+	// relating them IS the key now: the equality's branch side keys the
+	// build, its outer side probes. (This pinned the opposite before the
+	// value-keyed join existed: the shape used to nested-loop.)
 	hjCompare(t, g,
 		"MATCH (t:Tag {name: 't'}), (t)-[:BT]->(bb:BB)-[:BC]->(p:P), (t)-[:AT]->(a:A)-[:AF]->(f:F) WHERE f.v = p.v RETURN a.name AS an, p.name AS pn",
-		false)
+		true)
 }
 
 func TestHashJoinDefaultThresholdsUntouched(t *testing.T) {
@@ -244,5 +246,99 @@ func TestHashJoinExcludedVarExpand(t *testing.T) {
 
 	hjCompare(t, g,
 		"MATCH (t:Tag {name: 't'}), (t)-[:RA]->(x:X)-[:C]->{0,}(cx:Y), (t)-[:RB]->(y:Y), (y)-[:C]-{0,}(cy:Root), (x)-[:MEM]->(y) RETURN x.name AS xn, y.name AS yn, cy.name AS cn",
+		true)
+}
+
+// valueJoinGraph: two DISCONNECTED components -- Persons and Accounts --
+// joined only by an email equality. Duplicate emails on both sides pin
+// multiplicity (2 persons x 2 accounts on dup@x = 4 rows), nulls on both
+// sides pin never-match, and an int/float pair on the `num` property pins
+// the key encoding's numeric canonicalization (int prop 1 must join
+// float prop 1.0 across two typed columns, exactly as `=` coerces).
+func valueJoinGraph(t *testing.T) *chickpeas.Snapshot {
+	t.Helper()
+	b := chickpeas.NewBuilder(64, 8)
+	person := func(name, email string, num value.Value) {
+		t.Helper()
+		n, err := b.AddNode("Person")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = b.SetProp(n, "name", name)
+		if email != "" {
+			_ = b.SetProp(n, "email", email)
+		}
+		if i, ok := num.AsInt(); ok {
+			_ = b.SetProp(n, "ni", i)
+		}
+	}
+	account := func(name, email string, num value.Value) {
+		t.Helper()
+		n, err := b.AddNode("Account")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = b.SetProp(n, "name", name)
+		if email != "" {
+			_ = b.SetProp(n, "email", email)
+		}
+		if f, ok := num.AsFloat(); ok && num.Kind() == value.KindFloat {
+			_ = b.SetProp(n, "nf", f)
+		}
+	}
+	person("p1", "a@x", value.Null())
+	person("p2", "dup@x", value.Null())
+	person("p3", "dup@x", value.Null())
+	person("p4", "", value.Null()) // null email: never joins
+	person("p5", "unmatched@x", value.Null())
+	person("pInt", "", value.Int(1))
+	account("a1", "a@x", value.Null())
+	account("a2", "dup@x", value.Null())
+	account("a3", "dup@x", value.Null())
+	account("a4", "", value.Null()) // null email: never joins
+	account("aFloat", "", value.Float(1.0))
+	// Filler accounts so the account scan is the fanning branch.
+	for i := range 30 {
+		account(fmt.Sprintf("filler%d", i), fmt.Sprintf("f%d@x", i), value.Null())
+	}
+	return b.Finalize("valuejoin-fixture")
+}
+
+// TestValueHashJoinDisconnectedComponents pins task 108's value-keyed
+// join: a WHERE equality between two disconnected components keys the
+// hash table (no connecting expand exists), and the joined multiset is
+// exactly the nested loop's -- duplicates multiplied, nulls dropped.
+func TestValueHashJoinDisconnectedComponents(t *testing.T) {
+	g := valueJoinGraph(t)
+	rows := hjCompare(t, g,
+		"MATCH (p:Person), (a:Account) WHERE p.email = a.email RETURN p.name AS pn, a.name AS an",
+		true)
+	// 1 (a@x) + 4 (dup@x cross product) = 5 rows; nulls and unmatched drop.
+	if len(rows) != 5 {
+		t.Fatalf("joined rows = %d, want 5: %v", len(rows), rows)
+	}
+}
+
+// TestValueHashJoinNumericCoercion pins the key encoding against the
+// equality's numeric coercion: int 1 joins float 1.0.
+func TestValueHashJoinNumericCoercion(t *testing.T) {
+	g := valueJoinGraph(t)
+	rows := hjCompare(t, g,
+		"MATCH (p:Person), (a:Account) WHERE p.ni = a.nf RETURN p.name AS pn, a.name AS an",
+		true)
+	if len(rows) != 1 || !strings.Contains(rows[0], "pInt") || !strings.Contains(rows[0], "aFloat") {
+		t.Fatalf("coercion join = %v, want the single pInt/aFloat row", rows)
+	}
+}
+
+// TestValueHashJoinReversedSides pins the discovery when the equality is
+// written outer-side first, and with an expression key on one side.
+func TestValueHashJoinReversedSides(t *testing.T) {
+	g := valueJoinGraph(t)
+	hjCompare(t, g,
+		"MATCH (p:Person), (a:Account) WHERE a.email = p.email RETURN p.name AS pn, a.name AS an",
+		true)
+	hjCompare(t, g,
+		"MATCH (p:Person), (a:Account) WHERE p.email + 'z' = a.email + 'z' RETURN p.name AS pn, a.name AS an",
 		true)
 }

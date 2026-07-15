@@ -237,6 +237,14 @@ type HashJoinStage struct {
 	Probe    BindOp
 	Reversed bool
 	Where    ast.Expr
+	// KeyBuild/KeyProbe carry a value-keyed join: the consumed equality
+	// conjunct's two sides, KeyBuild reading only branch (and external)
+	// slots, KeyProbe only pre-bound outer ones. When set, Probe and
+	// KeySlot are unused -- the probe is a table lookup by the outer
+	// row's key value (a null on either side never matches, per equality
+	// semantics). This is the disconnected-components join: no expand
+	// connects the branch, so a WHERE equality is the key.
+	KeyBuild, KeyProbe ast.Expr
 }
 
 // SpStage binds PathSlot to the minimum-hop path between the bound

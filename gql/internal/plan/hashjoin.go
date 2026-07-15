@@ -243,7 +243,66 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 			break
 		}
 	}
+	// Value-key fallback (the disconnected-components join): no expand
+	// connects the branch, but a region WHERE equality whose sides split
+	// cleanly -- one reading only branch/external slots, the other only
+	// pre-pivot outer ones -- keys the table by VALUE. The conjunct is
+	// consumed (it IS the join), never a stray; nulls never match, exactly
+	// the equality's own semantics.
+	var keyBuild, keyProbe ast.Expr
+	var consumedEq ast.Expr
 	if keySlot < 0 {
+		for si := k; si < end && consumedEq == nil; si++ {
+			ms := stages[si].(*MatchStage)
+			if ms.Optional || ms.Where == nil {
+				continue
+			}
+			var conjs []ast.Expr
+			SplitAnd(ms.Where, &conjs)
+			for _, c := range conjs {
+				bin, ok := c.(*ast.Binary)
+				if !ok || bin.Op != ast.OpEq {
+					continue
+				}
+				side := func(e ast.Expr) (branch, outer bool) {
+					refs := conjSlotRefs(e, slots)
+					if len(refs) == 0 {
+						return false, false
+					}
+					branch, outer = true, true
+					for _, r := range refs {
+						if !bBound[r] && !extOK(r) {
+							branch = false
+						}
+						if !preBound(r) {
+							outer = false
+						}
+					}
+					return branch, outer
+				}
+				lBranch, lOuter := side(bin.LHS)
+				rBranch, rOuter := side(bin.RHS)
+				switch {
+				case lBranch && rOuter:
+					keyBuild, keyProbe = bin.LHS, bin.RHS
+				case rBranch && lOuter:
+					keyBuild, keyProbe = bin.RHS, bin.LHS
+				default:
+					continue
+				}
+				// The build side's external reads join the memo tuple like
+				// an op's would.
+				for _, r := range conjSlotRefs(keyBuild, slots) {
+					if !bBound[r] {
+						extUsed[r] = true
+					}
+				}
+				consumedEq = c
+				break
+			}
+		}
+	}
+	if keySlot < 0 && keyBuild == nil {
 		return nil
 	}
 
@@ -279,6 +338,9 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 		var conjs []ast.Expr
 		SplitAnd(ms.Where, &conjs)
 		for _, c := range conjs {
+			if c == consumedEq {
+				continue // the value join's key equality, not a filter
+			}
 			refs := conjSlotRefs(c, slots)
 			inBranch := true
 			for _, r := range refs {
@@ -314,6 +376,8 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 		PayloadSlots: payload,
 		Probe:        probe,
 		Reversed:     reversed,
+		KeyBuild:     keyBuild,
+		KeyProbe:     keyProbe,
 	}
 
 	// Reassemble: pivot-region stages keep their leftover ops in place
