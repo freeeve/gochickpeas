@@ -283,7 +283,14 @@ func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string
 		}
 		n.decorCanonDone = true
 	}
+	// The one-entry cache answers the constant-anchor common case with an
+	// integer compare; only an anchor CHANGE consults the shared store
+	// (whose key hashes the canonical identity string).
+	if n.decorLastTbl != nil && n.decorLastAnchor == uint32(anchorNode) {
+		return n.decorLastTbl[groupNode], true
+	}
 	key := eval.DecorTableKey{Canon: n.decorCanon, Anchor: uint32(anchorNode)}
+	n.decorProbes++
 	tbl, hit := ctx.DecorTables[key]
 	if !hit {
 		if n.decorBuilds >= decorAnchorCap {
@@ -298,6 +305,7 @@ func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string
 		n.decorBuilds++
 		ctx.DecorBuilds++
 	}
+	n.decorLastAnchor, n.decorLastTbl = uint32(anchorNode), tbl
 	return tbl[groupNode], true
 }
 

@@ -129,6 +129,17 @@ type cSubquery struct {
 	decorCanonDone bool
 	decorBuilds    int
 	decorOff       bool
+	// One-entry anchor cache in front of the shared store: consecutive
+	// rows overwhelmingly share their anchor (a seeked hub never changes
+	// across a segment), and the shared store's key hashes the canonical
+	// identity string -- the cache answers those rows with one integer
+	// compare. decorProbes counts shared-store consultations (asserted in
+	// tests: a constant anchor probes once, not once per row). Sound
+	// per-node: the canon is fixed once decided, so the anchor id alone
+	// determines the table.
+	decorLastAnchor uint32
+	decorLastTbl    map[chickpeas.NodeID]int
+	decorProbes     int
 }
 
 // decorAnchorCap bounds the distinct anchor tables built before decorrelation

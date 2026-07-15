@@ -101,6 +101,82 @@ func TestDecorCountMatchesNaiveAndBuildsOnce(t *testing.T) {
 	if cs.decorBuilds != 1 {
 		t.Fatalf("side table built %d times, want 1 (one shared tag anchor)", cs.decorBuilds)
 	}
+	// The one-entry anchor cache answers every row after the first: a
+	// constant anchor consults the shared store ONCE across four evals
+	// (the streaming-not-rebinding invariant of task 105, as a counter).
+	if cs.decorProbes != 1 {
+		t.Fatalf("shared store probed %d times across 4 same-anchor rows, want 1", cs.decorProbes)
+	}
+}
+
+// TestDecorAnchorCacheAlternation pins the one-entry cache's miss path:
+// alternating anchors defeat the cache (each switch probes the shared
+// store) but never rebuild -- the per-anchor memo answers every repeat.
+// Values are asserted against the naive walk on every row, so a stale
+// cache entry (the mutation this guards against) surfaces as a wrong
+// count, not just a wrong counter.
+func TestDecorAnchorCacheAlternation(t *testing.T) {
+	b := chickpeas.NewBuilder(32, 64)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	tagA, err := b.AddNode("Tag")
+	must(err)
+	tagB, err := b.AddNode("Tag")
+	must(err)
+	person, err := b.AddNode("Person")
+	must(err)
+	msg := func(tag chickpeas.NodeID, n int) {
+		for range n {
+			m, err := b.AddNode("Message")
+			must(err)
+			_, err = b.AddRel(m, tag, "HAS_TAG")
+			must(err)
+			_, err = b.AddRel(m, person, "HAS_CREATOR")
+			must(err)
+		}
+	}
+	msg(tagA, 3)
+	msg(tagB, 5)
+	// Junk to make the tags the hub end.
+	for range 12 {
+		j, err := b.AddNode("Person")
+		must(err)
+		m, err := b.AddNode("Message")
+		must(err)
+		_, err = b.AddRel(m, tagA, "HAS_TAG")
+		must(err)
+		_, err = b.AddRel(m, j, "HAS_CREATOR")
+		must(err)
+	}
+	snap := b.Finalize("decor2")
+	ctx := &eval.Ctx{G: graph.New(snap)}
+	slots := map[string]int{"t": 0, "p": 1}
+	src := "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) }"
+	c := New(ctx, exprOf(t, src), slots, snap)
+	cs := c.c.(*cSubquery)
+	if !cs.decorOK {
+		t.Fatal("decorrelatable shape not recognized")
+	}
+	// A,B,A,B,A: five evals, four anchor switches after the first fill.
+	anchors := []chickpeas.NodeID{tagA, tagB, tagA, tagB, tagA}
+	for _, a := range anchors {
+		row := []value.Value{value.Node(a), value.Node(person)}
+		got, _ := c.Eval(ctx, row, slots).AsInt()
+		naive := eval.SubqueryCount(ctx, cs.pattern, cs.where, row, slots, false)
+		if got != int64(naive) {
+			t.Fatalf("anchor %d: decor %d != naive %d (stale one-entry cache?)", a, got, naive)
+		}
+	}
+	if cs.decorBuilds != 2 {
+		t.Fatalf("built %d tables, want 2 (one per distinct anchor, memo covers repeats)", cs.decorBuilds)
+	}
+	if cs.decorProbes != 5 {
+		t.Fatalf("shared store probed %d times, want 5 (every anchor switch misses the one-entry cache)", cs.decorProbes)
+	}
 }
 
 // TestDecorSiblingsShareOneTable pins task 104: two sibling COUNT{}
