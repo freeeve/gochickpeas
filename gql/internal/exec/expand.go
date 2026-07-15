@@ -126,9 +126,13 @@ func buildSemijoins(ops []plan.BindOp) []semiCache {
 	return out
 }
 
-// semijoinCandidates yields the already-bound target once when the edge
-// from the row's from-node exists, else nothing. An empty set also stands
-// in for a target failing its own constraints.
+// semijoinCandidates yields the already-bound target once PER qualifying
+// relationship from the row's from-node (parallel rels are adjacent
+// duplicates in the sorted set, so multiplicity costs one forward walk on
+// a hit and nothing on simple graphs), else nothing. Collapsing parallels
+// here while the enumerated rebind expand multiplies them made the
+// semijoin rewrite result-visible on multigraphs. An empty set
+// also stands in for a target failing its own constraints.
 func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, cache semiCache, row []value.Value, out *[]graph.NodeID, buf *[]graph.NodeID) {
 	fromID, ok1 := row[op.From].AsNode()
 	target, ok2 := row[op.To].AsNode()
@@ -143,8 +147,10 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm
 		}
 		cache[target] = set
 	}
-	if _, found := slices.BinarySearch(set, uint32(fromID)); found {
-		*out = append(*out, target)
+	if i, found := slices.BinarySearch(set, uint32(fromID)); found {
+		for j := i; j < len(set) && set[j] == uint32(fromID); j++ {
+			*out = append(*out, target)
+		}
 	}
 }
 

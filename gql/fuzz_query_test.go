@@ -7,11 +7,12 @@ package gql
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/value"
-	"strings"
 )
 
 var (
@@ -99,6 +100,15 @@ func FuzzQuery(f *testing.F) {
 		f.Add(seed)
 	}
 	g := socialGraph(f)
+	// The multigraph lane (task 144): the same inputs run over a fixture
+	// with parallel relationships, comparing the literal plan's rows
+	// against the auto-parameterized cached plan's AS MULTISETS. The two
+	// plans can legitimately differ in shape (value-sighted signals go
+	// blind under the template), and parallel rels are exactly where a
+	// shape difference becomes a row-count difference if any hop form
+	// collapses multiplicity the others keep.
+	mg := multiSocialGraph(f)
+	mcache := NewPlanCache(1 << 20)
 	f.Fuzz(func(t *testing.T, q string) {
 		if len(fuzzBareScan.FindAllString(q, -1)) >= 6 || fuzzHugeQuant.MatchString(q) {
 			t.Skip("execution-budget skip (wide cartesian / huge quantifier), not semantics")
@@ -145,6 +155,24 @@ func FuzzQuery(f *testing.F) {
 		for i := range keys {
 			if keys[i] != keys3[i] {
 				t.Fatalf("dual-path divergence at row %d for %q", i, q)
+			}
+		}
+
+		// Multigraph lane: literal vs cached-template rows, multiset
+		// equality (plan shapes may differ; row multisets must not).
+		mrows, merr := Run(mg, q)
+		crows, cerr := mcache.Run(mg, q)
+		if (merr == nil) != (cerr == nil) {
+			t.Fatalf("multigraph literal/cached error divergence for %q: %v vs %v", q, merr, cerr)
+		}
+		if merr == nil {
+			mk, _ := fuzzRows(mrows)
+			ck, _ := fuzzRows(crows)
+			slices.Sort(mk)
+			slices.Sort(ck)
+			if !slices.Equal(mk, ck) {
+				t.Fatalf("multigraph literal/cached multiset divergence for %q:\nliteral (%d): %v\ncached (%d): %v",
+					q, len(mk), mk, len(ck), ck)
 			}
 		}
 

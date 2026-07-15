@@ -122,10 +122,13 @@ const hjBaseQuery = "MATCH (t:Tag {name: 't'}), (t)-[:BT]->(bb:BB)-[:BC]->(p:P),
 func TestHashJoinBasicAndMultiplicity(t *testing.T) {
 	g := hashJoinGraph(t)
 	rows := hjCompare(t, g, hjBaseQuery+" RETURN a.name AS an, bb.name AS bn, p.name AS pn", true)
-	// p1 is in f0, f4, f9 (f9 authored by BOTH a9 and a10 -- two payload
-	// rows under one key) and reached by two bb's (b1, b7): 4 x 2 rows.
-	if len(rows) != 8 {
-		t.Fatalf("row count = %d, want 8: %v", len(rows), rows)
+	// p1 is in f0 (one MEM), f4 (one MEM), and f9 (NINE parallel MEMs,
+	// authored by BOTH a9 and a10 -- two payload rows under one key), and
+	// reached by two bb's (b1, b7): (1 + 1 + 9*2) * 2 = 40 rows. Parallel
+	// relationships carry per-rel multiplicity through probe and nested
+	// paths alike (task 144's multigraph consistency fix).
+	if len(rows) != 40 {
+		t.Fatalf("row count = %d, want 40: %v", len(rows), rows)
 	}
 }
 
@@ -199,8 +202,16 @@ func TestHashJoinUniquenessReplay(t *testing.T) {
 	rows := hjCompare(t, g,
 		"MATCH (t:Tag {name: 't'}), (t)-[:R]->(x:N), (t)-[:R]->(y:N), (x)-[:M]->(y) RETURN x.name AS xn, y.name AS yn",
 		true)
-	if len(rows) != 2 {
-		t.Fatalf("rows = %v, want the two x!=y pairs only (self-loop rows must be uniqueness-rejected)", rows)
+	// (n0,n1) once per parallel M (16) plus (n2,n0) once = 17; the
+	// self-loop pairs (x == y reuses the R pair) stay rejected. Task 144:
+	// parallel rels carry per-rel multiplicity through the probe.
+	if len(rows) != 17 {
+		t.Fatalf("rows = %v, want 17 (16 parallel (n0,n1) + (n2,n0); self-loop rows uniqueness-rejected)", rows)
+	}
+	for _, r := range rows {
+		if strings.Contains(r, "n0|   n0") || strings.Contains(r, "n2|   n2") {
+			t.Fatalf("self-loop row leaked: %v", r)
+		}
 	}
 }
 
@@ -400,8 +411,16 @@ func TestHashJoinUniquenessReplayDeepHop(t *testing.T) {
 	rows := hjCompare(t, g,
 		"MATCH (t:Tag {name: 't'}), (t)-[:A]->(u:U), (t)-[:A1]->(o:N)-[:M]->(w:N), (t)-[:A]->(x:N)-[:M]->(y:N), (w)-[:MEM]->(y) RETURN u.name AS un, o.name AS on, w.name AS wn, y.name AS yn",
 		true)
-	if len(rows) != 1 || !strings.Contains(rows[0], "h3") {
-		t.Fatalf("rows = %v, want exactly the h3 row (the self-MEM route reuses the deep M(h1,h2) pair and must be rejected)", rows)
+	// The one logical row appears once per parallel (h2,h3) MEM (16); the
+	// self-MEM route (reusing the deep M(h1,h2) pair) stays rejected --
+	// every row must be the h3 row (task 144 per-rel multiplicity).
+	if len(rows) != 16 {
+		t.Fatalf("rows = %v, want 16 h3 rows (the self-MEM route reuses the deep M(h1,h2) pair and must be rejected)", rows)
+	}
+	for _, r := range rows {
+		if !strings.Contains(r, "h3") {
+			t.Fatalf("non-h3 row leaked (deep-pair reuse): %v", r)
+		}
 	}
 }
 

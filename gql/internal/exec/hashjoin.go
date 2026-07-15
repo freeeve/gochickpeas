@@ -133,12 +133,13 @@ func (h *hashJoinSink) push(row []value.Value) {
 		return
 	}
 	copy(h.buf, row)
-	// The candidate set is deduplicated: the consumed connecting expand
-	// was a bound-target existence check, which collapses parallel
-	// relationships (the engine's documented multigraph deviation).
+	// The candidate list keeps parallel relationships (one entry each):
+	// the consumed connecting expand carries per-rel multiplicity in the
+	// nested rebind, so the probe must too -- deduplicating here made the
+	// extraction result-visible on multigraphs. The sort is only for
+	// deterministic emission order.
 	h.nbuf = h.ctx.G.AppendNeighborsMatched(h.nbuf[:0], from, h.hj.Probe.Dir, h.probeRM)
 	slices.Sort(h.nbuf)
-	h.nbuf = slices.Compact(h.nbuf)
 	pu := h.hj.Probe.Uniq
 	for _, cand := range h.nbuf {
 		if !h.hj.Reversed && !h.ctx.G.NodeMatcherAccepts(h.probeM, cand) {
