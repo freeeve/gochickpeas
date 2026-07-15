@@ -53,18 +53,31 @@ func GABFS(g *chickpeas.Snapshot, source uint32, directed bool) []int64 {
 
 // GASSSP is single-source shortest paths over forward rels (weight rel
 // property, absent = 1.0); unreachable nodes get +Inf.
+//
+// With NO weight column every edge is unit weight, so the shortest paths are
+// exactly BFS hop counts -- the unit-weight-Dijkstra-is-a-BFS principle
+// (tasks 126/128/140). Dispatch to the allocation-lean BFS and lift to float
+// instead of running the full weighted Dijkstra, whose per-node settle/heap
+// state allocated ~3x per node on a large graph. A present weight column (even
+// with some missing values, which fall back to 1.0) stays weighted Dijkstra.
 func GASSSP(g *chickpeas.Snapshot, source uint32, directed bool) []float64 {
-	var wcol chickpeas.F64Col
-	hasCol := false
-	if c, ok := g.RelColIndexed("weight"); ok {
-		wcol = c.F64()
-		hasCol = true
-	}
-	weight := func(_ chickpeas.NodeID, rel chickpeas.RelRef) float64 {
-		if hasCol {
-			if w, ok := wcol.Get(rel.Pos); ok {
-				return w
+	c, ok := g.RelColIndexed("weight")
+	if !ok {
+		hops := GABFS(g, source, directed)
+		out := make([]float64, len(hops))
+		for i, h := range hops {
+			if h == math.MaxInt64 {
+				out[i] = math.Inf(1)
+			} else {
+				out[i] = float64(h)
 			}
+		}
+		return out
+	}
+	wcol := c.F64()
+	weight := func(_ chickpeas.NodeID, rel chickpeas.RelRef) float64 {
+		if w, ok := wcol.Get(rel.Pos); ok {
+			return w
 		}
 		return 1.0
 	}

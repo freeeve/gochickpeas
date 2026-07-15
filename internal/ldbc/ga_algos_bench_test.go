@@ -36,6 +36,21 @@ func BenchmarkGABFSWikiTalk(b *testing.B) {
 	}
 }
 
+func BenchmarkGASSSPWikiTalk(b *testing.B) {
+	ds := gaWikiTalk(b)
+	src := uint32(0)
+	if ds.Params.SSSPSource != nil {
+		src = *ds.Params.SSSPSource
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if out := GASSSP(ds.Graph, src, ds.Params.Directed); len(out) == 0 {
+			b.Fatal("empty result")
+		}
+	}
+}
+
 func BenchmarkGAPageRankWikiTalk(b *testing.B) {
 	ds := gaWikiTalk(b)
 	b.ResetTimer()

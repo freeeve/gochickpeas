@@ -97,6 +97,34 @@ func TestGASSSPWeightedAndUnreachable(t *testing.T) {
 	}
 }
 
+// TestGASSSPUnweightedMatchesDijkstra (task 151): with no weight column every
+// edge is unit weight, so GASSSP dispatches to BFS. The lifted hop distances
+// must equal a full unit-weight Dijkstra over the same graph -- result-
+// identical, at ~0 allocs instead of the weighted Dijkstra's ~3/node.
+func TestGASSSPUnweightedMatchesDijkstra(t *testing.T) {
+	rng := rand.New(rand.NewSource(151))
+	const n = 200
+	rels := make([][2]uint32, 0, 600)
+	for range 600 {
+		rels = append(rels, [2]uint32{uint32(rng.Intn(n)), uint32(rng.Intn(n))})
+	}
+	g := gaBuild(t, n, rels, nil) // nil weights -> no weight column -> unit
+	unit := func(chickpeas.NodeID, chickpeas.RelRef) float64 { return 1.0 }
+	for _, directed := range []bool{true, false} {
+		got := GASSSP(g, 0, directed)
+		sp := g.Dijkstra(0, gaFwd(directed), chickpeas.MatchAll(), unit)
+		for v := uint32(0); v < n; v++ {
+			want := math.Inf(1)
+			if d, ok := sp.Distance(chickpeas.NodeID(v)); ok {
+				want = d
+			}
+			if got[v] != want {
+				t.Fatalf("directed=%v node %d: BFS-dispatch=%v unit-Dijkstra=%v", directed, v, got[v], want)
+			}
+		}
+	}
+}
+
 func TestGAWCCTwoComponents(t *testing.T) {
 	g := gaBuild(t, 5, [][2]uint32{{0, 1}, {1, 2}, {3, 4}}, nil)
 	got := GAWCC(g)
