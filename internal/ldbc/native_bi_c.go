@@ -419,7 +419,13 @@ func biQ17(g *chickpeas.Snapshot) ([][]any, error) {
 			set[f] = true
 		}
 	}
-	counts := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	// Distinct msg2 per person, counted via a flat (person, msg2) pair-set plus
+	// a per-person counter incremented on first sight, rather than an inner map
+	// per person: these inner sets were only read for their length. (pm above
+	// stays a map-of-maps -- it is probed for membership in the hot loop.)
+	type pMsg struct{ p1, msg chickpeas.NodeID }
+	seen := map[pMsg]bool{}
+	counts := map[chickpeas.NodeID]int64{}
 	for _, c := range cands {
 		if c.p2 == c.p3 {
 			continue
@@ -431,20 +437,19 @@ func biQ17(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 			for _, m1 := range m1ByForum[f1] {
 				if c.ms2 > m1.ms1+deltaMS && !pm[m1.p1][c.f2] {
-					set := counts[m1.p1]
-					if set == nil {
-						set = map[chickpeas.NodeID]bool{}
-						counts[m1.p1] = set
+					pair := pMsg{m1.p1, c.msg2}
+					if !seen[pair] {
+						seen[pair] = true
+						counts[m1.p1]++
 					}
-					set[c.msg2] = true
 				}
 			}
 		}
 	}
 	type outRow struct{ id, count int64 }
 	ranked := make([]outRow, 0, len(counts))
-	for p, ms := range counts {
-		ranked = append(ranked, outRow{i64At(idCol, p), int64(len(ms))})
+	for p, cnt := range counts {
+		ranked = append(ranked, outRow{i64At(idCol, p), cnt})
 	}
 	sortByLess(ranked, func(a, b outRow) bool {
 		return cmpChain(cmpI64Desc(a.count, b.count), cmpI64Asc(a.id, b.id))
