@@ -245,6 +245,12 @@ type HashJoinStage struct {
 	Probe    BindOp
 	Reversed bool
 	Where    ast.Expr
+	// Cartesian marks the keyless disconnected join: no expand and no
+	// equality relates the branch, so the build materializes once and
+	// EVERY build row emits per outer row -- the classic cartesian
+	// build-once, which exists to stop the branch's scan re-running per
+	// outer row (the output multiset is the same product either way).
+	Cartesian bool
 	// KeyBuild/KeyProbe carry a value-keyed join: the consumed equality
 	// conjunct's two sides, KeyBuild reading only branch (and external)
 	// slots, KeyProbe only pre-bound outer ones. When set, Probe and

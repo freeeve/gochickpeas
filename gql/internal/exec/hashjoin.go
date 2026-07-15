@@ -103,6 +103,13 @@ func (h *hashJoinSink) push(row []value.Value) {
 	if len(t.rows) == 0 {
 		return
 	}
+	// Cartesian probe: every build row emits per outer row (the keyless
+	// disconnected join -- one bucket, the same emission protocol).
+	if h.hj.Cartesian {
+		copy(h.buf, row)
+		h.emitRows(t, t.byVal[""], nil, 0, 0)
+		return
+	}
 	// Value-keyed probe: the outer row's key value looks the bucket up
 	// directly -- no expand, no probe uniqueness (no relationship binds).
 	// A null key never matches, per the consumed equality's semantics.
@@ -214,6 +221,9 @@ func (h *hashJoinSink) build(row []value.Value) *hjTable {
 		ext[s] = true
 	}
 	bs := &hjBuildSink{t: t, hj: h.hj, uniq: benv}
+	if h.hj.Cartesian {
+		t.byVal = map[string][]int32{}
+	}
 	if h.hj.KeyBuild != nil {
 		t.byVal = map[string][]int32{}
 		bs.keyBuild = compileEval(h.ctx, h.hj.KeyBuild, h.seg.Slots)
@@ -245,7 +255,9 @@ type hjBuildSink struct {
 
 func (b *hjBuildSink) push(row []value.Value) {
 	var key graph.NodeID
-	if b.keyBuild != nil {
+	if b.hj.Cartesian {
+		// One bucket: the probe emits every row.
+	} else if b.keyBuild != nil {
 		// A null build key can never equal any probe value: drop the row.
 		v := b.keyBuild.Eval(b.ctx, row, b.slots)
 		if v.IsNull() {
@@ -271,9 +283,12 @@ func (b *hjBuildSink) push(row []value.Value) {
 	}
 	idx := int32(len(b.t.rows))
 	b.t.rows = append(b.t.rows, r)
-	if b.keyBuild != nil {
+	switch {
+	case b.hj.Cartesian:
+		b.t.byVal[""] = append(b.t.byVal[""], idx)
+	case b.keyBuild != nil:
 		b.t.byVal[string(b.valBuf)] = append(b.t.byVal[string(b.valBuf)], idx)
-	} else {
+	default:
 		b.t.byKey[key] = append(b.t.byKey[key], idx)
 	}
 }

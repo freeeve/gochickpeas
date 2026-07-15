@@ -36,9 +36,21 @@ var (
 	HashJoinMaxBuildRows = 1 << 22
 )
 
-// hashJoinStages applies the rewrite to at most one pivot of the
-// segment's stage list (the dominant multiply; a later pass may recurse).
+// hashJoinStages applies the rewrite repeatedly until no pivot
+// qualifies -- a segment can hold several independent multiplying
+// branches (each pass consumes its pivot's ops, so the loop terminates).
 func hashJoinStages(stages []Stage, slots map[string]int, inWidth int, g graph.Graph) []Stage {
+	for range len(stages) + 1 {
+		out := hashJoinOnce(stages, slots, inWidth, g)
+		if out == nil {
+			return stages
+		}
+		stages = out
+	}
+	return stages
+}
+
+func hashJoinOnce(stages []Stage, slots map[string]int, inWidth int, g graph.Graph) []Stage {
 	boundEst := make(map[int]float64, inWidth+8)
 	boundStage := make(map[int]int, inWidth+8)
 	for s := range inWidth {
@@ -112,7 +124,7 @@ func hashJoinStages(stages []Stage, slots map[string]int, inWidth int, g graph.G
 			return out
 		}
 	}
-	return stages
+	return nil
 }
 
 // tryHashJoin attempts the rewrite at pivot stage k; nil when the shape
@@ -148,59 +160,70 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 	// stack is live).
 	type opRef struct{ si, oi int }
 	var collected []opRef
-	isCollected := make(map[opRef]bool)
-	bBound := make(map[int]bool)
-	extUsed := make(map[int]bool)
-	readable := func(s int) bool {
-		if bBound[s] {
-			return true
-		}
-		if extOK(s) {
-			extUsed[s] = true
-			return true
-		}
-		return false
-	}
-	var reads []int
-	for si := k; si < end; si++ {
-		ms := stages[si].(*MatchStage)
-		if ms.Optional {
-			continue
-		}
-		for oi := range ms.Ops {
-			op := &ms.Ops[oi]
-			reads = opReads(op, reads[:0])
-			ok := true
-			for _, r := range reads {
-				if !readable(r) {
-					ok = false
-					break
-				}
+	var isCollected map[opRef]bool
+	var bBound, extUsed map[int]bool
+	// collect runs the op-level dependency-driven collection over stages
+	// [k, lim): an op joins the branch when everything it reads is
+	// external-qualified or branch-bound. Callable twice -- the keyless
+	// (cartesian) fallback re-collects with lim = k+1 so the build is the
+	// pivot stage's own component only, and recursion extracts the rest.
+	collect := func(lim int) {
+		collected = collected[:0]
+		isCollected = make(map[opRef]bool)
+		bBound = make(map[int]bool)
+		extUsed = make(map[int]bool)
+		readable := func(s int) bool {
+			if bBound[s] {
+				return true
 			}
-			if ok && op.Kind == OpVarExpand && op.Uniq != nil &&
-				!(op.Max != nil && op.Uniq.Contribute && !op.DedupEndpoints) {
-				ok = false
+			if extOK(s) {
+				extUsed[s] = true
+				return true
 			}
-			if !ok {
+			return false
+		}
+		var reads []int
+		for si := k; si < lim; si++ {
+			ms := stages[si].(*MatchStage)
+			if ms.Optional {
 				continue
 			}
-			ref := opRef{si, oi}
-			collected = append(collected, ref)
-			isCollected[ref] = true
-			if op.Kind == OpScan {
-				if op.Source.Kind != ScanArg {
-					bBound[op.Slot] = true
+			for oi := range ms.Ops {
+				op := &ms.Ops[oi]
+				reads = opReads(op, reads[:0])
+				ok := true
+				for _, r := range reads {
+					if !readable(r) {
+						ok = false
+						break
+					}
 				}
-			} else {
-				if !op.Rebind {
-					bBound[op.To] = true
+				if ok && op.Kind == OpVarExpand && op.Uniq != nil &&
+					!(op.Max != nil && op.Uniq.Contribute && !op.DedupEndpoints) {
+					ok = false
 				}
-				if op.RelSlot != NoSlot {
-					bBound[op.RelSlot] = true
+				if !ok {
+					continue
+				}
+				ref := opRef{si, oi}
+				collected = append(collected, ref)
+				isCollected[ref] = true
+				if op.Kind == OpScan {
+					if op.Source.Kind != ScanArg {
+						bBound[op.Slot] = true
+					}
+				} else {
+					if !op.Rebind {
+						bBound[op.To] = true
+					}
+					if op.RelSlot != NoSlot {
+						bBound[op.RelSlot] = true
+					}
 				}
 			}
 		}
 	}
+	collect(end)
 	if len(bBound) == 0 {
 		return nil
 	}
@@ -302,8 +325,27 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 			}
 		}
 	}
+	// Keyless fallback: nothing relates the branch at all -- a genuine
+	// cartesian product. Build once; the probe emits every build row per
+	// outer row. Output is the same product the nested loop produced; the
+	// win is the branch's scan not re-running per outer row.
+	cartesian := false
 	if keySlot < 0 && keyBuild == nil {
-		return nil
+		// Build-once only pays when there IS an outer to repeat against:
+		// a pivot whose input is the single seed row runs its scan once
+		// either way, so wrapping it in a join is a no-op with overhead.
+		if estIn <= 1 {
+			return nil
+		}
+		cartesian = true
+		// Narrow the build to the pivot stage's own component: collecting
+		// every satisfiable op would swallow sibling disconnected branches
+		// into ONE build whose internal nesting still re-scans -- each
+		// component gets its own build-once via the recursion instead.
+		collect(k + 1)
+		if len(bBound) == 0 {
+			return nil
+		}
 	}
 
 	// The materialized branch must fit the memory bound (the win itself
@@ -378,6 +420,7 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 		Reversed:     reversed,
 		KeyBuild:     keyBuild,
 		KeyProbe:     keyProbe,
+		Cartesian:    cartesian,
 	}
 
 	// Reassemble: pivot-region stages keep their leftover ops in place

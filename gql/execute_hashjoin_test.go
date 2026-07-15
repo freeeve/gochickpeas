@@ -404,3 +404,65 @@ func TestHashJoinUniquenessReplayDeepHop(t *testing.T) {
 		t.Fatalf("rows = %v, want exactly the h3 row (the self-MEM route reuses the deep M(h1,h2) pair and must be rejected)", rows)
 	}
 }
+
+// TestCartesianBuildOnce pins 130 piece 1: a genuinely disconnected
+// component with NO relating predicate joins keylessly -- the build
+// materializes once and every build row emits per outer row. The output
+// multiset is the same product the nested loop produced (pinned by the
+// differential); the win is the branch's scan not re-running per row.
+func TestCartesianBuildOnce(t *testing.T) {
+	g := valueJoinGraph(t)
+	rows := hjCompare(t, g,
+		"MATCH (p:Person), (a:Account) RETURN p.name AS pn, a.name AS an",
+		true)
+	// 6 persons x 35 accounts, every pair.
+	if len(rows) != 6*35 {
+		t.Fatalf("cartesian rows = %d, want %d", len(rows), 6*35)
+	}
+}
+
+// TestMultiPivotExtraction pins 130 piece 2: a segment holding TWO
+// independent multiplying branches extracts BOTH (the old pass stopped
+// at the first success despite its own comment). Three genuinely
+// disconnected components force it -- the reorderer cannot chain them,
+// so the first pass extracts one cartesian and the second pass the
+// other; the output is the full 2x3x4 product either way.
+func TestMultiPivotExtraction(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 4)
+	mk := func(label, name string) {
+		n, _ := b.AddNode(label)
+		_ = b.SetProp(n, "name", name)
+	}
+	for i := range 2 {
+		mk("A", fmt.Sprintf("a%d", i))
+	}
+	for i := range 3 {
+		mk("B", fmt.Sprintf("b%d", i))
+	}
+	for i := range 4 {
+		mk("C", fmt.Sprintf("c%d", i))
+	}
+	g := b.Finalize("multipivot")
+
+	q := "MATCH (a:A), (bb:B), (c:C) RETURN a.name AS an, bb.name AS bn, c.name AS cn"
+	nested := hjRowKeys(t, g, q)
+	if len(nested) != 24 {
+		t.Fatalf("nested product = %d, want 24", len(nested))
+	}
+	mr, ff, ed := plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor
+	plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = 0, 2, 4
+	defer func() {
+		plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = mr, ff, ed
+	}()
+	pl, err := Explain(g, q+" ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(pl, "HashJoin"); n != 2 {
+		t.Fatalf("HashJoin count = %d, want 2 (both cartesians extract):\n%s", n, pl)
+	}
+	joined := hjRowKeys(t, g, q+" ")
+	if !slices.Equal(nested, joined) {
+		t.Fatalf("multiset divergence:\nnested: %v\njoined: %v", nested, joined)
+	}
+}
