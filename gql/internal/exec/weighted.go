@@ -51,7 +51,15 @@ func buildPathWeight(ctx *eval.Ctx, sp *plan.SpStage) *pathWeight {
 		}
 		return &pathWeight{kind: weightMissing}
 	case ast.CostProperty:
-		return &pathWeight{kind: weightReader, reader: ctx.G.RelWeightReader(spec.Prop)}
+		// A key with no column reads 1.0 on every edge -- unit weights by
+		// another name, so classify it as Missing and let the dispatch
+		// take the BFS forms (tree memo included) instead of a unit-weight
+		// Dijkstra through the property door.
+		r := ctx.G.RelWeightReader(spec.Prop)
+		if r == nil {
+			return &pathWeight{kind: weightMissing}
+		}
+		return &pathWeight{kind: weightReader, reader: r}
 	default:
 		scope := map[string]int{sp.WeightVar: 0}
 		return &pathWeight{
@@ -144,7 +152,14 @@ type wpParent struct {
 // (node, hops); an unbounded one keys the node alone -- plain Dijkstra --
 // so an unreachable target costs one component sweep instead of a
 // (node, hops) state explosion.
+// weightedSearches counts weightedShortestPath invocations -- the
+// red-before/green-after oracle for the unit-weight dispatch: rows whose
+// cost degrades to unit must take the BFS forms (tree memo included), so
+// a stage of N such rows runs ZERO weighted searches.
+var weightedSearches int
+
 func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight) *nodesRels {
+	weightedSearches++
 	if a == b {
 		return &nodesRels{nodes: []graph.NodeID{a}}
 	}

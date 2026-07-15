@@ -125,8 +125,11 @@ func TestRelPropAndEndpoints(t *testing.T) {
 		t.Fatalf("hoisted weight = %v", w)
 	}
 	// Absent weight key: constant 1.0 fallback.
-	if w := s.RelWeightReader("nosuchweight")(pos); w != 1.0 {
-		t.Fatalf("absent weight = %v, want 1.0", w)
+	// A key with no column returns a nil reader: the caller classifies it
+	// as unit weights (the 128 degraded-shape rule) instead of paying a
+	// constant-1.0 reader through the weighted engine.
+	if r := s.RelWeightReader("nosuchweight"); r != nil {
+		t.Fatal("missing weight column must return a nil reader")
 	}
 }
 

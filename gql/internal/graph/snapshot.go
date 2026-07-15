@@ -245,11 +245,15 @@ func (s *SnapshotGraph) GeoWithinBBox(label, latField, lonField string, minLat, 
 
 // RelWeightReader hoists the weight column once per search: the returned
 // reader answers 1.0 for an absent or non-numeric weight, matching the
-// per-rel property fallback.
+// per-rel property fallback. A key with NO column at all returns nil --
+// every edge would read 1.0, making the weighted search a unit-weight
+// Dijkstra, so the caller must classify that case as unit weights and
+// take the BFS dispatch (the third degraded shape of the constant-cost
+// bug: the unit Dijkstra coming back through the property door).
 func (s *SnapshotGraph) RelWeightReader(key string) func(pos uint32) float64 {
 	col, ok := s.g.RelColIndexed(key)
 	if !ok {
-		return func(uint32) float64 { return 1.0 }
+		return nil
 	}
 	switch col.Dtype() {
 	case chickpeas.DtypeF64:

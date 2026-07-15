@@ -150,7 +150,8 @@ type Graph interface {
 	GeoWithinBBox(label, latField, lonField string, minLat, minLon, maxLat, maxLon float64) (*nodeset.Set, bool)
 	// RelWeightReader is a hoisted relationship-weight reader for weighted
 	// shortest paths: reads the key weight by CSR position in O(1),
-	// defaulting to 1.0 when absent or non-numeric.
+	// defaulting to 1.0 when absent or non-numeric. nil when the key has
+	// no column at all -- the caller classifies that as unit weights.
 	RelWeightReader(key string) func(pos uint32) float64
 }
 

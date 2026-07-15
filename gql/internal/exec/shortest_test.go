@@ -244,3 +244,43 @@ func TestWeightedHopCap(t *testing.T) {
 		t.Fatalf("capped route = %v", nodes)
 	}
 }
+
+// TestMissingWeightColumnTakesBFS pins the third degraded shape of the
+// constant-cost bug (128): COST r.<key> where the key has NO column reads
+// 1.0 on every edge -- unit weights through the property door -- so it
+// must take the BFS forms. The oracle is the weighted-search counter:
+// two rows sharing a source run ZERO weighted searches (they share one
+// memoized tree instead); reverting the nil-reader classification reads 2.
+func TestMissingWeightColumnTakesBFS(t *testing.T) {
+	ctx := weightedGraph(t)
+	sp := &plan.SpStage{
+		PathSlot: 2, From: 0, To: 1,
+		Dir: graph.Outgoing, Types: []string{"R"},
+		Weight: &ast.CostSpec{Kind: ast.CostProperty, Prop: "nosuchweight"},
+	}
+	before := weightedSearches
+	rows := runSPStage(ctx, sp, [][]value.Value{
+		{value.Node(0), value.Node(1), value.Null()},
+		{value.Node(0), value.Node(2), value.Null()},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	// Unit weights: min-hop answers -- 0->1 direct (2 nodes), 0->2 (2 nodes).
+	for i, r := range rows {
+		nodes, _, ok := r[2].AsPath()
+		if !ok || len(nodes) != 2 {
+			t.Fatalf("row %d path = %v (ok=%v), want the direct min-hop edge", i, nodes, ok)
+		}
+	}
+	if n := weightedSearches - before; n != 0 {
+		t.Fatalf("missing-column COST ran %d weighted searches, want 0 (unit weights must take the BFS forms)", n)
+	}
+	// A REAL property weight still runs the weighted engine.
+	before = weightedSearches
+	sp.Weight = &ast.CostSpec{Kind: ast.CostProperty, Prop: "w"}
+	runSPStage(ctx, sp, [][]value.Value{{value.Node(0), value.Node(1), value.Null()}})
+	if n := weightedSearches - before; n != 1 {
+		t.Fatalf("real property COST ran %d weighted searches, want 1", n)
+	}
+}
