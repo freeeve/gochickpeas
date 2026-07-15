@@ -69,11 +69,24 @@ func hashJoinOnce(stages []Stage, slots map[string]int, inWidth int, g graph.Gra
 	rows := 1.0
 	stageIn := make([]float64, len(stages))
 	stageOut := make([]float64, len(stages))
+	// Slots proven to hold exactly one concrete node (a resolved seek):
+	// later hops from these price at the node's real degree, so the pivot
+	// and build gates decide on fact where the type average would lie.
+	resolved := make(map[int]graph.NodeID)
 	for si, st := range stages {
 		stageIn[si] = rows
 		switch s := st.(type) {
 		case *MatchStage:
-			ests, out := matchEst(s, rows, g)
+			for oi := range s.Ops {
+				op := &s.Ops[oi]
+				if op.Kind != OpScan || op.Source.Kind == ScanArg {
+					continue
+				}
+				if nodes, ok := resolveScanNodes(&op.Source, op.Labels, op.Props, g); ok && len(nodes) == 1 {
+					resolved[op.Slot] = nodes[0]
+				}
+			}
+			ests, out := matchEstAnchored(s, rows, g, resolved)
 			for oi := range s.Ops {
 				op := &s.Ops[oi]
 				if op.Kind == OpScan {
@@ -120,7 +133,7 @@ func hashJoinOnce(stages []Stage, slots map[string]int, inWidth int, g graph.Gra
 		if stageIn[k] < float64(HashJoinMinRows) || stageOut[k] < stageIn[k]*HashJoinFanFactor {
 			continue
 		}
-		if out := tryHashJoin(stages, k, stageIn[k], boundEst, boundStage, slots, g); out != nil {
+		if out := tryHashJoin(stages, k, stageIn[k], boundEst, boundStage, resolved, slots, g); out != nil {
 			return out
 		}
 	}
@@ -129,7 +142,7 @@ func hashJoinOnce(stages []Stage, slots map[string]int, inWidth int, g graph.Gra
 
 // tryHashJoin attempts the rewrite at pivot stage k; nil when the shape
 // does not qualify.
-func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64, boundStage map[int]int, slots map[string]int, g graph.Graph) []Stage {
+func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64, boundStage map[int]int, resolved map[int]graph.NodeID, slots map[string]int, g graph.Graph) []Stage {
 	extMax := estIn / HashJoinExtDivisor
 	extOK := func(s int) bool {
 		e, ok := boundEst[s]
@@ -355,7 +368,7 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 		buildOps = append(buildOps, stages[ref.si].(*MatchStage).Ops[ref.oi])
 	}
 	buildStage := &MatchStage{Ops: buildOps, Scope: stages[k].(*MatchStage).Scope}
-	if _, bRows := matchEst(buildStage, 1, g); bRows > float64(HashJoinMaxBuildRows) {
+	if _, bRows := matchEstAnchored(buildStage, 1, g, resolved); bRows > float64(HashJoinMaxBuildRows) {
 		return nil
 	}
 

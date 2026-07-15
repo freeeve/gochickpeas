@@ -141,16 +141,38 @@ func projEst(proj *ProjPlan, rows float64) *uint64 {
 // row count; returns the per-op estimates (plus a trailing one for the
 // stage WHERE) and the rows leaving the stage.
 func matchEst(ms *MatchStage, inRows float64, g graph.Graph) ([]uint64, float64) {
+	return matchEstAnchored(ms, inRows, g, nil)
+}
+
+// matchEstAnchored is matchEst with cross-stage anchor resolution: an
+// expand whose From slot was proven at plan time to hold exactly one
+// concrete node prices that hop at the node's REAL degree instead of the
+// type average -- fact over an immutable snapshot, immune to
+// average-degree lies in either direction (a hub anchor on a sparse
+// type, a sparse anchor on a hub-heavy type). Parameter seeks never
+// resolve: a cached template plan must not embed one parameter value's
+// degree.
+func matchEstAnchored(ms *MatchStage, inRows float64, g graph.Graph, resolved map[int]graph.NodeID) ([]uint64, float64) {
 	rows := inRows
 	ests := make([]uint64, 0, len(ms.Ops)+1)
 	// The anchor's first hop fans out by the anchor's RESOLVED local
 	// degree (the hub-aware signal), not the global average; later hops
-	// fall back to avg_degree.
+	// fall back to avg_degree -- except a hop from a resolved single-node
+	// slot, which prices exactly.
 	anchorDeg, anchorDegOK := anchorFirstHopDegree(ms, g)
 	for i := range ms.Ops {
 		var firstHop *float64
 		if i == 1 && anchorDegOK {
 			firstHop = &anchorDeg
+		} else if resolved != nil {
+			op := &ms.Ops[i]
+			if op.Kind == OpExpand || op.Kind == OpVarExpand {
+				if n, ok := resolved[op.From]; ok {
+					d := resolvedDegree([]graph.NodeID{n}, true, op.Types, op.Dir, g)
+					dv := float64(d.val)
+					firstHop = &dv
+				}
+			}
 		}
 		rows = opEst(&ms.Ops[i], rows, firstHop, g)
 		ests = append(ests, rnd(rows))

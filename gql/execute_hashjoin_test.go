@@ -466,3 +466,87 @@ func TestMultiPivotExtraction(t *testing.T) {
 		t.Fatalf("multiset divergence:\nnested: %v\njoined: %v", nested, joined)
 	}
 }
+
+// TestExactDegreeGate pins the pivot gate's exact-degree pricing (task
+// 134): a hop from a slot proven to hold one concrete node prices at that
+// node's REAL degree, so the same query fires the extraction anchored on
+// a hub and declines it anchored on a sparse node -- with the type average
+// (~2 here) lying below the gate for both. The components join by VALUE
+// so the reorderer has no edge to chain through and the gate decision is
+// isolated. Suppressing the resolution (mutation) must turn the hub case
+// red while the sparse control stays green.
+func TestExactDegreeGate(t *testing.T) {
+	b := chickpeas.NewBuilder(512, 512)
+	must := func(id chickpeas.NodeID, err error) chickpeas.NodeID {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	// Anchors: one hub (64 R-edges), one sparse (1), 63 fillers (1 each)
+	// -- avg R degree over anchors ~= 2, far under the hub's real 64.
+	addW := func() chickpeas.NodeID {
+		w := must(b.AddNode("W"))
+		_ = b.SetProp(w, "wk", int64(7))
+		return w
+	}
+	hub := must(b.AddNode("HAnchor"))
+	_ = b.SetProp(hub, "hk", int64(1))
+	for range 64 {
+		b.AddRel(hub, addW(), "R")
+	}
+	sparse := must(b.AddNode("HAnchor"))
+	_ = b.SetProp(sparse, "hk", int64(2))
+	b.AddRel(sparse, addW(), "R")
+	for i := range 63 {
+		f := must(b.AddNode("HAnchor"))
+		_ = b.SetProp(f, "hk", int64(10+i))
+		b.AddRel(f, addW(), "R")
+	}
+	// Outer chain: 16 rows, value-joined to the arm (every wk matches
+	// every mk, so counts are exact products).
+	for range 16 {
+		o := must(b.AddNode("O"))
+		m := must(b.AddNode("M"))
+		_ = b.SetProp(m, "mk", int64(7))
+		b.AddRel(o, m, "C")
+	}
+	g := b.Finalize("exactdegree")
+
+	q := func(hk int) string {
+		return fmt.Sprintf("MATCH (a:HAnchor {hk: %d}) MATCH (o:O)-[:C]->(m:M) MATCH (a)-[:R]->(w:W) WHERE w.wk = m.mk RETURN count(*) AS n", hk)
+	}
+	mr, ff, ed := plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor
+	plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = 0, 8, 4
+	defer func() {
+		plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = mr, ff, ed
+	}()
+	for _, tc := range []struct {
+		hk       int
+		wantJoin bool
+		wantN    int64
+	}{
+		{1, true, 16 * 64}, // hub: real degree 64 clears the x8 gate
+		{2, false, 16 * 1}, // sparse: real degree 1 declines it
+	} {
+		pl, err := Explain(g, q(tc.hk))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(pl, "HashJoin"); got != tc.wantJoin {
+			t.Fatalf("hk=%d HashJoin = %v, want %v:\n%s", tc.hk, got, tc.wantJoin, pl)
+		}
+		rows, err := Run(g, q(tc.hk))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, ok := rows.Next()
+		if !ok {
+			t.Fatal("no row")
+		}
+		if n, _ := func() (int64, bool) { v, _ := r.GetAt(0); return v.AsInt() }(); n != tc.wantN {
+			t.Fatalf("hk=%d count = %d, want %d", tc.hk, n, tc.wantN)
+		}
+	}
+}
