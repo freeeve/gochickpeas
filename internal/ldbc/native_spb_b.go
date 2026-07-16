@@ -10,6 +10,7 @@ package ldbc
 
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 
@@ -18,10 +19,10 @@ func init() {
 	registerNative("SPB", "a2", spbA2)
 	registerNative("SPB", "a3", simpleKernel(spbA3))
 	registerNative("SPB", "a4", simpleKernel(spbA4))
-	registerNative("SPB", "a5", simpleKernel(spbA5))
+	registerNativeV("SPB", "a5", simpleKernelV(spbA5))
 	registerNative("SPB", "a6", simpleKernel(spbA6))
-	registerNative("SPB", "a7", simpleKernel(spbA7))
-	registerNative("SPB", "a8", simpleKernel(spbA8))
+	registerNativeV("SPB", "a7", simpleKernelV(spbA7))
+	registerNativeV("SPB", "a8", simpleKernelV(spbA8))
 	registerNative("SPB", "a9", simpleKernel(spbA9))
 	registerNative("SPB", "a10", simpleKernel(spbA10))
 }
@@ -42,12 +43,32 @@ func spbOutCount(g *chickpeas.Snapshot, n chickpeas.NodeID, rel string) int64 {
 
 // spbCountRows renders a node-keyed histogram as [uri, count] rows,
 // count descending then uri ascending.
-func spbCountRows(g *chickpeas.Snapshot, counts map[chickpeas.NodeID]int64) [][]any {
-	rows := make([][]any, 0, len(counts))
-	for n, c := range counts {
-		rows = append(rows, []any{spbURIOf(g, n), c})
+// spbCountRows renders a node->count map as (uri, count) rows, count
+// descending then uri ascending. Self-contained value.Value result: sorts a
+// typed (uri, count) slice and carves fixed-cap row views out of one flat
+// backing, so it does not depend on the boxed spbSortKV.
+func spbCountRows(g *chickpeas.Snapshot, counts map[chickpeas.NodeID]int64) [][]value.Value {
+	type kv struct {
+		uri string
+		n   int64
 	}
-	spbSortKV(rows)
+	tmp := make([]kv, 0, len(counts))
+	for n, c := range counts {
+		tmp = append(tmp, kv{spbURIOf(g, n), c})
+	}
+	sortByLess(tmp, func(a, b kv) bool {
+		if a.n != b.n {
+			return a.n > b.n
+		}
+		return a.uri < b.uri
+	})
+	cells := make([]value.Value, len(tmp)*2)
+	rows := make([][]value.Value, len(tmp))
+	for i, r := range tmp {
+		cells[i*2] = value.Str(r.uri)
+		cells[i*2+1] = value.Int(r.n)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
+	}
 	return rows
 }
 
@@ -170,14 +191,14 @@ func spbA4(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA5 (advanced q5): about-targets of the entity type ranked by how
 // many works category-linked to either pinned category are about them
 // (per about rel, duplicates included).
-func spbA5(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	entities, ok := g.NodesWithLabel(spbEntityLabel)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	counts := map[chickpeas.NodeID]int64{}
 	for w := range works.Iter() {
@@ -245,10 +266,10 @@ func spbA6(g *chickpeas.Snapshot) ([][]any, error) {
 
 // spbA7 (advanced q7): mention targets ranked by mentions from works
 // whose primaryContentOf out-degree exceeds the threshold (1).
-func spbA7(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA7(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	counts := map[chickpeas.NodeID]int64{}
 	for w := range works.Iter() {
@@ -265,10 +286,10 @@ func spbA7(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA8 (advanced q8): topics ranked by tag rels (the loader's
 // materialized about/mentions super-property, counted per rel) from
 // works of the type/audience inside the dateModified window.
-func spbA8(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel(spbCWType)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	counts := map[chickpeas.NodeID]int64{}
 	for w := range works.Iter() {
