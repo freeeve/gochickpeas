@@ -9,27 +9,28 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 func init() {
-	registerNative("IC", "IC10", icIC10)
-	registerNative("IC", "IC11", icIC11)
-	registerNative("IC", "IC12", icIC12)
-	registerNative("IC", "IC13", icIC13)
-	registerNative("IC", "IC14", icIC14)
-	registerNative("IC", "IS1", icIS1)
-	registerNative("IC", "IS2", icIS2)
-	registerNative("IC", "IS3", icIS3)
-	registerNative("IC", "IS4", icIS4)
-	registerNative("IC", "IS5", icIS5)
-	registerNative("IC", "IS6", icIS6)
-	registerNative("IC", "IS7", icIS7)
+	registerNativeV("IC", "IC10", icIC10)
+	registerNativeV("IC", "IC11", icIC11)
+	registerNativeV("IC", "IC12", icIC12)
+	registerNativeV("IC", "IC13", icIC13)
+	registerNativeV("IC", "IC14", icIC14)
+	registerNativeV("IC", "IS1", icIS1)
+	registerNativeV("IC", "IS2", icIS2)
+	registerNativeV("IC", "IS3", icIS3)
+	registerNativeV("IC", "IS4", icIS4)
+	registerNativeV("IC", "IS5", icIS5)
+	registerNativeV("IC", "IS6", icIS6)
+	registerNativeV("IC", "IS7", icIS7)
 }
 
 // icIC10 -- friend recommendation (month 1): FoF at exactly 2 hops born
 // in [Jan 21, Feb 22), scored by tagged-vs-untagged Posts against the
 // seed's interests; [personId, score], (score desc, id asc), top 10.
-func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIC10(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -46,7 +47,7 @@ func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const month = 1
 		next := int64(month%12 + 1)
 		interests := map[chickpeas.NodeID]bool{}
@@ -88,9 +89,12 @@ func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		if len(cands) > 10 {
 			cands = cands[:10]
 		}
-		rows := make([][]any, len(cands))
+		cells := make([]value.Value, len(cands)*2)
+		rows := make([][]value.Value, len(cands))
 		for i, c := range cands {
-			rows[i] = []any{c.id, c.score}
+			cells[i*2] = value.Int(c.id)
+			cells[i*2+1] = value.Int(c.score)
+			rows[i] = cells[i*2 : i*2+2 : i*2+2]
 		}
 		return rows, nil
 	}, nil
@@ -99,7 +103,7 @@ func icIC10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // icIC11 -- job referral (Indonesia, workFrom < 2030): the <=2-hop
 // neighbourhood's work records at companies of the country; [personId,
 // companyName, workFrom], (workFrom asc, id asc, name desc), top 10.
-func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIC11(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -113,11 +117,11 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("rel column workFrom missing")
 	}
 	wf := wfCol.I64()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const year = 2030
 		country, ok := nodeByName(g, "Country", icSeedCountry)
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		places := map[chickpeas.NodeID]bool{country: true}
 		for city := range g.Neighbors(country, chickpeas.Incoming, "IS_PART_OF") {
@@ -162,9 +166,13 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		if len(cands) > 10 {
 			cands = cands[:10]
 		}
-		rows := make([][]any, len(cands))
+		cells := make([]value.Value, len(cands)*3)
+		rows := make([][]value.Value, len(cands))
 		for i, c := range cands {
-			rows[i] = []any{c.id, c.name, c.from}
+			cells[i*3] = value.Int(c.id)
+			cells[i*3+1] = value.Str(c.name)
+			cells[i*3+2] = value.Int(c.from)
+			rows[i] = cells[i*3 : i*3+3 : i*3+3]
 		}
 		return rows, nil
 	}, nil
@@ -173,7 +181,7 @@ func icIC11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // icIC12 -- expert search (TagClass Saint + descendants): direct
 // friends by replies to Posts tagged under the class; [personId,
 // replyCount], (count desc, id asc), top 20.
-func icIC12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIC12(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -182,10 +190,10 @@ func icIC12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		rootClass, ok := nodeByName(g, "TagClass", icSeedClass)
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		classSet := g.BFSDistances(rootClass, chickpeas.Incoming, g.Match("IS_SUBCLASS_OF"), chickpeas.NoMaxDepth)
 		qualTag := func(t chickpeas.NodeID) bool {
@@ -227,9 +235,12 @@ func icIC12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		if len(cands) > 20 {
 			cands = cands[:20]
 		}
-		rows := make([][]any, len(cands))
+		cells := make([]value.Value, len(cands)*2)
+		rows := make([][]value.Value, len(cands))
 		for i, c := range cands {
-			rows[i] = []any{c.id, c.count}
+			cells[i*2] = value.Int(c.id)
+			cells[i*2+1] = value.Int(c.count)
+			rows[i] = cells[i*2 : i*2+2 : i*2+2]
 		}
 		return rows, nil
 	}, nil
@@ -246,7 +257,7 @@ func icPersonB(g *chickpeas.Snapshot) (chickpeas.NodeID, error) {
 
 // icIC13 -- unweighted shortest knows-path length between the seeds;
 // [[hops]] (-1 when unreachable).
-func icIC13(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIC13(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -255,12 +266,12 @@ func icIC13(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		unit := func(chickpeas.NodeID, chickpeas.RelRef) float64 { return 1.0 }
 		if cost, ok := g.WeightedShortestPath(person, personB, chickpeas.Both, g.Match("KNOWS"), unit); ok {
-			return [][]any{{int64(cost)}}, nil
+			return [][]value.Value{{value.Int(int64(cost))}}, nil
 		}
-		return [][]any{{int64(-1)}}, nil
+		return [][]value.Value{{value.Int(int64(-1))}}, nil
 	}, nil
 }
 
@@ -268,7 +279,7 @@ func icIC13(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // cost 1/(reply interactions + 1); [[cost]] or [] when unreachable.
 // The interaction map is built in the untimed prepare phase (the Rust
 // harness times only the search).
-func icIC14(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIC14(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -278,25 +289,25 @@ func icIC14(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, err
 	}
 	interaction := buildInteractionMap(g)
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
 			return 1.0 / (float64(interaction[pairKey(from, rel.Neighbor)]) + 1.0)
 		}
 		if cost, ok := g.WeightedShortestPath(person, personB, chickpeas.Both, g.Match("KNOWS"), weight); ok && finite(cost) {
-			return [][]any{{cost}}, nil
+			return [][]value.Value{{value.Float(cost)}}, nil
 		}
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}, nil
 }
 
 // icIS1 -- the seed's profile; [[firstName, lastName]].
-func icIS1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
-		return [][]any{{strAt(g, person, "firstName"), strAt(g, person, "lastName")}}, nil
+	return func() ([][]value.Value, error) {
+		return [][]value.Value{{value.Str(strAt(g, person, "firstName")), value.Str(strAt(g, person, "lastName"))}}, nil
 	}, nil
 }
 
@@ -315,7 +326,7 @@ func is2Top(g *chickpeas.Snapshot, person chickpeas.NodeID, dayCol, msCol chickp
 
 // icIS2 -- the seed's own 10 most recent messages on/before maxDay;
 // [creationMs] (ms desc, id asc).
-func icIS2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -328,14 +339,14 @@ func icIS2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		top := is2Top(g, person, dayCol, msCol)
 		return top.msRows(), nil
 	}, nil
 }
 
 // icIS3 -- the seed's direct friends; [personId] ascending.
-func icIS3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS3(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -344,20 +355,22 @@ func icIS3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
-		var rows [][]any
+	return func() ([][]value.Value, error) {
+		var rows [][]value.Value
 		for f := range g.Neighbors(person, chickpeas.Both, "KNOWS") {
-			rows = append(rows, []any{i64At(idCol, f)})
+			rows = append(rows, []value.Value{value.Int(i64At(idCol, f))})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
-			return a[0].(int64) < b[0].(int64)
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
+			return a0 < b0
 		}), nil
 	}, nil
 }
 
 // icIS4 -- the recorded seed message's (creationMs, content); the
 // message id is pinned by the refs' seeds.json.
-func icIS4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS4(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	msg, ok := nodeByID(g, "Message", icIS4MessageID)
 	if !ok {
 		return nil, fmt.Errorf("seed message %d missing", icIS4MessageID)
@@ -366,18 +379,18 @@ func icIS4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		content, ok := g.Prop(msg, "content").Str()
 		if !ok {
 			return nil, fmt.Errorf("message %d has no content", icIS4MessageID)
 		}
-		return [][]any{{i64At(msCol, msg), content}}, nil
+		return [][]value.Value{{value.Int(i64At(msCol, msg)), value.Str(content)}}, nil
 	}, nil
 }
 
 // icIS5 -- the creator of the seed's most recent message (the IS2 top
 // row, resolved in prepare like the Rust harness); [[personId]].
-func icIS5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS5(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := icPerson(g)
 	if err != nil {
 		return nil, err
@@ -399,11 +412,11 @@ func icIS5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("seed person has no messages for IS5")
 	}
 	msg := top.items[0].id
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		if creator, ok := creatorOf(g, msg); ok {
-			return [][]any{{i64At(idCol, creator)}}, nil
+			return [][]value.Value{{value.Int(i64At(idCol, creator))}}, nil
 		}
-		return [][]any{{int64(-1)}}, nil
+		return [][]value.Value{{value.Int(int64(-1))}}, nil
 	}, nil
 }
 
@@ -445,7 +458,7 @@ func icSeedPost(g *chickpeas.Snapshot) (chickpeas.NodeID, error) {
 
 // icIS6 -- the forum and moderator of the seed post; [[forumId,
 // moderatorId]].
-func icIS6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS6(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	post, err := icSeedPost(g)
 	if err != nil {
 		return nil, err
@@ -458,27 +471,27 @@ func icIS6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if rt, ok := g.RelType("REPLY_OF"); ok {
 		roots = g.RootsVia(rt, chickpeas.Outgoing)
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		root := post
 		if roots != nil {
 			root = roots[post]
 		}
 		forum, ok := g.FirstNeighbor(root, chickpeas.Incoming, "CONTAINER_OF")
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		moderator, ok := g.FirstNeighbor(forum, chickpeas.Outgoing, "HAS_MODERATOR")
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
-		return [][]any{{i64At(idCol, forum), i64At(idCol, moderator)}}, nil
+		return [][]value.Value{{value.Int(i64At(idCol, forum)), value.Int(i64At(idCol, moderator))}}, nil
 	}, nil
 }
 
 // icIS7 -- direct replies to the seed post; [replyMs, authorId, knows]
 // (ms desc, author id asc); knows = author is a friend of the post's
 // author (0/1).
-func icIS7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func icIS7(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	post, err := icSeedPost(g)
 	if err != nil {
 		return nil, err
@@ -491,7 +504,7 @@ func icIS7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		author, hasAuthor := creatorOf(g, post)
 		authorFriends := map[chickpeas.NodeID]bool{}
 		if hasAuthor {
@@ -499,7 +512,7 @@ func icIS7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				authorFriends[f] = true
 			}
 		}
-		var rows [][]any
+		var rows [][]value.Value
 		for reply := range g.Neighbors(post, chickpeas.Incoming, "REPLY_OF") {
 			ra, ok := creatorOf(g, reply)
 			knows := int64(0)
@@ -510,12 +523,16 @@ func icIS7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 					knows = 1
 				}
 			}
-			rows = append(rows, []any{i64At(msCol, reply), raID, knows})
+			rows = append(rows, []value.Value{value.Int(i64At(msCol, reply)), value.Int(raID), value.Int(knows)})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
+			a1, _ := a[1].AsInt()
+			b1, _ := b[1].AsInt()
 			return cmpChain(
-				cmpI64Desc(a[0].(int64), b[0].(int64)),
-				cmpI64Asc(a[1].(int64), b[1].(int64)),
+				cmpI64Desc(a0, b0),
+				cmpI64Asc(a1, b1),
 			)
 		}), nil
 	}, nil
