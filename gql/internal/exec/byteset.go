@@ -219,6 +219,64 @@ func (s *u32Set) grow() {
 	}
 }
 
+// u64Map maps packed group keys to their slab index through an
+// open-addressing probe table -- one slice allocation per doubling where
+// map[uint64]int pays a bucket array per doubling plus overflow buckets as
+// it fills. Slots carry an explicit used flag, so every key value is
+// valid.
+type u64Map struct {
+	slots []u64Slot
+	mask  uint32
+	count int
+}
+
+// u64Slot is one open-addressing slot.
+type u64Slot struct {
+	key  uint64
+	val  int32
+	used bool
+}
+
+// getOrCreate returns the index mapped to key, calling create to mint it
+// on first sight (create must not touch this map).
+func (m *u64Map) getOrCreate(key uint64, create func() int) int {
+	if m.slots == nil {
+		m.slots = make([]u64Slot, 16)
+		m.mask = 15
+	}
+	if m.count*4 >= len(m.slots)*3 {
+		m.grow()
+	}
+	i := uint32(key*0x9E3779B97F4A7C15>>32) & m.mask
+	for m.slots[i].used {
+		if m.slots[i].key == key {
+			return int(m.slots[i].val)
+		}
+		i = (i + 1) & m.mask
+	}
+	v := create()
+	m.slots[i] = u64Slot{key: key, val: int32(v), used: true}
+	m.count++
+	return v
+}
+
+// grow doubles the table and rehashes the used slots.
+func (m *u64Map) grow() {
+	old := m.slots
+	m.slots = make([]u64Slot, len(old)*2)
+	m.mask = uint32(len(m.slots) - 1)
+	for _, sl := range old {
+		if !sl.used {
+			continue
+		}
+		i := uint32(sl.key*0x9E3779B97F4A7C15>>32) & m.mask
+		for m.slots[i].used {
+			i = (i + 1) & m.mask
+		}
+		m.slots[i] = sl
+	}
+}
+
 // grow doubles the table and rehashes the filled slots.
 func (m *byteMap) grow() {
 	old := m.slots

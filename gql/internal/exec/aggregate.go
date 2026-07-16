@@ -198,7 +198,7 @@ type aggregator struct {
 	groupC []RowEval
 	aggC   []RowEval // nil entry = count(*)
 	index  byteMap
-	indexI map[uint64]int
+	indexI u64Map
 
 	nGroups     int
 	keysChunks  [][]value.Value
@@ -223,7 +223,7 @@ type aggregator struct {
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
-	a := &aggregator{indexI: map[uint64]int{}}
+	a := &aggregator{}
 	for _, gi := range proj.GroupIdx {
 		a.groupC = append(a.groupC, compileEval(ctx, proj.Returns[gi].Expr, slots))
 	}
@@ -371,12 +371,7 @@ func packedEntity30(v value.Value) (uint64, bool) {
 // group on first sight.
 func (a *aggregator) groupIdx(keys []value.Value) int {
 	if gk64, packed := packGroupKey(keys); packed {
-		idx, hit := a.indexI[gk64]
-		if !hit {
-			idx = a.appendGroup(keys)
-			a.indexI[gk64] = idx
-		}
-		return idx
+		return a.indexI.getOrCreate(gk64, func() int { return a.appendGroup(keys) })
 	}
 	gk := a.gkScratch[:0]
 	for _, v := range keys {
