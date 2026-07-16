@@ -125,61 +125,65 @@ func (s *aggState) finalize() value.Value {
 // behavior. The three maps are created lazily, so a uniform distinct column
 // (the common case) holds exactly one.
 type distinctSet struct {
-	// small is the inline node-id form: most DISTINCT groups hold a
+	// small is the inline entity-id form: most DISTINCT groups hold a
 	// handful of entities, and a map per group is the dominant
 	// aggregation allocation on entity-heavy groupings. Linear membership
 	// over the inline array is faster than a map at this size; the first
-	// overflow spills into the map form with identical semantics.
+	// overflow spills into the map form with identical semantics. The
+	// first-seen entity kind claims the array (smRel marks a rel claim) --
+	// a mixed node/rel column, which no plan produces, sends the other
+	// kind straight to its map so the two id spaces never conflate.
 	nSmall uint8
+	smRel  bool
 	small  [8]uint32
-	nodes  map[uint32]struct{}
-	rels   map[uint32]struct{}
+	nodes  u32Set
+	rels   u32Set
 	other  byteSet
 }
 
 // add reports whether v is newly seen (and records it), reusing scratch for
 // the byte-string fallback encoding. Node/rel identity is exact u32
 // equality, matching AppendKey's tagNode/tagRel + u32 encoding; the two
-// entity kinds key separate maps so a node and a relationship of equal id
-// never conflate.
+// entity kinds key separate stores so a node and a relationship of equal
+// id never conflate.
 func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 	switch v.Kind() {
 	case value.KindNode:
 		id, _ := v.AsNode()
-		if d.nodes == nil {
+		return d.addEntity(uint32(id), false, &d.nodes)
+	case value.KindRel:
+		pos, _ := v.AsRel()
+		return d.addEntity(uint32(pos), true, &d.rels)
+	}
+	*scratch = value.AppendKey((*scratch)[:0], v)
+	return d.other.add(*scratch)
+}
+
+// addEntity dedups one entity id through the inline array (when this kind
+// holds the claim) or the kind's probe set, spilling the inline ids into
+// the set on overflow.
+func (d *distinctSet) addEntity(id uint32, isRel bool, m *u32Set) bool {
+	if m.slots == nil {
+		if d.nSmall == 0 || d.smRel == isRel {
+			d.smRel = isRel
 			for _, s := range d.small[:d.nSmall] {
-				if s == uint32(id) {
+				if s == id {
 					return false
 				}
 			}
 			if int(d.nSmall) < len(d.small) {
-				d.small[d.nSmall] = uint32(id)
+				d.small[d.nSmall] = id
 				d.nSmall++
 				return true
 			}
-			d.nodes = make(map[uint32]struct{}, 2*len(d.small))
+		}
+		if d.smRel == isRel {
 			for _, s := range d.small[:d.nSmall] {
-				d.nodes[s] = struct{}{}
+				m.add(s)
 			}
 		}
-		if _, dup := d.nodes[uint32(id)]; dup {
-			return false
-		}
-		d.nodes[uint32(id)] = struct{}{}
-		return true
-	case value.KindRel:
-		pos, _ := v.AsRel()
-		if d.rels == nil {
-			d.rels = map[uint32]struct{}{}
-		}
-		if _, dup := d.rels[uint32(pos)]; dup {
-			return false
-		}
-		d.rels[uint32(pos)] = struct{}{}
-		return true
 	}
-	*scratch = value.AppendKey((*scratch)[:0], v)
-	return d.other.add(*scratch)
+	return m.add(id)
 }
 
 // aggregator is the single-pass group-by accumulator. Group state lives in

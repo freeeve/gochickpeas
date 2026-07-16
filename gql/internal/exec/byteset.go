@@ -168,6 +168,57 @@ func (m *byteMap) getOrCreate(b []byte, create func() int) int {
 	return v
 }
 
+// u32Set is an open-addressing set of entity ids. A map[uint32]struct{}
+// pays a bucket-array allocation per doubling plus overflow buckets as it
+// fills, which dominated large DISTINCT groups; the flat probe table costs
+// exactly one slice per doubling. Slots store id+1 so zero marks empty --
+// an id of ^uint32(0) cannot occur, node ids and CSR positions being array
+// indices.
+type u32Set struct {
+	slots []uint32
+	mask  uint32
+	count int
+}
+
+// add reports whether id is newly seen (and records it).
+func (s *u32Set) add(id uint32) bool {
+	if s.slots == nil {
+		s.slots = make([]uint32, 16)
+		s.mask = 15
+	}
+	if s.count*4 >= len(s.slots)*3 {
+		s.grow()
+	}
+	k := id + 1
+	i := (id * 2654435761) & s.mask
+	for s.slots[i] != 0 {
+		if s.slots[i] == k {
+			return false
+		}
+		i = (i + 1) & s.mask
+	}
+	s.slots[i] = k
+	s.count++
+	return true
+}
+
+// grow doubles the table and rehashes the filled slots.
+func (s *u32Set) grow() {
+	old := s.slots
+	s.slots = make([]uint32, len(old)*2)
+	s.mask = uint32(len(s.slots) - 1)
+	for _, k := range old {
+		if k == 0 {
+			continue
+		}
+		i := ((k - 1) * 2654435761) & s.mask
+		for s.slots[i] != 0 {
+			i = (i + 1) & s.mask
+		}
+		s.slots[i] = k
+	}
+}
+
 // grow doubles the table and rehashes the filled slots.
 func (m *byteMap) grow() {
 	old := m.slots
