@@ -60,6 +60,10 @@ type Ctx struct {
 	// deterministic (locked by the zero-arg fold tests); a future volatile
 	// function must be excluded here as well as at foldFunc/constExpr.
 	constCalls map[*ast.Func]*value.Value
+	// argvStack backs the interpreter's function-call argument rows as
+	// stack frames (see evalScalarFuncUncached): one growable slice per
+	// execution instead of one slice per call.
+	argvStack []value.Value
 }
 
 // DecorTableKey identifies one shared decorrelated side table.

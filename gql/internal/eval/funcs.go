@@ -6,6 +6,7 @@ package eval
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -219,13 +220,28 @@ func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]i
 }
 
 func evalScalarFuncUncached(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]int) value.Value {
+	// The argument row is a frame on the Ctx's argv stack rather than a
+	// fresh slice per call: a nested call inside an argument pushes and
+	// pops a deeper frame before this one continues filling, and no
+	// ApplyFunc arm retains the argv slice (arms read elements by value or
+	// build fresh output), so popping on return is safe. AST nodes are
+	// shared across concurrent cached runs; the stack lives on the
+	// per-execution Ctx, never the node.
 	var argv []value.Value
+	off := len(ctx.argvStack)
 	if !e.Star {
-		argv = make([]value.Value, len(e.Args))
+		ctx.argvStack = slices.Grow(ctx.argvStack, len(e.Args))[:off+len(e.Args)]
+		argv = ctx.argvStack[off : off+len(e.Args)]
 		for i, a := range e.Args {
 			argv[i] = Eval(ctx, a, row, slots)
 		}
 	}
+	v := applyScalarFunc(ctx, e, argv)
+	ctx.argvStack = ctx.argvStack[:off]
+	return v
+}
+
+func applyScalarFunc(ctx *Ctx, e *ast.Func, argv []value.Value) value.Value {
 	// startNode(r)/endNode(r)/type(r) need the graph to resolve a
 	// relationship from its CSR position, so they resolve here rather than in
 	// the graph-less ApplyFunc.
