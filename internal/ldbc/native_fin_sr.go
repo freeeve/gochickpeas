@@ -9,17 +9,18 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 const finSRThreshold = 1000.0
 
 func init() {
-	registerNative("FinBench", "SR1", finSR1)
-	registerNative("FinBench", "SR2", finSR2)
-	registerNative("FinBench", "SR3", finSR3)
-	registerNative("FinBench", "SR4", finSR4)
-	registerNative("FinBench", "SR5", finSR5)
-	registerNative("FinBench", "SR6", finSR6)
+	registerNativeV("FinBench", "SR1", finSR1)
+	registerNativeV("FinBench", "SR2", finSR2)
+	registerNativeV("FinBench", "SR3", finSR3)
+	registerNativeV("FinBench", "SR4", finSR4)
+	registerNativeV("FinBench", "SR5", finSR5)
+	registerNativeV("FinBench", "SR6", finSR6)
 }
 
 // finSeedAccountNode resolves the shared SR seed account.
@@ -28,22 +29,22 @@ func finSeedAccountNode(g *chickpeas.Snapshot) (chickpeas.NodeID, error) {
 }
 
 // finSR1 -- exact account query; [[createTime, isBlocked, type]].
-func finSR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	account, err := finSeedAccountNode(g)
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		createTime := g.Prop(account, "createTime").I64Or(0)
 		blocked := g.Prop(account, "isBlocked").BoolOr(false)
 		typ := g.Prop(account, "type").StrOr("")
-		return [][]any{{createTime, blocked, typ}}, nil
+		return [][]value.Value{{value.Int(createTime), value.Bool(blocked), value.Str(typ)}}, nil
 	}, nil
 }
 
 // finSR2 -- transfer-ins and outs; [[sumOut, maxOut, numOut, sumIn,
 // maxIn, numIn]] (max -1.0 for an empty side).
-func finSR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -52,7 +53,7 @@ func finSR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		agg := func(dir chickpeas.Direction) (float64, float64, int64) {
 			var sum float64
 			maxAmt := -1.0
@@ -75,13 +76,16 @@ func finSR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		}
 		so, mo, no := agg(chickpeas.Outgoing)
 		si, mi, ni := agg(chickpeas.Incoming)
-		return [][]any{{so, mo, no, si, mi, ni}}, nil
+		return [][]value.Value{{
+			value.Float(so), value.Float(mo), value.Int(no),
+			value.Float(si), value.Float(mi), value.Int(ni),
+		}}, nil
 	}, nil
 }
 
 // finSR3 -- blocked-source ratio of in-window transfer-ins over the
 // threshold; [[ratio]] (-1.0 when none qualify).
-func finSR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR3(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -95,7 +99,7 @@ func finSR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
 	blocked := blockedCol.Bool()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const threshold = 0.0
 		var total, blk int64
 		for r := range g.Rels(account, chickpeas.Incoming, "transfer") {
@@ -108,15 +112,15 @@ func finSR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 		}
 		if total == 0 {
-			return [][]any{{-1.0}}, nil
+			return [][]value.Value{{value.Float(-1.0)}}, nil
 		}
-		return [][]any{{round3f(float64(blk) / float64(total))}}, nil
+		return [][]value.Value{{value.Float(round3f(float64(blk) / float64(total)))}}, nil
 	}, nil
 }
 
 // srThresholdGroup groups in-window transfers over the threshold by
 // far endpoint; [farId, numEdges, sumAmount], sum desc / id asc.
-func srThresholdGroup(g *chickpeas.Snapshot, cols finCols, account chickpeas.NodeID, dir chickpeas.Direction) [][]any {
+func srThresholdGroup(g *chickpeas.Snapshot, cols finCols, account chickpeas.NodeID, dir chickpeas.Direction) [][]value.Value {
 	type agg struct {
 		n   int64
 		sum float64
@@ -135,20 +139,24 @@ func srThresholdGroup(g *chickpeas.Snapshot, cols finCols, account chickpeas.Nod
 			e.sum += amt
 		}
 	}
-	rows := make([][]any, 0, len(byFar))
+	rows := make([][]value.Value, 0, len(byFar))
 	for far, a := range byFar {
-		rows = append(rows, []any{cols.oid(far), a.n, a.sum})
+		rows = append(rows, []value.Value{value.Int(cols.oid(far)), value.Int(a.n), value.Float(a.sum)})
 	}
-	return sortTruncate(rows, 0, func(a, b []any) bool {
+	return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+		a2, _ := a[2].AsFloat()
+		b2, _ := b[2].AsFloat()
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
 		return cmpChain(
-			cmpF64Desc(a[2].(float64), b[2].(float64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
+			cmpF64Desc(a2, b2),
+			cmpI64Asc(a0, b0),
 		)
 	})
 }
 
 // finSR4 -- transfer-outs over the threshold grouped by destination.
-func finSR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR4(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -157,13 +165,13 @@ func finSR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		return srThresholdGroup(g, cols, account, chickpeas.Outgoing), nil
 	}, nil
 }
 
 // finSR5 -- transfer-ins over the threshold grouped by source.
-func finSR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR5(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -172,14 +180,14 @@ func finSR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		return srThresholdGroup(g, cols, account, chickpeas.Incoming), nil
 	}, nil
 }
 
 // finSR6 -- blocked accounts sharing an in-window transfer source with
 // the seed; [dstId] ascending.
-func finSR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finSR6(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -193,7 +201,7 @@ func finSR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
 	blocked := blockedCol.Bool()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		inWindow := func(pos uint32) bool {
 			ts := cols.relTS(pos)
 			return ts >= finWS && ts <= finWE
@@ -216,12 +224,14 @@ func finSR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(result))
+		rows := make([][]value.Value, 0, len(result))
 		for dst := range result {
-			rows = append(rows, []any{cols.oid(dst)})
+			rows = append(rows, []value.Value{value.Int(cols.oid(dst))})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
-			return a[0].(int64) < b[0].(int64)
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
+			return a0 < b0
 		}), nil
 	}, nil
 }

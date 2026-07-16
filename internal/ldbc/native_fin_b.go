@@ -10,15 +10,16 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 func init() {
-	registerNative("FinBench", "CR7", finCR7)
-	registerNative("FinBench", "CR8", finCR8)
-	registerNative("FinBench", "CR9", finCR9)
-	registerNative("FinBench", "CR10", finCR10)
-	registerNative("FinBench", "CR11", finCR11)
-	registerNative("FinBench", "CR12", finCR12)
+	registerNativeV("FinBench", "CR7", finCR7)
+	registerNativeV("FinBench", "CR8", finCR8)
+	registerNativeV("FinBench", "CR9", finCR9)
+	registerNativeV("FinBench", "CR10", finCR10)
+	registerNativeV("FinBench", "CR11", finCR11)
+	registerNativeV("FinBench", "CR12", finCR12)
 }
 
 // tsAmtRel is a (ts, amount, endpoint) transfer candidate.
@@ -44,7 +45,7 @@ func truncByTS(rels []tsAmtRel, limit int, asc bool) []tsAmtRel {
 // finCR7 -- transfer in/out ratio around the seed account;
 // [[numSrc, numDst, inOutRatio]] (ratio rounded 3dp, -1 when no
 // outgoing amount).
-func finCR7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR7(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -53,7 +54,7 @@ func finCR7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const threshold = 0.0
 		gather := func(dir chickpeas.Direction) (int64, float64) {
 			var rels []tsAmtRel
@@ -79,7 +80,7 @@ func finCR7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		if outAmt > 0 {
 			ratio = round3f(inAmt / outAmt)
 		}
-		return [][]any{{numSrc, numDst, ratio}}, nil
+		return [][]value.Value{{value.Int(numSrc), value.Int(numDst), value.Float(ratio)}}, nil
 	}, nil
 }
 
@@ -87,7 +88,7 @@ func finCR7(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // deposited accounts over transfer/withdraw (<=3 from the loan), each
 // hop's amount gated by the node's upstream inflow; [dstId, ratio,
 // minDistance] (ratio = inflow / loanAmount, rounded 3dp).
-func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -101,7 +102,7 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("node column loanAmount missing")
 	}
 	la := laCol.F64()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const threshold = 0.0
 		loanAmount, ok := la.Get(loan)
 		if !ok {
@@ -183,15 +184,23 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(results))
+		rows := make([][]value.Value, 0, len(results))
 		for did, a := range results {
-			rows = append(rows, []any{cols.oid(did), round3f(a.inflow / loanAmount), int64(a.dist)})
+			rows = append(rows, []value.Value{
+				value.Int(cols.oid(did)), value.Float(round3f(a.inflow / loanAmount)), value.Int(int64(a.dist)),
+			})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a2, _ := a[2].AsInt()
+			b2, _ := b[2].AsInt()
+			a1, _ := a[1].AsFloat()
+			b1, _ := b[1].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpI64Desc(a[2].(int64), b[2].(int64)),
-				cmpF64Desc(a[1].(float64), b[1].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpI64Desc(a2, b2),
+				cmpF64Desc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil
@@ -200,7 +209,7 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // finCR9 -- money laundering ratios around the seed account;
 // [[ratioRepay, ratioDeposit, ratioTransfer]] (each rounded 3dp, -1 on
 // an empty denominator).
-func finCR9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR9(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -209,7 +218,7 @@ func finCR9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const threshold = 0.0
 		gather := func(dir chickpeas.Direction, relType string, amtFloor bool) []tsAmtRel {
 			var rels []tsAmtRel
@@ -243,14 +252,14 @@ func finCR9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 			return round3f(num / den)
 		}
-		return [][]any{{ratio(rel1, rel2), ratio(rel1, rel4), ratio(rel3, rel4)}}, nil
+		return [][]value.Value{{value.Float(ratio(rel1, rel2)), value.Float(ratio(rel1, rel4)), value.Float(ratio(rel3, rel4))}}, nil
 	}, nil
 }
 
 // finCR10 -- investor similarity: co-investors per company the seed
 // invests in (window is full, so all invest rels qualify); [otherId,
 // sharedCompanyCount].
-func finCR10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR10(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -259,7 +268,7 @@ func finCR10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		companies := map[chickpeas.NodeID]bool{}
 		for r := range g.Rels(person, chickpeas.Outgoing, "invest") {
 			ts := cols.relTS(r.Pos)
@@ -275,14 +284,18 @@ func finCR10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(shared))
+		rows := make([][]value.Value, 0, len(shared))
 		for o, c := range shared {
-			rows = append(rows, []any{cols.oid(o), c})
+			rows = append(rows, []value.Value{value.Int(cols.oid(o)), value.Int(c)})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsInt()
+			b1, _ := b[1].AsInt()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpI64Desc(a[1].(int64), b[1].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpI64Desc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil
@@ -291,7 +304,7 @@ func finCR10(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // finCR11 -- guarantee exposure: walk the guarantee chain from the
 // seed person, summing every reached person's applied loan amounts;
 // [[total]].
-func finCR11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR11(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	person, err := finNode(g, "Person", finSeedPerson)
 	if err != nil {
 		return nil, err
@@ -301,7 +314,7 @@ func finCR11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("rel column loanAmount missing")
 	}
 	la := laCol.F64()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		visited := map[chickpeas.NodeID]bool{person: true}
 		queue := []chickpeas.NodeID{person}
 		var total float64
@@ -320,14 +333,14 @@ func finCR11(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		return [][]any{{total}}, nil
+		return [][]value.Value{{value.Float(total)}}, nil
 	}, nil
 }
 
 // finCR12 -- transfer-to-company statistics: the owner's accounts'
 // in-window transfers into company-owned accounts, summed per target;
 // [compAccountId, summedAmount].
-func finCR12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR12(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -336,10 +349,10 @@ func finCR12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		companies, ok := g.NodesWithLabel("Company")
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		var personAccounts []chickpeas.NodeID
 		for r := range g.Rels(person, chickpeas.Outgoing, "own") {
@@ -376,14 +389,18 @@ func finCR12(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(amounts))
+		rows := make([][]value.Value, 0, len(amounts))
 		for a, s := range amounts {
-			rows = append(rows, []any{cols.oid(a), s})
+			rows = append(rows, []value.Value{value.Int(cols.oid(a)), value.Float(s)})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsFloat()
+			b1, _ := b[1].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpF64Desc(a[1].(float64), b[1].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpF64Desc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil

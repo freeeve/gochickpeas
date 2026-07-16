@@ -12,6 +12,7 @@ import (
 	"math"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 // Recorded FinBench SF10 seeds (original FinBench ids).
@@ -32,12 +33,12 @@ const (
 )
 
 func init() {
-	registerNative("FinBench", "CR1", finCR1)
-	registerNative("FinBench", "CR2", finCR2)
-	registerNative("FinBench", "CR3", finCR3)
-	registerNative("FinBench", "CR4", finCR4)
-	registerNative("FinBench", "CR5", finCR5)
-	registerNative("FinBench", "CR6", finCR6)
+	registerNativeV("FinBench", "CR1", finCR1)
+	registerNativeV("FinBench", "CR2", finCR2)
+	registerNativeV("FinBench", "CR3", finCR3)
+	registerNativeV("FinBench", "CR4", finCR4)
+	registerNativeV("FinBench", "CR5", finCR5)
+	registerNativeV("FinBench", "CR6", finCR6)
 }
 
 // finCols bundles the hot FinBench columns every kernel hoists once:
@@ -114,7 +115,7 @@ func round3f(x float64) float64 { return math.Round(x*1000) / 1000 }
 // trace with strictly-decreasing (backward) timestamps; each reached
 // account's blocked signIn media emit [otherId, distance, mediumId,
 // "Medium"].
-func finCR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -128,8 +129,8 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
 	blocked := blockedCol.Bool()
-	return func() ([][]any, error) {
-		var rows [][]any
+	return func() ([][]value.Value, error) {
+		var rows [][]value.Value
 		visited := map[chickpeas.NodeID]bool{account: true}
 		type qe struct {
 			node   chickpeas.NodeID
@@ -163,17 +164,26 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				dist := cur.depth + 1
 				for sig := range g.Rels(e.nbr, chickpeas.Incoming, "signIn") {
 					if b, ok := blocked.Get(sig.Neighbor); ok && b {
-						rows = append(rows, []any{cols.oid(e.nbr), int64(dist), cols.oid(sig.Neighbor), "Medium"})
+						rows = append(rows, []value.Value{
+							value.Int(cols.oid(e.nbr)), value.Int(int64(dist)),
+							value.Int(cols.oid(sig.Neighbor)), value.Str("Medium"),
+						})
 					}
 				}
 				queue = append(queue, qe{e.nbr, dist, e.ts})
 			}
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsInt()
+			b1, _ := b[1].AsInt()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
+			a2, _ := a[2].AsInt()
+			b2, _ := b[2].AsInt()
 			return cmpChain(
-				cmpI64Asc(a[1].(int64), b[1].(int64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-				cmpI64Asc(a[2].(int64), b[2].(int64)),
+				cmpI64Asc(a1, b1),
+				cmpI64Asc(a0, b0),
+				cmpI64Asc(a2, b2),
 			)
 		}), nil
 	}, nil
@@ -183,7 +193,7 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // each owned account (<=3 hops, monotonic backward time), then per
 // upstream account sum the loan amounts/balances deposited into it;
 // [otherId, sumLoanAmount, sumLoanBalance].
-func finCR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -201,7 +211,7 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		return nil, fmt.Errorf("node column balance missing")
 	}
 	la, lb := loanAmt.F64(), loanBal.F64()
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		type sums struct{ amt, bal float64 }
 		byAcct := map[chickpeas.NodeID]*sums{}
 		var rels []tsRel
@@ -271,14 +281,18 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 				}
 			}
 		}
-		rows := make([][]any, 0, len(byAcct))
+		rows := make([][]value.Value, 0, len(byAcct))
 		for acct, s := range byAcct {
-			rows = append(rows, []any{cols.oid(acct), s.amt, s.bal})
+			rows = append(rows, []value.Value{value.Int(cols.oid(acct)), value.Float(s.amt), value.Float(s.bal)})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsFloat()
+			b1, _ := b[1].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpF64Desc(a[1].(float64), b[1].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpF64Desc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil
@@ -286,7 +300,7 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 
 // finCR3 -- shortest in-window transfer path length between the seed
 // account and the recorded destination; [[hops]] (-1 unreachable).
-func finCR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR3(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -299,7 +313,7 @@ func finCR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		weight := func(_ chickpeas.NodeID, r chickpeas.RelRef) float64 {
 			ts := cols.relTS(r.Pos)
 			if ts >= finWS && ts <= finWE {
@@ -308,16 +322,16 @@ func finCR3(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			return inf
 		}
 		if cost, ok := g.WeightedShortestPath(src, dst, chickpeas.Outgoing, g.Match("transfer"), weight); ok && finite(cost) {
-			return [][]any{{int64(cost)}}, nil
+			return [][]value.Value{{value.Int(int64(cost))}}, nil
 		}
-		return [][]any{{int64(-1)}}, nil
+		return [][]value.Value{{value.Int(int64(-1))}}, nil
 	}, nil
 }
 
 // finCR4 -- time-ordered transfer cycles back to the seed (amounts >=
 // 1000, cycle within the 90-day window, <=6 nodes, capped at 1000
 // cycles); one row per cycle's id sequence.
-func finCR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR4(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -326,7 +340,7 @@ func finCR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const maxCycleLen, maxCycles = 6, 1000
 		const minAmount = 1000.0
 		var cycles [][]chickpeas.NodeID
@@ -366,11 +380,11 @@ func finCR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 		}
 		dfs(account, math.MinInt64, 0, false)
-		rows := make([][]any, len(cycles))
+		rows := make([][]value.Value, len(cycles))
 		for i, cy := range cycles {
-			row := make([]any, len(cy))
+			row := make([]value.Value, len(cy))
 			for j, n := range cy {
-				row[j] = cols.oid(n)
+				row[j] = value.Int(cols.oid(n))
 			}
 			rows[i] = row
 		}
@@ -382,7 +396,7 @@ func finCR4(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // (<=3 hops, strictly increasing timestamps, acyclic); each trace is
 // one single-list-cell row (the manifest's unwrap1 norm flattens it,
 // matching the GQL twin's list projection).
-func finCR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR5(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -391,7 +405,7 @@ func finCR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		var all [][]chickpeas.NodeID
 		var dfs func(node chickpeas.NodeID, lastTS int64, path *[]chickpeas.NodeID, visited map[chickpeas.NodeID]bool, depth int)
 		dfs = func(node chickpeas.NodeID, lastTS int64, path *[]chickpeas.NodeID, visited map[chickpeas.NodeID]bool, depth int) {
@@ -439,16 +453,16 @@ func finCR5(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 			return len(a) < len(b)
 		})
-		var rows [][]any
+		var rows [][]value.Value
 		for i, p := range all {
 			if i > 0 && slicesEqualNodes(all[i-1], p) {
 				continue
 			}
-			ids := make([]any, len(p))
+			ids := make([]value.Value, len(p))
 			for j, n := range p {
-				ids[j] = cols.oid(n)
+				ids[j] = value.Int(cols.oid(n))
 			}
-			rows = append(rows, []any{ids})
+			rows = append(rows, []value.Value{value.List(ids)})
 		}
 		return rows, nil
 	}, nil
@@ -471,7 +485,7 @@ func slicesEqualNodes(a, b []chickpeas.NodeID) bool {
 // cross-engine reduction): the card's in-window withdrawals bound a
 // fan-in of incoming transfers, summed per source; [srcId,
 // sumRel1Amount, sumRel2Amount].
-func finCR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func finCR6(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cols, err := finColsOf(g)
 	if err != nil {
 		return nil, err
@@ -480,7 +494,7 @@ func finCR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		const threshold1, threshold2 = 0.0, 0.0
 		var totalWithdraw float64
 		lastWithdraw := int64(math.MinInt64)
@@ -497,7 +511,7 @@ func finCR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			}
 		}
 		if !haveWithdraw {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		type inRel struct {
 			ts  int64
@@ -520,14 +534,18 @@ func finCR6(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		for _, r := range inRels {
 			bySrc[r.src] += r.amt
 		}
-		rows := make([][]any, 0, len(bySrc))
+		rows := make([][]value.Value, 0, len(bySrc))
 		for s, a := range bySrc {
-			rows = append(rows, []any{cols.oid(s), a, totalWithdraw})
+			rows = append(rows, []value.Value{value.Int(cols.oid(s)), value.Float(a), value.Float(totalWithdraw)})
 		}
-		return sortTruncate(rows, 0, func(a, b []any) bool {
+		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsFloat()
+			b1, _ := b[1].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpF64Desc(a[1].(float64), b[1].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpF64Desc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil
