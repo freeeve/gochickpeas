@@ -146,9 +146,11 @@ func (p *projSink) pushKeys(out, row []value.Value) []value.Value {
 	return p.kBuf
 }
 
-func (p *projSink) push(row []value.Value) {
+func (p *projSink) push(row []value.Value) bool {
 	if p.limitCap >= 0 && len(p.outs) >= p.limitCap {
-		return
+		// Arrival order is output order (no ORDER BY), so nothing a
+		// producer could still emit can surface: stop the walk.
+		return false
 	}
 	// Gated top-k: evaluate only the key columns and ask the heap first;
 	// a refused candidate never builds its remaining columns (nor touches
@@ -161,7 +163,7 @@ func (p *projSink) push(row []value.Value) {
 		}
 		if !p.topk.wouldAccept(p.kBuf) {
 			p.topk.seq++ // rejected offers still order future arrivals
-			return
+			return true
 		}
 		topkPayloadBuilds++
 		out := p.oArena.alloc()
@@ -176,7 +178,7 @@ func (p *projSink) push(row []value.Value) {
 		if !p.topk.offer(p.pushKeys(out, row), out) {
 			p.oArena.rollback()
 		}
-		return
+		return true
 	}
 	out := p.oArena.alloc()
 	for i, c := range p.returns {
@@ -185,7 +187,7 @@ func (p *projSink) push(row []value.Value) {
 	if p.seenOne != nil {
 		if !p.seenOne.add(out[0], &p.key) {
 			p.oArena.rollback()
-			return
+			return true
 		}
 	} else if p.seen != nil {
 		p.key = p.key[:0]
@@ -194,7 +196,7 @@ func (p *projSink) push(row []value.Value) {
 		}
 		if !p.seen.add(p.key) {
 			p.oArena.rollback()
-			return
+			return true
 		}
 	}
 	if p.topk != nil {
@@ -203,12 +205,15 @@ func (p *projSink) push(row []value.Value) {
 		if !p.topk.offer(p.pushKeys(out, row), out) {
 			p.oArena.rollback()
 		}
-		return
+		return true
 	}
 	p.outs = append(p.outs, out)
 	if p.needM {
 		p.ms = append(p.ms, p.mArena.copyRow(row))
 	}
+	// Reaching the unordered cap exactly now also stops the walk (a
+	// deferred false would cost one more full candidate).
+	return p.limitCap < 0 || len(p.outs) < p.limitCap
 }
 
 // kGateCol reports whether output column i is one of the gated path's

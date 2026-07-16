@@ -532,8 +532,11 @@ func newAggSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggSi
 	return &aggSink{ctx: ctx, agg: newAggregator(ctx, proj, slots), proj: proj, slots: slots}
 }
 
-func (a *aggSink) push(row []value.Value) {
+// push always reports true: aggregation must consume every row (the
+// necessary asymmetry of the stop protocol).
+func (a *aggSink) push(row []value.Value) bool {
 	a.agg.update(a.ctx, row, a.proj, a.slots)
+	return true
 }
 
 func (a *aggSink) close() {}

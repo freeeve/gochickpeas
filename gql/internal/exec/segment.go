@@ -81,7 +81,9 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 	for _, in := range inputs {
 		clear(buf)
 		copy(buf, in)
-		sink.push(buf)
+		if !sink.push(buf) {
+			break
+		}
 	}
 	sink.close()
 	out := term.finalize()
@@ -275,16 +277,16 @@ func newPassthroughSink(ctx *eval.Ctx, seg *plan.Segment, nextWidth int, next ro
 	return p
 }
 
-func (p *passthroughSink) push(row []value.Value) {
+func (p *passthroughSink) push(row []value.Value) bool {
 	for i, c := range p.returns {
 		p.out[i] = c.Eval(p.ctx, row, p.slots)
 	}
 	if p.where != nil && !p.where.Eval(p.ctx, p.out, p.colScope).IsTruthy() {
-		return
+		return true
 	}
 	clear(p.buf)
 	copy(p.buf, p.out)
-	p.next.push(p.buf)
+	return p.next.push(p.buf)
 }
 
 func (p *passthroughSink) close() { p.next.close() }
@@ -344,7 +346,9 @@ func runSegmentRun(ctx *eval.Ctx, segs []*plan.Segment, inputs [][]value.Value) 
 	for _, in := range inputs {
 		clear(buf)
 		copy(buf, in)
-		head.push(buf)
+		if !head.push(buf) {
+			break
+		}
 	}
 	head.close()
 	out := term.finalize()

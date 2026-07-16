@@ -89,7 +89,7 @@ func newHashJoinSink(ctx *eval.Ctx, seg *plan.Segment, hj *plan.HashJoinStage, n
 	return h
 }
 
-func (h *hashJoinSink) push(row []value.Value) {
+func (h *hashJoinSink) push(row []value.Value) bool {
 	k := h.keyBuf[:0]
 	for _, s := range h.hj.ExtSlots {
 		k = value.AppendKey(k, row[s])
@@ -101,14 +101,13 @@ func (h *hashJoinSink) push(row []value.Value) {
 		h.tables[string(k)] = t
 	}
 	if len(t.rows) == 0 {
-		return
+		return true
 	}
 	// Cartesian probe: every build row emits per outer row (the keyless
 	// disconnected join -- one bucket, the same emission protocol).
 	if h.hj.Cartesian {
 		copy(h.buf, row)
-		h.emitRows(t, t.byVal[""], nil, 0, 0)
-		return
+		return h.emitRows(t, t.byVal[""], nil, 0, 0)
 	}
 	// Value-keyed probe: the outer row's key value looks the bucket up
 	// directly -- no expand, no probe uniqueness (no relationship binds).
@@ -116,21 +115,20 @@ func (h *hashJoinSink) push(row []value.Value) {
 	if h.keyProbe != nil {
 		v := h.keyProbe.Eval(h.ctx, row, h.slots)
 		if v.IsNull() {
-			return
+			return true
 		}
 		h.valBuf = value.AppendKey(h.valBuf[:0], v)
 		copy(h.buf, row)
-		h.emitRows(t, t.byVal[string(h.valBuf)], nil, 0, 0)
-		return
+		return h.emitRows(t, t.byVal[string(h.valBuf)], nil, 0, 0)
 	}
 	from, ok := row[h.hj.Probe.From].AsNode()
 	if !ok {
-		return
+		return true
 	}
 	// A reversed probe's target constraints belong to the outer endpoint
 	// (the original hop's To); check them once per row.
 	if h.hj.Reversed && !h.ctx.G.NodeMatcherAccepts(h.probeM, from) {
-		return
+		return true
 	}
 	copy(h.buf, row)
 	// The candidate list keeps parallel relationships (one entry each):
@@ -156,15 +154,19 @@ func (h *hashJoinSink) push(row []value.Value) {
 				continue
 			}
 		}
-		h.emitRows(t, idxs, pu, pa, pb)
+		if !h.emitRows(t, idxs, pu, pa, pb) {
+			return false
+		}
 	}
+	return true
 }
 
 // emitRows binds each hit row's payload into the buffered outer row and
 // emits it through the pair replay protocol: captured Check pairs replay
 // against the outer used-pair env, captured live pairs (plus the probe
-// hop's own, when there is one) push for downstream ops.
-func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, pb graph.NodeID) {
+// hop's own, when there is one) push for downstream ops. Reports the
+// downstream keep-going verdict; a stop still restores the pair stack.
+func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, pb graph.NodeID) bool {
 	for _, ri := range idxs {
 		r := &t.rows[ri]
 		blocked := false
@@ -196,14 +198,19 @@ func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, 
 				break
 			}
 		}
+		more := true
 		if pass {
 			if h.count != nil {
 				*h.count++
 			}
-			h.next.push(h.buf)
+			more = h.next.push(h.buf)
 		}
 		h.uniq.stack = h.uniq.stack[:mark]
+		if !more {
+			return false
+		}
 	}
+	return true
 }
 
 func (h *hashJoinSink) close() { h.next.close() }
@@ -254,7 +261,9 @@ type hjBuildSink struct {
 	valBuf   []byte
 }
 
-func (b *hjBuildSink) push(row []value.Value) {
+// push always reports true: the build chain's downstream is the join
+// table, not the query sink, so a stop verdict never originates here.
+func (b *hjBuildSink) push(row []value.Value) bool {
 	var key graph.NodeID
 	if b.hj.Cartesian {
 		// One bucket: the probe emits every row.
@@ -262,14 +271,14 @@ func (b *hjBuildSink) push(row []value.Value) {
 		// A null build key can never equal any probe value: drop the row.
 		v := b.keyBuild.Eval(b.ctx, row, b.slots)
 		if v.IsNull() {
-			return
+			return true
 		}
 		b.valBuf = value.AppendKey(b.valBuf[:0], v)
 	} else {
 		var ok bool
 		key, ok = row[b.hj.KeySlot].AsNode()
 		if !ok {
-			return
+			return true
 		}
 	}
 	r := hjRow{vals: make([]value.Value, len(b.hj.PayloadSlots))}
@@ -292,6 +301,7 @@ func (b *hjBuildSink) push(row []value.Value) {
 	default:
 		b.t.byKey[key] = append(b.t.byKey[key], idx)
 	}
+	return true
 }
 
 func (b *hjBuildSink) close() {}

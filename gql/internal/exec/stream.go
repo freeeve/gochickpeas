@@ -17,9 +17,14 @@ import (
 
 // rowSink consumes full-width rows pushed through a segment's stage chain.
 // A pushed row is valid only for the duration of the call; a sink that
-// retains it must copy. close flushes any buffered state downstream.
+// retains it must copy. push reports whether the consumer wants more rows:
+// false is the stop protocol -- an unordered LIMIT that has its k rows
+// tells every producer above it to abandon the walk (aggregation and
+// ORDER BY must consume everything and always report true). A producer
+// receiving false stops emitting and propagates false after its own
+// cleanup. close flushes any buffered state downstream.
 type rowSink interface {
-	push(row []value.Value)
+	push(row []value.Value) bool
 	close()
 }
 
@@ -79,36 +84,36 @@ type matchSink struct {
 	uniq *uniqEnv
 	// emitFn is the emit method bound once, so genMatches gets the same
 	// closure every push instead of a fresh method value.
-	emitFn func([]value.Value)
+	emitFn func([]value.Value) bool
 }
 
-func (m *matchSink) push(row []value.Value) {
+func (m *matchSink) push(row []value.Value) bool {
 	copy(m.buf, row)
 	if m.stage.Optional {
 		copy(m.orig, row)
 		m.fired = false
-		genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
-		if !m.fired {
+		more := genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
+		if more && !m.fired {
 			// The re-emitted row takes the path assembly and post-path
 			// WHERE too, exactly like the former batch bindPaths pass.
-			m.forward(m.orig)
+			return m.forward(m.orig)
 		}
-		return
+		return more
 	}
-	genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
+	return genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
 }
 
 // emit forwards one bound match. The OPTIONAL no-match probe counts every
 // match (like the former pre-bindPaths batch check), so it flips before
 // the post-path filter can prune.
-func (m *matchSink) emit(r []value.Value) {
+func (m *matchSink) emit(r []value.Value) bool {
 	m.fired = true
-	m.forward(r)
+	return m.forward(r)
 }
 
 // forward assembles the row's named path and applies the post-path WHERE
 // conjuncts, then hands the row downstream.
-func (m *matchSink) forward(r []value.Value) {
+func (m *matchSink) forward(r []value.Value) bool {
 	if pb := m.stage.PathBind; pb != nil {
 		rels := pathRelPositionsOf(r[pb.RelsSlot])
 		var nodes []graph.NodeID
@@ -118,11 +123,11 @@ func (m *matchSink) forward(r []value.Value) {
 		r[pb.PathSlot] = value.Path(nodes, rels)
 		for _, f := range m.pathFilters {
 			if !f.Eval(m.ctx, r, m.slots).IsTruthy() {
-				return
+				return true
 			}
 		}
 	}
-	m.next.push(r)
+	return m.next.push(r)
 }
 
 func (m *matchSink) close() { m.next.close() }
@@ -139,24 +144,26 @@ type unwindSink struct {
 	count *uint64
 }
 
-func (u *unwindSink) push(row []value.Value) {
+func (u *unwindSink) push(row []value.Value) bool {
 	v := u.list.Eval(u.ctx, row, u.slots)
 	if items, ok := v.AsList(); ok {
 		for _, item := range items {
 			copy(u.buf, row)
 			u.buf[u.out] = item
 			u.bump()
-			u.next.push(u.buf)
+			if !u.next.push(u.buf) {
+				return false
+			}
 		}
-		return
+		return true
 	}
 	if v.IsNull() {
-		return
+		return true
 	}
 	copy(u.buf, row)
 	u.buf[u.out] = v
 	u.bump()
-	u.next.push(u.buf)
+	return u.next.push(u.buf)
 }
 
 func (u *unwindSink) bump() {
@@ -191,11 +198,10 @@ type callSink struct {
 	count    *uint64
 }
 
-func (c *callSink) push(row []value.Value) {
+func (c *callSink) push(row []value.Value) bool {
 	if !c.native {
 		c.bump()
-		c.next.push(row)
-		return
+		return c.next.push(row)
 	}
 	values, hits, prop := c.values, c.hits, c.prop
 	if c.argEvals != nil {
@@ -205,7 +211,7 @@ func (c *callSink) push(row []value.Value) {
 		}
 		proc, err := plan.ResolveCallProc(c.cs.ProcName, args)
 		if err != nil {
-			return
+			return true
 		}
 		values, hits, prop = callResults(&proc, c.g)
 	}
@@ -222,9 +228,11 @@ func (c *callSink) push(row []value.Value) {
 				c.buf[c.cs.DepthSlot] = value.Int(int64(r.Depth))
 			}
 			c.bump()
-			c.next.push(c.buf)
+			if !c.next.push(c.buf) {
+				return false
+			}
 		}
-		return
+		return true
 	}
 	if values != nil {
 		for i, v := range values {
@@ -236,22 +244,26 @@ func (c *callSink) push(row []value.Value) {
 				c.buf[c.cs.ValueSlot] = v
 			}
 			c.bump()
-			c.next.push(c.buf)
+			if !c.next.push(c.buf) {
+				return false
+			}
 		}
-		return
+		return true
 	}
 	if hits == nil {
-		return
+		return true
 	}
+	more := true
 	hits(func(nid graph.NodeID) bool {
 		copy(c.buf, row)
 		if c.cs.NodeSlot != plan.NoSlot {
 			c.buf[c.cs.NodeSlot] = value.Node(nid)
 		}
 		c.bump()
-		c.next.push(c.buf)
-		return true
+		more = c.next.push(c.buf)
+		return more
 	})
+	return more
 }
 
 func (c *callSink) bump() {
@@ -276,7 +288,7 @@ type subquerySink struct {
 	count   *uint64
 }
 
-func (s *subquerySink) push(row []value.Value) {
+func (s *subquerySink) push(row []value.Value) bool {
 	var sub [][]value.Value
 	if len(s.cs.ImportSlots) == 0 {
 		if !s.subRun {
@@ -298,8 +310,11 @@ func (s *subquerySink) push(row []value.Value) {
 		if s.count != nil {
 			*s.count++
 		}
-		s.next.push(s.buf)
+		if !s.next.push(s.buf) {
+			return false
+		}
 	}
+	return true
 }
 
 func (s *subquerySink) close() { s.next.close() }
@@ -316,8 +331,9 @@ type spSink struct {
 	count *uint64
 }
 
-func (s *spSink) push(row []value.Value) {
+func (s *spSink) push(row []value.Value) bool {
 	s.rows = append(s.rows, s.arena.copyRow(row))
+	return true
 }
 
 func (s *spSink) close() {
@@ -326,7 +342,9 @@ func (s *spSink) close() {
 		*s.count = uint64(len(out))
 	}
 	for _, r := range out {
-		s.next.push(r)
+		if !s.next.push(r) {
+			break
+		}
 	}
 	s.next.close()
 }
@@ -350,8 +368,9 @@ type gateSink struct {
 	count   *uint64
 }
 
-func (s *gateSink) push(row []value.Value) {
+func (s *gateSink) push(row []value.Value) bool {
 	s.rows = append(s.rows, s.arena.copyRow(row))
+	return true
 }
 
 func (s *gateSink) close() {
@@ -366,7 +385,9 @@ func (s *gateSink) close() {
 		if s.count != nil {
 			*s.count++
 		}
-		s.next.push(r)
+		if !s.next.push(r) {
+			break
+		}
 	}
 	s.next.close()
 }

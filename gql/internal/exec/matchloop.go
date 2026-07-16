@@ -98,17 +98,21 @@ type reachScratch struct {
 // completed match row to the sink by reference (the sink copies). opRows
 // is PROFILE's counter slice (one slot per op for bindings produced, plus
 // a final slot for rows passing the stage WHERE); nil when not profiling.
-func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, uniq *uniqEnv, sink func([]value.Value), scratch *genScratch, opRows []uint64) {
+// Reports the sink's keep-going verdict: on a stop the walk abandons its
+// remaining candidates, retiring every level's pair pushes on the way out
+// so the shared uniqueness env is exactly as empty as a completed walk
+// leaves it.
+func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, uniq *uniqEnv, sink func([]value.Value) bool, scratch *genScratch, opRows []uint64) bool {
 	// New match-call epoch: a loop-invariant carried IN list hashes once
 	// for this call and reuses it across the call's candidates.
 	ctx.MatchEpoch++
 	n := len(ops)
 	if n == 0 {
-		sink(base)
+		more := sink(base)
 		if opRows != nil {
 			opRows[0]++
 		}
-		return
+		return more
 	}
 	for len(scratch.cand) < n {
 		scratch.cand = append(scratch.cand, nil)
@@ -217,9 +221,19 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 				continue
 			}
 			if cur+1 == n {
-				sink(row)
+				more := sink(row)
 				if opRows != nil {
 					opRows[n]++
+				}
+				if !more {
+					// Stop: unwind every live level's pair pushes exactly
+					// as the exhausted path below would, then tell the
+					// caller to stop too.
+					for ; cur > 0; cur-- {
+						retire(cur)
+					}
+					retire(0)
+					return false
 				}
 			} else {
 				cur++
@@ -231,7 +245,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			// Retire the last candidate's pair pushes so the env is empty
 			// for the next row.
 			retire(0)
-			return
+			return true
 		default:
 			retire(cur)
 			cur--
