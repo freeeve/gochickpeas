@@ -183,6 +183,20 @@ type wpParent struct {
 	rel  uint32
 }
 
+// wpScratch is the per-stage scratch a weighted-shortest-path stage reuses
+// across its row loop's searches: the distance/parent maps are cleared per
+// search (clear keeps the buckets, so a search allocates only when it
+// outgrows every previous one), the heap keeps its backing, and the
+// neighbor buffers feed AppendRelationshipsMatched instead of a per-visit
+// iterator closure.
+type wpScratch struct {
+	dist   map[nodeHops]float64
+	parent map[nodeHops]wpParent
+	heap   wpHeap
+	nbrs   []graph.NodeID
+	poss   []uint32
+}
+
 // weightedShortestPath is the min-cost path a..b honoring the hop cap
 // (default: the node count) and the per-hop predicate. A hop cap makes
 // cost non-monotonic per node, so a bounded search keys its state on
@@ -195,7 +209,7 @@ type wpParent struct {
 // a stage of N such rows runs ZERO weighted searches.
 var weightedSearches int
 
-func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight) *nodesRels {
+func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight, ws *wpScratch) *nodesRels {
 	weightedSearches++
 	if a == b {
 		return &nodesRels{nodes: []graph.NodeID{a}}
@@ -211,9 +225,16 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 		}
 		return nodeHops{n, hops}
 	}
-	dist := map[nodeHops]float64{{a, 0}: 0}
-	parent := map[nodeHops]wpParent{}
-	h := &wpHeap{{cost: 0, node: a, hops: 0}}
+	if ws.dist == nil {
+		ws.dist = map[nodeHops]float64{}
+		ws.parent = map[nodeHops]wpParent{}
+	}
+	clear(ws.dist)
+	clear(ws.parent)
+	dist, parent := ws.dist, ws.parent
+	dist[nodeHops{a, 0}] = 0
+	h := &ws.heap
+	*h = append((*h)[:0], wpState{cost: 0, node: a, hops: 0})
 	for len(*h) > 0 {
 		st := h.pop()
 		k := key(st.node, st.hops)
@@ -240,7 +261,9 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 		if st.hops >= cap {
 			continue
 		}
-		for nb, pos := range ctx.G.RelationshipsMatched(st.node, sp.Dir, rm) {
+		ws.nbrs, ws.poss = ctx.G.AppendRelationshipsMatched(ws.nbrs[:0], ws.poss[:0], st.node, sp.Dir, rm)
+		for i, nb := range ws.nbrs {
+			pos := ws.poss[i]
 			if hop != nil && !hop.keep(ctx, pos) {
 				continue
 			}

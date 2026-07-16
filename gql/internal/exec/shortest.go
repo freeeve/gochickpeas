@@ -93,6 +93,7 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 	// rows share the backing arrays.
 	type pairKey struct{ a, b graph.NodeID }
 	paths := map[pairKey]*nodesRels{}
+	var ws wpScratch
 	for _, row := range rows {
 		var path nodesRels
 		found := false
@@ -100,7 +101,7 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 			if b, ok2 := row[sp.To].AsNode(); ok2 {
 				switch {
 				case pw != nil:
-					if p := weightedShortestPath(ctx, a, b, sp, rm, hop, pw); p != nil {
+					if p := weightedShortestPath(ctx, a, b, sp, rm, hop, pw, &ws); p != nil {
 						path, found = *p, true
 					}
 				case srcFreq[a] >= 2:
