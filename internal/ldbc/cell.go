@@ -7,7 +7,6 @@
 package ldbc
 
 import (
-	"fmt"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -15,25 +14,6 @@ import (
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
-
-// VerifyCell applies row's norm to the result cells, hashes them, and
-// compares against the row's refhash -- the parity verdict every emission
-// gates on. match=false carries the DIFF detail; an error (bad norm tag,
-// unhashable cell) is a harness problem, not a DIFF.
-func VerifyCell(row ManifestRow, cells [][]any) (match bool, detail string, err error) {
-	normed, err := ApplyNorm(cells, row.Norm)
-	if err != nil {
-		return false, "", err
-	}
-	hash, err := RowsHash(normed)
-	if err != nil {
-		return false, "", err
-	}
-	if hash != row.RefHash {
-		return false, fmt.Sprintf("hash %s != ref %s (%d rows)", hash, row.RefHash, len(cells)), nil
-	}
-	return true, "", nil
-}
 
 // TimeSamples executes run `runs` times, returning the sorted per-run
 // millisecond samples the Record percentile block reads.
