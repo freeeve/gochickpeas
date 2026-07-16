@@ -134,7 +134,7 @@ type distinctSet struct {
 	small  [8]uint32
 	nodes  map[uint32]struct{}
 	rels   map[uint32]struct{}
-	other  map[string]struct{}
+	other  byteSet
 }
 
 // add reports whether v is newly seen (and records it), reusing scratch for
@@ -179,14 +179,7 @@ func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 		return true
 	}
 	*scratch = value.AppendKey((*scratch)[:0], v)
-	if d.other == nil {
-		d.other = map[string]struct{}{}
-	}
-	if _, dup := d.other[string(*scratch)]; dup {
-		return false
-	}
-	d.other[string(*scratch)] = struct{}{}
-	return true
+	return d.other.add(*scratch)
 }
 
 // aggregator is the single-pass group-by accumulator. Group state lives in
