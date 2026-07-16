@@ -78,8 +78,8 @@ func LoadNativeManifest(path string) ([]ManifestRow, error) {
 // work the parity check verified.
 type NativeKernel func(g *chickpeas.Snapshot) (func() ([][]any, error), error)
 
-// NativeKernelV is the value.Value result form -- the migration target
-// ([[155]] option V). Cells are value.Value (scalars stored inline, zero-box)
+// NativeKernelV is the value.Value result form -- the zero-box migration
+// target. Cells are value.Value (scalars stored inline, zero-box)
 // rather than boxed into any; a valued kernel verifies through VerifyCellV,
 // which hashes byte-identically to the boxed path.
 type NativeKernelV func(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error)

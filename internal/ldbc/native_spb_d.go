@@ -13,6 +13,7 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 func init() {
@@ -21,7 +22,7 @@ func init() {
 	registerNative("SPB", "a22", simpleKernel(spbA22))
 	registerNative("SPB", "a23", simpleKernel(spbA23))
 	registerNative("SPB", "a24", simpleKernel(spbA24))
-	registerNative("SPB", "a25", simpleKernel(spbA25))
+	registerNativeV("SPB", "a25", simpleKernelV(spbA25))
 }
 
 // spbA20 (advanced q20, full-text): works whose title OR description
@@ -194,10 +195,10 @@ func spbA24(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA25 (advanced q25, related entities): entities co-occurring with
 // the topic in works' about links, counted by distinct dateCreated
 // days; [who-uri, days] ordered days descending then node id.
-func spbA25(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA25(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	a, ok := spbNodeByURI(g, spbTopic)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	// Distinct dateCreated days per co-occurring entity, held in a flat
 	// (who, day) pair-set plus a per-entity counter bumped on first sight
@@ -243,9 +244,14 @@ func spbA25(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		return a.who < b.who
 	})
-	out := make([][]any, len(rows))
+	// Zero-box result: a pre-sized flat backing carved into two-cell row views,
+	// so the whole result is a small constant number of allocations.
+	cells := make([]value.Value, len(rows)*2)
+	out := make([][]value.Value, len(rows))
 	for i, r := range rows {
-		out[i] = []any{spbURIOf(g, r.who), r.n}
+		cells[i*2] = value.Str(spbURIOf(g, r.who))
+		cells[i*2+1] = value.Int(r.n)
+		out[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return out, nil
 }

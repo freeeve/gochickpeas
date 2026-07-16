@@ -61,7 +61,7 @@ func spbA13(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	// Zero-box result: two value.Str cells per surviving row appended into one
 	// pre-sized flat backing (upper bound = every pair survives), then carved
 	// into fixed-cap row views -- a small constant number of allocations
-	// regardless of row count. See [[155]].
+	// regardless of row count.
 	cells := make([]value.Value, 0, len(pairs)*2)
 	var last pair
 	for i, p := range pairs {

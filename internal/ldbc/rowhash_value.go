@@ -1,5 +1,5 @@
 // value.Value mirror of the rowhash/v1 flow (rowhash.go). The native result
-// migration ([[155]]) moves kernels from boxed [][]any to zero-box
+// migration moves kernels from boxed [][]any to zero-box
 // [][]value.Value; these encode/norm/verify functions produce byte-identical
 // canonical text to their [][]any twins, so the pinned parity hashes hold
 // unchanged. Kept beside the boxed flow, not merged into it, so the two paths
