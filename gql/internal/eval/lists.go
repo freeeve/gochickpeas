@@ -181,7 +181,9 @@ func evalListComp(ctx *Ctx, e *ast.ListComp, row []value.Value, slots map[string
 		return value.Null()
 	}
 	inner, innerSlots, idx := ctx.scopeFor(e, row, slots, e.Var)
-	var out []value.Value
+	// Presized to the source length -- exact without a filter, an upper
+	// bound with one -- so the collect loop never regrows.
+	out := make([]value.Value, 0, src.n)
 	for i := 0; i < src.n; i++ {
 		el := src.at(i)
 		inner[idx[0]] = el

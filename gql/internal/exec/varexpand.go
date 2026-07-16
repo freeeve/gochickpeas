@@ -28,14 +28,19 @@ type hopGate struct {
 
 // hopFilter is a compiled per-hop relationship predicate lifted from
 // all(r IN rels(e) WHERE pred): the iteration variable reads from slot 0
-// of a one-element row per traversed relationship.
+// of a one-element row per traversed relationship. The row is a reused
+// scratch on the filter -- a fresh slice per keep would allocate once per
+// traversed relationship, and the gate is compiled per execution so the
+// scratch is never shared.
 type hopFilter struct {
 	eval  RowEval
 	scope map[string]int
+	srow  [1]value.Value
 }
 
 func (h *hopFilter) keep(ctx *eval.Ctx, pos uint32) bool {
-	return h.eval.Eval(ctx, []value.Value{value.Rel(pos)}, h.scope).IsTruthy()
+	h.srow[0] = value.Rel(pos)
+	return h.eval.Eval(ctx, h.srow[:], h.scope).IsTruthy()
 }
 
 // carryState is the opaque per-path state a walk threads hop to hop for
@@ -61,12 +66,17 @@ type hopCarry struct {
 	scope     map[string]int
 	ascending bool
 	nullsPass bool
+	// srow is the reused one-element eval row (see hopFilter.srow): step
+	// runs once per candidate hop, so a per-call slice would allocate on
+	// every traversed relationship of the walk.
+	srow [1]value.Value
 }
 
 // step consumes one hop: the returned state carries the hop's value, and
 // ok reports whether the hop may follow the previous state.
 func (h *hopCarry) step(ctx *eval.Ctx, pos uint32, st carryState) (carryState, bool) {
-	v := h.eval.Eval(ctx, []value.Value{value.Rel(pos)}, h.scope)
+	h.srow[0] = value.Rel(pos)
+	v := h.eval.Eval(ctx, h.srow[:], h.scope)
 	if st.have && !h.allows(st.val, v) {
 		return st, false
 	}
