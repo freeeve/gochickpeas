@@ -123,7 +123,9 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 			inflow float64
 			dist   uint32
 		}
-		results := map[chickpeas.NodeID]*acc{}
+		// Value map (not map[K]*acc): the (inflow, dist) struct is stored inline,
+		// so no per-reached-account heap allocation.
+		results := map[chickpeas.NodeID]acc{}
 		type amtRel struct {
 			amt float64
 			nbr chickpeas.NodeID
@@ -140,15 +142,16 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 			for len(queue) > 0 {
 				cur := queue[0]
 				queue = queue[1:]
-				e := results[cur.node]
-				if e == nil {
-					results[cur.node] = &acc{cur.inflow, cur.dist}
+				e, ok := results[cur.node]
+				if !ok {
+					e = acc{cur.inflow, cur.dist}
 				} else {
 					e.inflow += cur.inflow
 					if cur.dist < e.dist {
 						e.dist = cur.dist
 					}
 				}
+				results[cur.node] = e
 				if cur.dist >= 3 {
 					continue
 				}

@@ -213,7 +213,9 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	la, lb := loanAmt.F64(), loanBal.F64()
 	return func() ([][]value.Value, error) {
 		type sums struct{ amt, bal float64 }
-		byAcct := map[chickpeas.NodeID]*sums{}
+		// Value map (not map[K]*sums): the struct is stored inline in the bucket,
+		// so per-upstream-account grouping allocates nothing per key.
+		byAcct := map[chickpeas.NodeID]sums{}
 		var rels []tsRel
 		loans := map[chickpeas.NodeID]bool{}
 		for own := range g.Rels(person, chickpeas.Outgoing, "own") {
@@ -272,12 +274,9 @@ func finCR2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 				}
 				if len(loans) > 0 {
 					e := byAcct[acct]
-					if e == nil {
-						e = &sums{}
-						byAcct[acct] = e
-					}
 					e.amt += amt
 					e.bal += bal
+					byAcct[acct] = e
 				}
 			}
 		}

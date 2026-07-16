@@ -279,7 +279,11 @@ func spbA19(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		ms    int64
 		date  string
 	}
-	acc := map[chickpeas.NodeID]*agg{}
+	// Value map (not map[K]*agg): a small struct stored inline in the map's
+	// buckets costs no per-topic heap allocation. topics is hoisted and cleared
+	// per work rather than freshly allocated each iteration.
+	acc := map[chickpeas.NodeID]agg{}
+	topics := map[chickpeas.NodeID]bool{}
 	for cw := range works.Iter() {
 		if !g.HasLabel(cw, spbCWType) {
 			continue
@@ -295,28 +299,28 @@ func spbA19(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		if dtMs < startMs || dtMs > endMs {
 			continue
 		}
-		topics := map[chickpeas.NodeID]bool{}
-		for _, pred := range []string{"about", "mentions", "tag"} {
+		clear(topics)
+		for _, pred := range spbTagPredsWithTag {
 			for t := range g.Neighbors(cw, chickpeas.Outgoing, pred) {
 				topics[t] = true
 			}
 		}
 		for t := range topics {
-			e := acc[t]
-			if e == nil {
-				e = &agg{ms: -1 << 62}
-				acc[t] = e
+			e, ok := acc[t]
+			if !ok {
+				e.ms = -1 << 62
 			}
 			e.count++
 			if dtMs > e.ms {
 				e.ms = dtMs
 				e.date = dt
 			}
+			acc[t] = e
 		}
 	}
 	type row struct {
 		id chickpeas.NodeID
-		a  *agg
+		a  agg
 	}
 	rows := make([]row, 0, len(acc))
 	for t, a := range acc {

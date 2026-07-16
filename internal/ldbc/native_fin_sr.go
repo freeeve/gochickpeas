@@ -125,23 +125,30 @@ func srThresholdGroup(g *chickpeas.Snapshot, cols finCols, account chickpeas.Nod
 		n   int64
 		sum float64
 	}
-	byFar := map[chickpeas.NodeID]*agg{}
+	// Value map (not map[K]*agg): the small (n, sum) struct lives inline in the
+	// map buckets, so grouping costs no per-far-endpoint heap allocation.
+	byFar := map[chickpeas.NodeID]agg{}
 	for r := range g.Rels(account, dir, "transfer") {
 		ts := cols.relTS(r.Pos)
 		amt := cols.relAmt(r.Pos)
 		if ts >= finWS && ts <= finWE && amt > finSRThreshold {
 			e := byFar[r.Neighbor]
-			if e == nil {
-				e = &agg{}
-				byFar[r.Neighbor] = e
-			}
 			e.n++
 			e.sum += amt
+			byFar[r.Neighbor] = e
 		}
 	}
+	// Flat backing carved into fixed-cap row views: the whole result is a small
+	// constant number of allocations, not one slice per far endpoint.
+	cells := make([]value.Value, len(byFar)*3)
 	rows := make([][]value.Value, 0, len(byFar))
+	i := 0
 	for far, a := range byFar {
-		rows = append(rows, []value.Value{value.Int(cols.oid(far)), value.Int(a.n), value.Float(a.sum)})
+		cells[i*3] = value.Int(cols.oid(far))
+		cells[i*3+1] = value.Int(a.n)
+		cells[i*3+2] = value.Float(a.sum)
+		rows = append(rows, cells[i*3:i*3+3:i*3+3])
+		i++
 	}
 	return sortTruncate(rows, 0, func(a, b []value.Value) bool {
 		a2, _ := a[2].AsFloat()

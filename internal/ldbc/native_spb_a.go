@@ -44,6 +44,11 @@ const (
 // covers the tag semantics without double work.
 var spbTagPreds = []string{"about", "mentions"}
 
+// spbTagPredsWithTag adds the materialized `tag` super-property to the
+// about/mentions pair -- a19's topic expansion. Hoisted so the per-work loop
+// reuses one slice instead of allocating the literal each iteration.
+var spbTagPredsWithTag = []string{"about", "mentions", "tag"}
+
 func init() {
 	registerNativeV("SPB", "q1", simpleKernelV(spbQ1))
 	registerNativeV("SPB", "q2", spbQ2)
