@@ -49,7 +49,7 @@ func init() {
 	registerNative("SPB", "q2", spbQ2)
 	registerNativeV("SPB", "q3", simpleKernelV(spbQ3))
 	registerNativeV("SPB", "q4", simpleKernelV(spbQ4))
-	registerNative("SPB", "q5", simpleKernel(spbQ5))
+	registerNativeV("SPB", "q5", simpleKernelV(spbQ5))
 	registerNativeV("SPB", "q7", simpleKernelV(spbQ7))
 	registerNative("SPB", "q9", spbQ9)
 }
@@ -254,10 +254,10 @@ func spbQ4(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // spbQ5 (basic q5): per labelled topic, how many works of the type /
 // audience tag it inside the exclusive dateModified window; count
 // descending, label ascending.
-func spbQ5(g *chickpeas.Snapshot) ([][]any, error) {
+func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel(spbCWType)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	startMs, endMs := spbParseMs(spbDateFrom), spbParseMs(spbDateTo)
 	counts := map[chickpeas.NodeID]int64{}
@@ -284,12 +284,17 @@ func spbQ5(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
+	cells := make([]value.Value, len(counts)*2)
+	rows := make([][]value.Value, 0, len(counts))
+	i := 0
 	for t, n := range counts {
 		label, _ := g.Prop(t, "label").Str()
-		rows = append(rows, []any{label, n})
+		cells[i*2] = value.Str(label)
+		cells[i*2+1] = value.Int(n)
+		rows = append(rows, cells[i*2:i*2+2:i*2+2])
+		i++
 	}
-	spbSortKV(rows)
+	spbSortKVV(rows)
 	return rows, nil
 }
 
@@ -302,6 +307,20 @@ func spbSortKV(rows [][]any) {
 			return av > bv
 		}
 		return a[0].(string) < b[0].(string)
+	})
+}
+
+// spbSortKVV is spbSortKV for value.Value [key, count] rows.
+func spbSortKVV(rows [][]value.Value) {
+	sortByLess(rows, func(a, b []value.Value) bool {
+		av, _ := a[1].AsInt()
+		bv, _ := b[1].AsInt()
+		if av != bv {
+			return av > bv
+		}
+		as, _ := a[0].AsStr()
+		bs, _ := b[0].AsStr()
+		return as < bs
 	})
 }
 

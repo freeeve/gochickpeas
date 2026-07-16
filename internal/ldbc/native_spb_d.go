@@ -20,7 +20,7 @@ func init() {
 	registerNativeV("SPB", "a20", simpleKernelV(spbA20))
 	registerNativeV("SPB", "a21", simpleKernelV(spbA21))
 	registerNativeV("SPB", "a22", simpleKernelV(spbA22))
-	registerNative("SPB", "a23", simpleKernel(spbA23))
+	registerNativeV("SPB", "a23", simpleKernelV(spbA23))
 	registerNative("SPB", "a24", simpleKernel(spbA24))
 	registerNativeV("SPB", "a25", simpleKernelV(spbA25))
 }
@@ -96,7 +96,7 @@ func spbA22(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // the title-matching, category-pinned works with the BGP bound, the
 // count of distinct dateCreated calendar days; [uri, days] count
 // descending then uri.
-func spbA23(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA23(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	// Distinct calendar days per tag, held in a flat (tag, day) pair-set plus a
 	// per-tag counter bumped on first sight rather than a map-of-maps: the inner
 	// day sets were only read for their length, so one flat set avoids an inner
@@ -144,11 +144,16 @@ func spbA23(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
+	cells := make([]value.Value, len(counts)*2)
+	rows := make([][]value.Value, 0, len(counts))
+	i := 0
 	for t, c := range counts {
-		rows = append(rows, []any{spbURIOf(g, t), c})
+		cells[i*2] = value.Str(spbURIOf(g, t))
+		cells[i*2+1] = value.Int(c)
+		rows = append(rows, cells[i*2:i*2+2:i*2+2])
+		i++
 	}
-	spbSortKV(rows)
+	spbSortKVV(rows)
 	return rows, nil
 }
 

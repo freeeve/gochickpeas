@@ -17,10 +17,10 @@ import (
 func init() {
 	registerNativeV("SPB", "a1", simpleKernelV(spbA1))
 	registerNative("SPB", "a2", spbA2)
-	registerNative("SPB", "a3", simpleKernel(spbA3))
-	registerNative("SPB", "a4", simpleKernel(spbA4))
+	registerNativeV("SPB", "a3", simpleKernelV(spbA3))
+	registerNativeV("SPB", "a4", simpleKernelV(spbA4))
 	registerNativeV("SPB", "a5", simpleKernelV(spbA5))
-	registerNative("SPB", "a6", simpleKernel(spbA6))
+	registerNativeV("SPB", "a6", simpleKernelV(spbA6))
 	registerNativeV("SPB", "a7", simpleKernelV(spbA7))
 	registerNativeV("SPB", "a8", simpleKernelV(spbA8))
 	registerNative("SPB", "a9", simpleKernel(spbA9))
@@ -121,10 +121,10 @@ func spbA2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 // spbA3 (advanced q3): in-window works counted by the minute-of-hour of
 // dateModified (the SPARQL MINUTES), minute emitted as a bare decimal
 // string.
-func spbA3(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA3(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	counts := map[int64]int64{}
 	for w := range works.Iter() {
@@ -141,11 +141,16 @@ func spbA3(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		counts[minute]++
 	}
-	rows := make([][]any, 0, len(counts))
+	cells := make([]value.Value, len(counts)*2)
+	rows := make([][]value.Value, 0, len(counts))
+	i := 0
 	for m, c := range counts {
-		rows = append(rows, []any{strconvItoa(m), c})
+		cells[i*2] = value.Str(strconvItoa(m))
+		cells[i*2+1] = value.Int(c)
+		rows = append(rows, cells[i*2:i*2+2:i*2+2])
+		i++
 	}
-	spbSortKV(rows)
+	spbSortKVV(rows)
 	return rows, nil
 }
 
@@ -167,8 +172,10 @@ func strconvItoa(v int64) string {
 
 // spbA4 (advanced q4): works per concrete subtype with dateModified in
 // the window, count descending.
-func spbA4(g *chickpeas.Snapshot) ([][]any, error) {
-	var rows [][]any
+func spbA4(g *chickpeas.Snapshot) ([][]value.Value, error) {
+	cells := make([]value.Value, len(spbSubtypes)*2)
+	rows := make([][]value.Value, 0, len(spbSubtypes))
+	i := 0
 	for _, label := range spbSubtypes {
 		set, ok := g.NodesWithLabel(label)
 		if !ok {
@@ -181,10 +188,13 @@ func spbA4(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 		if n > 0 {
-			rows = append(rows, []any{label, n})
+			cells[i*2] = value.Str(label)
+			cells[i*2+1] = value.Int(n)
+			rows = append(rows, cells[i*2:i*2+2:i*2+2])
+			i++
 		}
 	}
-	spbSortKV(rows)
+	spbSortKVV(rows)
 	return rows, nil
 }
 
@@ -224,10 +234,10 @@ func spbA5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // spbA6 (advanced q6): about-entity types (leaf classes plus the
 // forward-chained Thing) ranked by covered (work, about) pairs, over
 // works with the live flag and audience.
-func spbA6(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA6(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	entityTypes := []string{"Company", "Event", "Thing"}
 	type typeSet struct {
@@ -256,11 +266,16 @@ func spbA6(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(counts))
+	cells := make([]value.Value, len(counts)*2)
+	rows := make([][]value.Value, 0, len(counts))
+	i := 0
 	for ty, n := range counts {
-		rows = append(rows, []any{ty, n})
+		cells[i*2] = value.Str(ty)
+		cells[i*2+1] = value.Int(n)
+		rows = append(rows, cells[i*2:i*2+2:i*2+2])
+		i++
 	}
-	spbSortKV(rows)
+	spbSortKVV(rows)
 	return rows, nil
 }
 
