@@ -36,7 +36,7 @@ type projSink struct {
 	// otherwise); a multi-column row keys on the concatenated AppendKey
 	// encoding -- both dedups thus share one canonical value encoding.
 	seenOne *distinctSet
-	seen    map[string]struct{}
+	seen    *byteSet
 	key     []byte
 	// topk is the streaming bounded accumulator under ORDER BY + LIMIT:
 	// at most skip+limit rows are retained, ordered by the sort's exact
@@ -91,7 +91,7 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 		if len(proj.Returns) == 1 {
 			p.seenOne = &distinctSet{}
 		} else {
-			p.seen = map[string]struct{}{}
+			p.seen = &byteSet{}
 		}
 	}
 	if bound := orderBound(proj); bound >= 0 {
@@ -192,11 +192,10 @@ func (p *projSink) push(row []value.Value) {
 		for _, v := range out {
 			p.key = value.AppendKey(p.key, v)
 		}
-		if _, dup := p.seen[string(p.key)]; dup {
+		if !p.seen.add(p.key) {
 			p.oArena.rollback()
 			return
 		}
-		p.seen[string(p.key)] = struct{}{}
 	}
 	if p.topk != nil {
 		// Keys evaluate here, against the live matched row -- so the

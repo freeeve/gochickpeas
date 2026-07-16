@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -217,6 +218,11 @@ func run() error {
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile covering the timed runs")
 	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
 	flag.Parse()
+	if *memProfile != "" {
+		// Object-count attribution needs every allocation sampled, not the
+		// 512KB-spaced default; set before any query allocates.
+		runtime.MemProfileRate = 1
+	}
 	if *manifest == "" {
 		return fmt.Errorf("no manifest: pass -manifest or set GOCHICKPEAS_GQL_MANIFEST")
 	}
