@@ -200,7 +200,7 @@ func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 type aggregator struct {
 	groupC []RowEval
 	aggC   []RowEval // nil entry = count(*)
-	index  map[string]int
+	index  byteMap
 	indexI map[uint64]int
 
 	nGroups     int
@@ -226,7 +226,7 @@ type aggregator struct {
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
-	a := &aggregator{index: map[string]int{}, indexI: map[uint64]int{}}
+	a := &aggregator{indexI: map[uint64]int{}}
 	for _, gi := range proj.GroupIdx {
 		a.groupC = append(a.groupC, compileEval(ctx, proj.Returns[gi].Expr, slots))
 	}
@@ -386,12 +386,7 @@ func (a *aggregator) groupIdx(keys []value.Value) int {
 		gk = value.AppendKey(gk, v)
 	}
 	a.gkScratch = gk
-	idx, hit := a.index[string(gk)]
-	if !hit {
-		idx = a.appendGroup(keys)
-		a.index[string(gk)] = idx
-	}
-	return idx
+	return a.index.getOrCreate(gk, func() int { return a.appendGroup(keys) })
 }
 
 // update routes one matched row into its group.
