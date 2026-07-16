@@ -6,25 +6,26 @@ package ldbc
 
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 
 func init() {
-	registerNative("BI", "Q13", simpleKernel(biQ13))
-	registerNative("BI", "Q14", simpleKernel(biQ14))
-	registerNative("BI", "Q18", simpleKernel(biQ18))
-	registerNative("BI", "Q19", biQ19)
-	registerNative("BI", "Q20", biQ20)
+	registerNativeV("BI", "Q13", simpleKernelV(biQ13))
+	registerNativeV("BI", "Q14", simpleKernelV(biQ14))
+	registerNativeV("BI", "Q18", simpleKernelV(biQ18))
+	registerNativeV("BI", "Q19", biQ19)
+	registerNativeV("BI", "Q20", biQ20)
 }
 
 // biQ13 -- zombies in France (before 2013-01-01). Low-activity persons
 // (under one message per month since account creation) scored by the
 // share of their likes coming from other zombies; [personId,
 // zombieLikeCount, totalLikeCount], likeRatio desc / id asc, top 100.
-func biQ13(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ13(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	country, ok := nodeByName(g, "Country", "France")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	endDay := dayFromCivil(2013, 1, 1)
 	endYM := int64(2013*12 + 1)
@@ -66,7 +67,7 @@ func biQ13(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(zombies))
+	rows := make([][]value.Value, 0, len(zombies))
 	for z := range zombies {
 		var zlc, tlc int64
 		for m := range g.Neighbors(z, chickpeas.Incoming, "HAS_CREATOR") {
@@ -79,18 +80,22 @@ func biQ13(g *chickpeas.Snapshot) ([][]any, error) {
 				}
 			}
 		}
-		rows = append(rows, []any{i64At(idCol, z), zlc, tlc})
+		rows = append(rows, []value.Value{value.Int(i64At(idCol, z)), value.Int(zlc), value.Int(tlc)})
 	}
-	ratio := func(r []any) float64 {
-		if r[2].(int64) == 0 {
+	ratio := func(r []value.Value) float64 {
+		zlc, _ := r[1].AsInt()
+		tlc, _ := r[2].AsInt()
+		if tlc == 0 {
 			return 0
 		}
-		return float64(r[1].(int64)) / float64(r[2].(int64))
+		return float64(zlc) / float64(tlc)
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
+	return sortTruncate(rows, 100, func(a, b []value.Value) bool {
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
 		return cmpChain(
 			cmpF64Desc(ratio(a), ratio(b)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
+			cmpI64Asc(a0, b0),
 		)
 	}), nil
 }
@@ -99,11 +104,11 @@ func biQ13(g *chickpeas.Snapshot) ([][]any, error) {
 // country1, the best-scoring knows-pair (p1 in city, p2 in country2)
 // where score rewards reply/like interaction kinds; [p1Id, p2Id,
 // cityName, score], score desc / p1 asc / p2 asc, top 100.
-func biQ14(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ14(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	country1, ok1 := nodeByName(g, "Country", "Chile")
 	country2, ok2 := nodeByName(g, "Country", "Argentina")
 	if !ok1 || !ok2 {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -142,7 +147,7 @@ func biQ14(g *chickpeas.Snapshot) ([][]any, error) {
 			lcC2[p] = likedCreators(p)
 		}
 	}
-	var rows [][]any
+	var rows [][]value.Value
 	for city := range g.Neighbors(country1, chickpeas.Incoming, "IS_PART_OF") {
 		cityName := strAt(g, city, "name")
 		type cand struct {
@@ -184,14 +189,22 @@ func biQ14(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 		if best.found {
-			rows = append(rows, []any{best.pa, best.pb, cityName, best.score})
+			rows = append(rows, []value.Value{
+				value.Int(best.pa), value.Int(best.pb), value.Str(cityName), value.Int(best.score),
+			})
 		}
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
+	return sortTruncate(rows, 100, func(a, b []value.Value) bool {
+		a3, _ := a[3].AsInt()
+		b3, _ := b[3].AsInt()
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
+		a1, _ := a[1].AsInt()
+		b1, _ := b[1].AsInt()
 		return cmpChain(
-			cmpI64Desc(a[3].(int64), b[3].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
-			cmpI64Asc(a[1].(int64), b[1].(int64)),
+			cmpI64Desc(a3, b3),
+			cmpI64Asc(a0, b0),
+			cmpI64Asc(a1, b1),
 		)
 	}), nil
 }
@@ -200,10 +213,10 @@ func biQ14(g *chickpeas.Snapshot) ([][]any, error) {
 // tag-interested persons, not directly known, by distinct mutual
 // friends; [p1Id, p2Id, mutualFriendCount], count desc / p1 asc / p2
 // asc, top 20.
-func biQ18(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ18(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	tag, ok := nodeByName(g, "Tag", "Frank_Sinatra")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -256,9 +269,13 @@ func biQ18(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 20 {
 		cands = cands[:20]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*3)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id1, c.id2, c.count}
+		cells[i*3] = value.Int(c.id1)
+		cells[i*3+1] = value.Int(c.id2)
+		cells[i*3+2] = value.Int(c.count)
+		rows[i] = cells[i*3 : i*3+3 : i*3+3]
 	}
 	return rows, nil
 }
@@ -302,17 +319,17 @@ func buildInteractionMap(g *chickpeas.Snapshot) map[interactionKey]uint32 {
 // asc, top 20. The interaction map is built in the untimed prepare
 // phase, matching the rcp-native harness (its timer sees only the
 // per-pair searches).
-func biQ19(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func biQ19(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
 		return nil, err
 	}
 	interaction := buildInteractionMap(g)
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		city1, ok1 := nodeByID(g, "City", 669)
 		city2, ok2 := nodeByID(g, "City", 648)
 		if !ok1 || !ok2 {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
 			if n := interaction[pairKey(from, rel.Neighbor)]; n > 0 {
@@ -326,21 +343,27 @@ func biQ19(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		}
 		m := g.Match("KNOWS")
 		rows := chickpeas.ParNeighborFold(g, city1, chickpeas.Incoming, g.Match("IS_LOCATED_IN"),
-			func() [][]any { return nil },
-			func(acc [][]any, p1 chickpeas.NodeID) [][]any {
+			func() [][]value.Value { return nil },
+			func(acc [][]value.Value, p1 chickpeas.NodeID) [][]value.Value {
 				for _, p2 := range c2 {
 					if d, ok := g.WeightedShortestPath(p1, p2, chickpeas.Both, m, weight); ok && finite(d) {
-						acc = append(acc, []any{i64At(idCol, p1), i64At(idCol, p2), d})
+						acc = append(acc, []value.Value{value.Int(i64At(idCol, p1)), value.Int(i64At(idCol, p2)), value.Float(d)})
 					}
 				}
 				return acc
 			},
-			func(a, b [][]any) [][]any { return append(a, b...) })
-		return sortTruncate(rows, 20, func(a, b []any) bool {
+			func(a, b [][]value.Value) [][]value.Value { return append(a, b...) })
+		return sortTruncate(rows, 20, func(a, b []value.Value) bool {
+			a2, _ := a[2].AsFloat()
+			b2, _ := b[2].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
+			a1, _ := a[1].AsInt()
+			b1, _ := b[1].AsInt()
 			return cmpChain(
-				cmpF64Asc(a[2].(float64), b[2].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
-				cmpI64Asc(a[1].(int64), b[1].(int64)),
+				cmpF64Asc(a2, b2),
+				cmpI64Asc(a0, b0),
+				cmpI64Asc(a1, b1),
 			)
 		}), nil
 	}, nil
@@ -358,7 +381,7 @@ type studyRecord struct {
 // pathWeight], weight asc / id asc, top 20. The study records and the
 // cohort weight map are built in the untimed prepare phase, matching
 // the rcp-native harness.
-func biQ20(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func biQ20(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
 		return nil, err
@@ -367,11 +390,11 @@ func biQ20(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		company, ok1 := nodeByName(g, "Company", "Falcon_Air")
 		person2, ok2 := nodeByID(g, "Person", 66)
 		if !ok1 || !ok2 {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
 			if w, ok := wm[pairKey(from, rel.Neighbor)]; ok {
@@ -380,20 +403,24 @@ func biQ20(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			return inf
 		}
 		m := g.Match("KNOWS")
-		var rows [][]any
+		var rows [][]value.Value
 		for p1 := range g.Neighbors(company, chickpeas.Incoming, "WORK_AT") {
 			if p1 == person2 {
 				continue
 			}
 			sp := g.DijkstraTo(p1, person2, chickpeas.Both, m, weight)
 			if d, ok := sp.Distance(person2); ok && finite(d) {
-				rows = append(rows, []any{i64At(idCol, p1), d})
+				rows = append(rows, []value.Value{value.Int(i64At(idCol, p1)), value.Float(d)})
 			}
 		}
-		return sortTruncate(rows, 20, func(a, b []any) bool {
+		return sortTruncate(rows, 20, func(a, b []value.Value) bool {
+			a1, _ := a[1].AsFloat()
+			b1, _ := b[1].AsFloat()
+			a0, _ := a[0].AsInt()
+			b0, _ := b[0].AsInt()
 			return cmpChain(
-				cmpF64Asc(a[1].(float64), b[1].(float64)),
-				cmpI64Asc(a[0].(int64), b[0].(int64)),
+				cmpF64Asc(a1, b1),
+				cmpI64Asc(a0, b0),
 			)
 		}), nil
 	}, nil

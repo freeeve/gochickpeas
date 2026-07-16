@@ -105,8 +105,8 @@ func personsOfCountry(g *chickpeas.Snapshot, country chickpeas.NodeID) map[chick
 // sort avoids sort.Slice's reflection-based swapper (a typedmemmove per
 // element move), which dominated hot kernels; less runs at most twice
 // per comparison, still far cheaper than the reflected swaps.
-func sortTruncate(rows [][]any, limit int, less func(a, b []any) bool) [][]any {
-	slices.SortFunc(rows, func(a, b []any) int {
+func sortTruncate[R any](rows []R, limit int, less func(a, b R) bool) []R {
+	slices.SortFunc(rows, func(a, b R) int {
 		if less(a, b) {
 			return -1
 		}

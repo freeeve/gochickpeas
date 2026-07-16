@@ -7,15 +7,16 @@ package ldbc
 
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 func init() {
-	registerNative("BI", "Q3", simpleKernel(biQ3))
-	registerNative("BI", "Q4", simpleKernel(biQ4))
-	registerNative("BI", "Q10", simpleKernel(biQ10))
-	registerNative("BI", "Q15", simpleKernel(biQ15))
-	registerNative("BI", "Q16", simpleKernel(biQ16))
-	registerNative("BI", "Q17", simpleKernel(biQ17))
+	registerNativeV("BI", "Q3", simpleKernelV(biQ3))
+	registerNativeV("BI", "Q4", simpleKernelV(biQ4))
+	registerNativeV("BI", "Q10", simpleKernelV(biQ10))
+	registerNativeV("BI", "Q15", simpleKernelV(biQ15))
+	registerNativeV("BI", "Q16", simpleKernelV(biQ16))
+	registerNativeV("BI", "Q17", simpleKernelV(biQ17))
 }
 
 // biQ3 -- popular topics in a country (Burma, MusicalArtist). Forums
@@ -23,11 +24,11 @@ func init() {
 // carrying a class tag; [forumId, title, forumCreationDate(ms), modId,
 // messageCount], count desc / forumId asc, top 20. The creationDate
 // column is epoch-ms against an epoch-day ref (norm col2:msday).
-func biQ3(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ3(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	country, ok1 := nodeByName(g, "Country", "Burma")
 	tc, ok2 := nodeByName(g, "TagClass", "MusicalArtist")
 	if !ok1 || !ok2 {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -90,9 +91,15 @@ func biQ3(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 20 {
 		cands = cands[:20]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*5)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.forumID, c.title, c.cdate, c.personID, c.count}
+		cells[i*5] = value.Int(c.forumID)
+		cells[i*5+1] = value.Str(c.title)
+		cells[i*5+2] = value.Int(c.cdate)
+		cells[i*5+3] = value.Int(c.personID)
+		cells[i*5+4] = value.Int(c.count)
+		rows[i] = cells[i*5 : i*5+5 : i*5+5]
 	}
 	return rows, nil
 }
@@ -101,7 +108,7 @@ func biQ3(g *chickpeas.Snapshot) ([][]any, error) {
 // top-100 forums by largest single-country member cohort, then all
 // their members ranked by messages created in those forums' reply
 // trees; [personId, messageCount], count desc / id asc, top 100.
-func biQ4(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ4(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	afterDay := dayFromCivil(2010, 1, 29)
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -161,9 +168,12 @@ func biQ4(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*2)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id, c.count}
+		cells[i*2] = value.Int(c.id)
+		cells[i*2+1] = value.Int(c.count)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }
@@ -172,16 +182,16 @@ func biQ4(g *chickpeas.Snapshot) ([][]any, error) {
 // knows-distance 3..4). Distinct tagged messages per (expert, tag) where
 // the message carries any class tag; [personId, tagName, messageCount],
 // count desc / name asc / id asc, top 100.
-func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	start, ok := nodeByID(g, "Person", 3470)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	const minDist, maxDist = 3, 4
 	country, ok1 := nodeByName(g, "Country", "China")
 	tc, ok2 := nodeByName(g, "TagClass", "MusicalArtist")
 	if !ok1 || !ok2 {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -242,9 +252,13 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*3)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id, c.name, c.count}
+		cells[i*3] = value.Int(c.id)
+		cells[i*3+1] = value.Str(c.name)
+		cells[i*3+2] = value.Int(c.count)
+		rows[i] = cells[i*3 : i*3+3 : i*3+3]
 	}
 	return rows, nil
 }
@@ -253,11 +267,11 @@ func biQ10(g *chickpeas.Snapshot) ([][]any, error) {
 // 2010-11-01..2010-12-01). Reply interactions whose thread forum falls
 // in the window weight the knows graph (post reply 1.0, comment reply
 // 0.5); edge weight 1/(w+1); [[cost]] or [[-1.0]] when unreachable.
-func biQ15(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	src, ok1 := nodeByID(g, "Person", 14)
 	tgt, ok2 := nodeByID(g, "Person", 16)
 	if !ok1 || !ok2 {
-		return [][]any{{-1.0}}, nil
+		return [][]value.Value{{value.Float(-1.0)}}, nil
 	}
 	w, err := q15WeightMap(g)
 	if err != nil {
@@ -268,9 +282,9 @@ func biQ15(g *chickpeas.Snapshot) ([][]any, error) {
 	}
 	sp := g.DijkstraTo(src, tgt, chickpeas.Both, g.Match("KNOWS"), weight)
 	if d, ok := sp.Distance(tgt); ok && finite(d) {
-		return [][]any{{d}}, nil
+		return [][]value.Value{{value.Float(d)}}, nil
 	}
-	return [][]any{{-1.0}}, nil
+	return [][]value.Value{{value.Float(-1.0)}}, nil
 }
 
 // biQ16Param -- persons who made a message with the tag on the day and
@@ -314,7 +328,7 @@ func biQ16Param(g *chickpeas.Snapshot, tagName string, day, maxKnows int64) (map
 // Hank_Williams@2012-05-08, maxKnows 4). Persons qualifying for both
 // params; [personId, countA, countB], (a+b) desc / id asc, top 20.
 // The official params select zero rows at SF1 (the ref is empty).
-func biQ16(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ16(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	ra, err := biQ16Param(g, "Meryl_Streep", dayFromCivil(2012, 9, 16), 4)
 	if err != nil {
 		return nil, err
@@ -327,16 +341,22 @@ func biQ16(g *chickpeas.Snapshot) ([][]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := [][]any{}
+	rows := [][]value.Value{}
 	for p, ca := range ra {
 		if cb, ok := rb[p]; ok {
-			rows = append(rows, []any{i64At(idCol, p), ca, cb})
+			rows = append(rows, []value.Value{value.Int(i64At(idCol, p)), value.Int(ca), value.Int(cb)})
 		}
 	}
-	return sortTruncate(rows, 20, func(a, b []any) bool {
+	return sortTruncate(rows, 20, func(a, b []value.Value) bool {
+		a1, _ := a[1].AsInt()
+		a2, _ := a[2].AsInt()
+		b1, _ := b[1].AsInt()
+		b2, _ := b[2].AsInt()
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
 		return cmpChain(
-			cmpI64Desc(a[1].(int64)+a[2].(int64), b[1].(int64)+b[2].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
+			cmpI64Desc(a1+a2, b1+b2),
+			cmpI64Asc(a0, b0),
 		)
 	}), nil
 }
@@ -347,10 +367,10 @@ func biQ16(g *chickpeas.Snapshot) ([][]any, error) {
 // message2 (by another forum1 member p3) in a different forum2, more
 // than delta after message1, with person1 not a member of forum2;
 // [personId, messageCount], count desc / id asc, top 10.
-func biQ17(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ17(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	tag, ok := nodeByName(g, "Tag", "Slavoj_Žižek")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	const deltaMS = 4 * 3_600_000
 	idCol, err := nodeI64Col(g, "id")
@@ -457,9 +477,12 @@ func biQ17(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(ranked) > 10 {
 		ranked = ranked[:10]
 	}
-	rows := make([][]any, len(ranked))
+	cells := make([]value.Value, len(ranked)*2)
+	rows := make([][]value.Value, len(ranked))
 	for i, c := range ranked {
-		rows[i] = []any{c.id, c.count}
+		cells[i*2] = value.Int(c.id)
+		cells[i*2+1] = value.Int(c.count)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }

@@ -10,26 +10,27 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/internal/parallel"
 )
 
 func init() {
-	registerNative("BI", "Q1", simpleKernel(biQ1))
-	registerNative("BI", "Q2", simpleKernel(biQ2))
-	registerNative("BI", "Q5", simpleKernel(biQ5))
-	registerNative("BI", "Q6", simpleKernel(biQ6))
-	registerNative("BI", "Q7", simpleKernel(biQ7))
-	registerNative("BI", "Q8", simpleKernel(biQ8))
-	registerNative("BI", "Q9", simpleKernel(biQ9))
-	registerNative("BI", "Q11", simpleKernel(biQ11))
-	registerNative("BI", "Q12", simpleKernel(biQ12))
+	registerNativeV("BI", "Q1", simpleKernelV(biQ1))
+	registerNativeV("BI", "Q2", simpleKernelV(biQ2))
+	registerNativeV("BI", "Q5", simpleKernelV(biQ5))
+	registerNativeV("BI", "Q6", simpleKernelV(biQ6))
+	registerNativeV("BI", "Q7", simpleKernelV(biQ7))
+	registerNativeV("BI", "Q8", simpleKernelV(biQ8))
+	registerNativeV("BI", "Q9", simpleKernelV(biQ9))
+	registerNativeV("BI", "Q11", simpleKernelV(biQ11))
+	registerNativeV("BI", "Q12", simpleKernelV(biQ12))
 }
 
 // biQ1 -- posting summary. Group messages before the cutoff (with
 // content) by (year, isComment, lengthCategory); official RETURN order
 // [year, isComment, messageCount, avg, sum, pct] with pct over ALL
 // pre-cutoff messages.
-func biQ1(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ1(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	cutoff := dayFromCivil(2011, 12, 1)
 	dayCol, err := nodeI64Col(g, "day")
 	if err != nil {
@@ -117,24 +118,33 @@ func biQ1(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		total += part.total
 	}
-	rows := make([][]any, 0, len(groups))
+	rows := make([][]value.Value, 0, len(groups))
 	for k, v := range groups {
 		avg := float64(v[1]) / float64(v[0])
 		pct := float64(v[0]) / float64(total)
-		rows = append(rows, []any{k.year, k.isComment, k.cat, v[0], avg, v[1], pct})
+		rows = append(rows, []value.Value{
+			value.Int(k.year), value.Bool(k.isComment), value.Int(k.cat),
+			value.Int(v[0]), value.Float(avg), value.Int(v[1]), value.Float(pct),
+		})
 	}
-	return sortTruncate(rows, 0, func(a, b []any) bool {
+	return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+		ay, _ := a[0].AsInt()
+		by, _ := b[0].AsInt()
+		ab, _ := a[1].AsBool()
+		bb, _ := b[1].AsBool()
 		ac, bc := int64(0), int64(0)
-		if a[1].(bool) {
+		if ab {
 			ac = 1
 		}
-		if b[1].(bool) {
+		if bb {
 			bc = 1
 		}
+		acat, _ := a[2].AsInt()
+		bcat, _ := b[2].AsInt()
 		return cmpChain(
-			cmpI64Desc(a[0].(int64), b[0].(int64)),
+			cmpI64Desc(ay, by),
 			cmpI64Asc(ac, bc),
-			cmpI64Asc(a[2].(int64), b[2].(int64)),
+			cmpI64Asc(acat, bcat),
 		)
 	}), nil
 }
@@ -142,11 +152,11 @@ func biQ1(g *chickpeas.Snapshot) ([][]any, error) {
 // biQ2 -- tag evolution. Messages tagged with MusicalArtist tags in two
 // consecutive 100-day windows from 2012-06-01; [name, w1, w2, |diff|],
 // diff desc / name asc, top 100. Every qualifying tag emits a row.
-func biQ2(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ2(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	date0 := dayFromCivil(2012, 6, 1)
 	target, ok := nodeByName(g, "TagClass", "MusicalArtist")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	qualifying := map[chickpeas.NodeID]bool{}
 	for t := range g.Neighbors(target, chickpeas.Incoming, "HAS_TYPE") {
@@ -225,9 +235,14 @@ func biQ2(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*4)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.name, c.n1, c.n2, c.absDif}
+		cells[i*4] = value.Str(c.name)
+		cells[i*4+1] = value.Int(c.n1)
+		cells[i*4+2] = value.Int(c.n2)
+		cells[i*4+3] = value.Int(c.absDif)
+		rows[i] = cells[i*4 : i*4+4 : i*4+4]
 	}
 	return rows, nil
 }
@@ -235,10 +250,10 @@ func biQ2(g *chickpeas.Snapshot) ([][]any, error) {
 // biQ5 -- most active posters of a topic (Abbas_I_of_Persia). Score
 // creators of tagged messages by 1*msgs + 2*replies + 10*likes;
 // [personId, replyCount, likeCount, messageCount, score], top 100.
-func biQ5(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	target, ok := nodeByName(g, "Tag", "Abbas_I_of_Persia")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -273,9 +288,15 @@ func biQ5(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*5)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id, c.r, c.l, c.m, c.score}
+		cells[i*5] = value.Int(c.id)
+		cells[i*5+1] = value.Int(c.r)
+		cells[i*5+2] = value.Int(c.l)
+		cells[i*5+3] = value.Int(c.m)
+		cells[i*5+4] = value.Int(c.score)
+		rows[i] = cells[i*5 : i*5+5 : i*5+5]
 	}
 	return rows, nil
 }
@@ -284,10 +305,10 @@ func biQ5(g *chickpeas.Snapshot) ([][]any, error) {
 // authority(person1) = sum over distinct likers of person1's tagged
 // messages of the likes those likers received on their own messages;
 // [personId, authorityScore], top 100.
-func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ6(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	target, ok := nodeByName(g, "Tag", "Arnold_Schwarzenegger")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -341,9 +362,12 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*2)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id, c.score}
+		cells[i*2] = value.Int(c.id)
+		cells[i*2+1] = value.Int(c.score)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }
@@ -351,10 +375,10 @@ func biQ6(g *chickpeas.Snapshot) ([][]any, error) {
 // biQ7 -- related topics (Enrique_Iglesias). Distinct comments replying
 // to tagged messages, not themselves tagged, counted per other tag;
 // [name, count], count desc / name asc, top 100.
-func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ7(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	target, ok := nodeByName(g, "Tag", "Enrique_Iglesias")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	// Distinct comments per related tag, counted via a flat (tag, comment)
 	// pair-set rather than a map-of-maps: the inner sets were only read for
@@ -402,9 +426,12 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*2)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.name, c.count}
+		cells[i*2] = value.Str(c.name)
+		cells[i*2+1] = value.Int(c.count)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }
@@ -413,10 +440,10 @@ func biQ7(g *chickpeas.Snapshot) ([][]any, error) {
 // exclusive). score = 100*interest + tagged messages in window;
 // friendsScore sums friends' scores; [personId, score, friendsScore],
 // (score+friendsScore) desc / id asc, top 100.
-func biQ8(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	tag, ok := nodeByName(g, "Tag", "Che_Guevara")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	startDay, endDay := dayFromCivil(2011, 7, 20), dayFromCivil(2011, 7, 25)
 	idCol, err := nodeI64Col(g, "id")
@@ -439,18 +466,24 @@ func biQ8(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	rows := make([][]any, 0, len(score))
+	rows := make([][]value.Value, 0, len(score))
 	for p, s := range score {
 		var fs int64
 		for f := range g.Neighbors(p, chickpeas.Both, "KNOWS") {
 			fs += score[f]
 		}
-		rows = append(rows, []any{i64At(idCol, p), s, fs})
+		rows = append(rows, []value.Value{value.Int(i64At(idCol, p)), value.Int(s), value.Int(fs)})
 	}
-	return sortTruncate(rows, 100, func(a, b []any) bool {
+	return sortTruncate(rows, 100, func(a, b []value.Value) bool {
+		a1, _ := a[1].AsInt()
+		a2, _ := a[2].AsInt()
+		b1, _ := b[1].AsInt()
+		b2, _ := b[2].AsInt()
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
 		return cmpChain(
-			cmpI64Desc(a[1].(int64)+a[2].(int64), b[1].(int64)+b[2].(int64)),
-			cmpI64Asc(a[0].(int64), b[0].(int64)),
+			cmpI64Desc(a1+a2, b1+b2),
+			cmpI64Asc(a0, b0),
 		)
 	}), nil
 }
@@ -459,7 +492,7 @@ func biQ8(g *chickpeas.Snapshot) ([][]any, error) {
 // posts in window and messages in those posts' reply trees (in window,
 // pruned past endDay); [personId, threadCount, messageCount],
 // messageCount desc / id asc, top 100.
-func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ9(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	startDay, endDay := dayFromCivil(2011, 10, 1), dayFromCivil(2011, 10, 15)
 	idCol, err := nodeI64Col(g, "id")
 	if err != nil {
@@ -518,9 +551,13 @@ func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
 	if len(cands) > 100 {
 		cands = cands[:100]
 	}
-	rows := make([][]any, len(cands))
+	cells := make([]value.Value, len(cands)*3)
+	rows := make([][]value.Value, len(cands))
 	for i, c := range cands {
-		rows[i] = []any{c.id, c.threads, c.msgs}
+		cells[i*3] = value.Int(c.id)
+		cells[i*3+1] = value.Int(c.threads)
+		cells[i*3+2] = value.Int(c.msgs)
+		rows[i] = cells[i*3 : i*3+3 : i*3+3]
 	}
 	return rows, nil
 }
@@ -528,10 +565,10 @@ func biQ9(g *chickpeas.Snapshot) ([][]any, error) {
 // biQ11 -- friend triangles (India, 2012-09-29..2013-01-01 inclusive).
 // Count knows-triangles among persons of the country where every edge
 // was created in the window; [[count]].
-func biQ11(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ11(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	country, ok := nodeByName(g, "Country", "India")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	startDay, endDay := dayFromCivil(2012, 9, 29), dayFromCivil(2013, 1, 1)
 	kdCol, ok := g.RelColIndexed("creationDate")
@@ -574,14 +611,14 @@ func biQ11(g *chickpeas.Snapshot) ([][]any, error) {
 			}
 		}
 	}
-	return [][]any{{count}}, nil
+	return [][]value.Value{{value.Int(count)}}, nil
 }
 
 // biQ12 -- message-count histogram (len<20, after 2010-07-22, root
 // language ar/hu). Persons histogrammed by qualifying-message count
 // (zero bucket included); [messageCount, personCount], personCount desc
 // / messageCount desc.
-func biQ12(g *chickpeas.Snapshot) ([][]any, error) {
+func biQ12(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	minDay := dayFromCivil(2010, 7, 22)
 	const lenThr = 20
 	dayCol, err := nodeI64Col(g, "day")
@@ -667,14 +704,18 @@ func biQ12(g *chickpeas.Snapshot) ([][]any, error) {
 		hist[c]++
 	}
 	hist[0] = totalPersons - int64(len(counts))
-	rows := make([][]any, 0, len(hist))
+	rows := make([][]value.Value, 0, len(hist))
 	for mc, pc := range hist {
-		rows = append(rows, []any{mc, pc})
+		rows = append(rows, []value.Value{value.Int(mc), value.Int(pc)})
 	}
-	return sortTruncate(rows, 0, func(a, b []any) bool {
+	return sortTruncate(rows, 0, func(a, b []value.Value) bool {
+		a1, _ := a[1].AsInt()
+		b1, _ := b[1].AsInt()
+		a0, _ := a[0].AsInt()
+		b0, _ := b[0].AsInt()
 		return cmpChain(
-			cmpI64Desc(a[1].(int64), b[1].(int64)),
-			cmpI64Desc(a[0].(int64), b[0].(int64)),
+			cmpI64Desc(a1, b1),
+			cmpI64Desc(a0, b0),
 		)
 	}), nil
 }
