@@ -33,53 +33,17 @@ import (
 	"github.com/freeeve/gochickpeas/internal/ldbc"
 )
 
-// cellOf converts one result value into the rowhash cell domain (nil,
-// bool, int64, float64, string, []any). Nodes, rels, paths, maps, and
-// temporals are hard errors -- the query text must project scalars.
-func cellOf(v value.Value) (any, error) {
-	switch v.Kind() {
-	case value.KindNull:
-		return nil, nil
-	case value.KindBool:
-		b, _ := v.AsBool()
-		return b, nil
-	case value.KindInt:
-		i, _ := v.AsInt()
-		return i, nil
-	case value.KindFloat:
-		f, _ := v.AsFloat()
-		return f, nil
-	case value.KindStr:
-		s, _ := v.AsStr()
-		return s, nil
-	case value.KindList:
-		vs, _ := v.AsList()
-		out := make([]any, len(vs))
-		for i, c := range vs {
-			cell, err := cellOf(c)
-			if err != nil {
-				return nil, err
-			}
-			out[i] = cell
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("cell kind %d unsupported by rowhash; project a scalar", v.Kind())
-}
-
-// resultCells drains a result into rowhash rows (positional cells).
-func resultCells(rs *gql.Rows) ([][]any, error) {
-	var out [][]any
+// resultCells drains a result into zero-box rowhash rows: each row's
+// value.Value cells are copied out of the (reused) row buffer, then verified
+// through VerifyCellV -- no per-cell boxing into any. Unsupported cell kinds
+// (nodes, rels, paths, maps, temporals) surface as a hard error during
+// hashing, since the query text must project scalars.
+func resultCells(rs *gql.Rows) ([][]value.Value, error) {
+	var out [][]value.Value
 	for row := range rs.All() {
 		vals := row.Values()
-		cells := make([]any, len(vals))
-		for i, v := range vals {
-			cell, err := cellOf(v)
-			if err != nil {
-				return nil, fmt.Errorf("column %d: %w", i, err)
-			}
-			cells[i] = cell
-		}
+		cells := make([]value.Value, len(vals))
+		copy(cells, vals)
 		out = append(out, cells)
 	}
 	return out, nil
@@ -336,7 +300,7 @@ func run() error {
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
 			continue
 		}
-		match, detail, err := ldbc.VerifyCell(row, cells)
+		match, detail, err := ldbc.VerifyCellV(row, cells)
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
 		}
@@ -369,7 +333,7 @@ func run() error {
 					cdiff = "cached cells: " + cerr.Error()
 					break
 				}
-				cmatch, cdetail, cerr := ldbc.VerifyCell(row, ccells)
+				cmatch, cdetail, cerr := ldbc.VerifyCellV(row, ccells)
 				if cerr != nil {
 					return fmt.Errorf("%s (cached parity): %w", id, cerr)
 				}
