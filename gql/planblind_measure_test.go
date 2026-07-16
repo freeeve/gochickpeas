@@ -13,8 +13,6 @@ package gql
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -25,35 +23,6 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 	"github.com/freeeve/gochickpeas/internal/ldbc"
 )
-
-var (
-	blindStrLit = regexp.MustCompile(`'(?:[^'\\]|\\.)*'`)
-	blindParam  = regexp.MustCompile(`\$\w+`)
-	blindNumber = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
-)
-
-// valueBlind normalizes a canonical plan rendering so a literal and its
-// lifted parameter compare equal: strings, params, and numbers all become
-// `?`, and the [anchor: ...] provenance note drops entirely -- it records
-// WHICH SIGNAL decided the anchor (exact vs average), which legitimately
-// differs between sighted and blind planning even when the chosen
-// operator tree is identical. Both sides normalize identically, so
-// structure alone decides.
-func valueBlind(lines []string) string {
-	kept := lines[:0]
-	for _, ln := range lines {
-		if strings.HasPrefix(strings.TrimSpace(ln), "[anchor:") {
-			continue
-		}
-		kept = append(kept, ln)
-	}
-	lines = kept
-	s := strings.Join(lines, "\n")
-	s = blindStrLit.ReplaceAllString(s, "?")
-	s = blindParam.ReplaceAllString(s, "?")
-	s = blindNumber.ReplaceAllString(s, "?")
-	return s
-}
 
 func TestPlanBlindFlipRate(t *testing.T) {
 	manifest := os.Getenv("GOCHICKPEAS_GQL_MANIFEST")

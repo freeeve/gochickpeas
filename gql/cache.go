@@ -50,6 +50,13 @@ type cachedPlan struct {
 	// refs counts the L1 variants sharing this plan; the template entry
 	// is dropped when the last one evicts.
 	refs int
+	// flipped marks a template whose blind plan differs structurally from
+	// value-sighted planning (detected once, when the template was first
+	// planned): execution for such a template routes through the sighted
+	// path instead of the cached tree, because a flipped plan's cost can
+	// be arbitrarily wrong (see planflip.go). Conservative: a template
+	// that flipped for its first caller's values re-plans sighted for all.
+	flipped bool
 }
 
 // l1Entry is one verbatim query string's cache slot: the shared plan plus
@@ -105,6 +112,9 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 	gr := graph.New(g)
 	// L1: a verbatim repeat skips parse + plan.
 	if cp, lifted, ok := c.l1Lookup(query); ok {
+		if cp.flipped {
+			return RunWithParams(g, query, params)
+		}
 		return c.execCached(gr, cp, lifted, params)
 	}
 	// L2: parse, lift constants, and share a plan across templates.
@@ -124,8 +134,17 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 			return nil, wrapStage(err)
 		}
 		cp = &cachedPlan{plan: p, mode: q.Mode, key: key, estBytes: 2048 + len(key)*8}
+		// Flip detection, once per template: compare the tree the cache
+		// would execute (post adaptive choice for this call's values)
+		// against sighted planning of the literal text. One extra plan
+		// per template miss buys the do-no-harm guarantee.
+		ctx := &eval.Ctx{G: gr, Params: lifted}
+		cp.flipped = planFlipped(query, chooseAdaptivePlan(p, ctx, gr), gr)
 	}
 	c.insert(query, cp, lifted)
+	if cp.flipped {
+		return RunWithParams(g, query, params)
+	}
 	return c.execCached(gr, cp, lifted, params)
 }
 
