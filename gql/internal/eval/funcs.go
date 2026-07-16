@@ -190,8 +190,35 @@ func IsKnownScalarFunc(name string) bool {
 }
 
 // evalScalarFunc evaluates a non-aggregate function call. Aggregates never
-// reach here -- they are extracted at plan time.
+// reach here -- they are extracted at plan time. An all-literal call is
+// memoized on the Ctx (see constCalls) so hot correlated evaluation --
+// subquery WHEREs, list-predicate bodies -- pays its construction once per
+// execution.
 func evalScalarFunc(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]int) value.Value {
+	if p, seen := ctx.constCalls[e]; seen && p != nil {
+		return *p
+	} else if !seen {
+		constant := !e.Star
+		for _, a := range e.Args {
+			if _, isLit := a.(*ast.Lit); !isLit {
+				constant = false
+				break
+			}
+		}
+		if ctx.constCalls == nil {
+			ctx.constCalls = map[*ast.Func]*value.Value{}
+		}
+		if constant {
+			v := evalScalarFuncUncached(ctx, e, row, slots)
+			ctx.constCalls[e] = &v
+			return v
+		}
+		ctx.constCalls[e] = nil
+	}
+	return evalScalarFuncUncached(ctx, e, row, slots)
+}
+
+func evalScalarFuncUncached(ctx *Ctx, e *ast.Func, row []value.Value, slots map[string]int) value.Value {
 	var argv []value.Value
 	if !e.Star {
 		argv = make([]value.Value, len(e.Args))

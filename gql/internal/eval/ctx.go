@@ -50,6 +50,16 @@ type Ctx struct {
 	// identity builds once, not once per sibling.
 	DecorTables map[DecorTableKey]map[graph.NodeID]int
 	DecorBuilds int
+	// constCalls memoizes all-literal scalar calls for this execution: a
+	// call whose every argument is a literal (params included -- fixed per
+	// Ctx) evaluates once instead of per row, so a temporal constructor in
+	// a subquery WHERE parses its ISO string once per execution rather
+	// than once per visited row. A nil entry marks a known non-constant
+	// call so the argument scan runs once per node. Sound on the same
+	// invariant as the compile-layer fold: every scalar function is
+	// deterministic (locked by the zero-arg fold tests); a future volatile
+	// function must be excluded here as well as at foldFunc/constExpr.
+	constCalls map[*ast.Func]*value.Value
 }
 
 // DecorTableKey identifies one shared decorrelated side table.
