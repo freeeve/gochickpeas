@@ -160,11 +160,13 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		}
 		return value.Null()
 	case *cFunc:
-		argv := make([]value.Value, len(n.args))
-		for i, a := range n.args {
-			argv[i] = ceval(ctx, a, g, row, slots)
+		if n.argv == nil {
+			n.argv = make([]value.Value, len(n.args))
 		}
-		return eval.ApplyFunc(n.op, argv)
+		for i, a := range n.args {
+			n.argv[i] = ceval(ctx, a, g, row, slots)
+		}
+		return eval.ApplyFunc(n.op, n.argv)
 	case *cSlow:
 		return eval.Eval(ctx, n.e, row, slots)
 	}

@@ -156,6 +156,11 @@ type cCase struct {
 type cFunc struct {
 	op   eval.FuncOp
 	args []cnode
+	// argv is the reused per-eval argument row. Safe because a compiled
+	// tree is built per execution (compile.New takes the live Ctx), a node
+	// cannot be its own descendant, and no ApplyFunc arm retains the argv
+	// slice -- arms read elements by value or build fresh outputs.
+	argv []value.Value
 }
 
 // cCmpPropConst fuses <prop> <comparison> <constant> -- the dominant
