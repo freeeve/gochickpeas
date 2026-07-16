@@ -392,7 +392,7 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 		return nodesRels{}, false
 	}
 	nodes := stitchPath(scr, a, b, fMeet, bMeet)
-	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}, true
+	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
 }
 
 // stitchPath joins the forward parent chain a..fMeet and the backward
@@ -447,7 +447,7 @@ func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, rm *gra
 	if nodes == nil {
 		return nodesRels{}, false
 	}
-	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}, true
+	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
 }
 
 // allShortestPaths enumerates every minimum-hop path a..b: a forward BFS
@@ -475,7 +475,7 @@ func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *gr
 	enumeratePaths(ctx, a, scr, rdir, rm, hop, &suffix, &chains)
 	out := make([]nodesRels, len(chains))
 	for i, nodes := range chains {
-		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, nodes, sp.Dir, rm, hop)}
+		out[i] = nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}
 	}
 	return out
 }
@@ -509,12 +509,16 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Di
 
 // pathRelPositions resolves each consecutive node pair's relationship
 // position (the first accepted relationship between them). Each hop reads
-// from its lower-degree endpoint with an early-exit scan -- resolving from
-// the higher-degree side pays that side's whole adjacency, and a path
-// found by never expanding a hub's ply must not re-pay the hub here.
-// Positions read identically from either side (the incoming seam maps to
-// stored positions), so the side pick cannot change the resolved rel set.
-func pathRelPositions(ctx *eval.Ctx, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
+// from its lower-degree endpoint -- resolving from the higher-degree side
+// pays a hub's whole adjacency, and a path found by never expanding a
+// hub's ply must not re-pay the hub here. The read goes through the batch
+// seam into the walk scratch's neighbor buffers (an iterator closure per
+// hop dominated shortest-path stages' allocations); it runs only after a
+// walk completes, so the buffers are free (same rule as
+// appendHopNeighbors). Positions read identically from either side (the
+// incoming seam maps to stored positions), so the side pick cannot change
+// the resolved rel set.
+func pathRelPositions(ctx *eval.Ctx, scr *spScratch, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
 	rels := make([]uint32, 0, max(len(nodes)-1, 0))
 	rdir := flipDir(dir)
 	for i := 0; i+1 < len(nodes); i++ {
@@ -523,9 +527,10 @@ func pathRelPositions(ctx *eval.Ctx, nodes []graph.NodeID, dir graph.Direction, 
 		if ctx.G.Degree(y, rdir) < ctx.G.Degree(x, dir) {
 			from, fdir, want = y, rdir, x
 		}
-		for nb, p := range ctx.G.RelationshipsMatched(from, fdir, rm) {
-			if nb == want && (hop == nil || hop.keep(ctx, p)) {
-				rels = append(rels, p)
+		scr.nbNodes, scr.nbPoss = ctx.G.AppendRelationshipsMatched(scr.nbNodes[:0], scr.nbPoss[:0], from, fdir, rm)
+		for j, nb := range scr.nbNodes {
+			if nb == want && (hop == nil || hop.keep(ctx, scr.nbPoss[j])) {
+				rels = append(rels, scr.nbPoss[j])
 				break
 			}
 		}
