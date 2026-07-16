@@ -408,8 +408,10 @@ func biQ20(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 			if p1 == person2 {
 				continue
 			}
-			sp := g.DijkstraTo(p1, person2, chickpeas.Both, m, weight)
-			if d, ok := sp.Distance(person2); ok && finite(d) {
+			// Point-to-point per employee: the bidirectional
+			// WeightedShortestPath (symmetric cohort weight via the
+			// undirected pairKey) replaces the one-directional Dijkstra.
+			if d, ok := g.WeightedShortestPath(p1, person2, chickpeas.Both, m, weight); ok && finite(d) {
 				rows = append(rows, []value.Value{value.Int(i64At(idCol, p1)), value.Float(d)})
 			}
 		}

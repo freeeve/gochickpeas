@@ -267,6 +267,11 @@ func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // 2010-11-01..2010-12-01). Reply interactions whose thread forum falls
 // in the window weight the knows graph (post reply 1.0, comment reply
 // 0.5); edge weight 1/(w+1); [[cost]] or [[-1.0]] when unreachable.
+// A single endpoint pair, so the point-to-point WeightedShortestPath
+// (bidirectional meet-in-the-middle -- the native twin of the gql plan's
+// WeightedShortestPath operator) replaces the one-directional Dijkstra;
+// the undirected pairKey makes the weight symmetric, as that search
+// requires.
 func biQ15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	src, ok1 := nodeByID(g, "Person", 14)
 	tgt, ok2 := nodeByID(g, "Person", 16)
@@ -280,8 +285,7 @@ func biQ15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
 		return 1.0 / (w[pairKey(from, rel.Neighbor)] + 1.0)
 	}
-	sp := g.DijkstraTo(src, tgt, chickpeas.Both, g.Match("KNOWS"), weight)
-	if d, ok := sp.Distance(tgt); ok && finite(d) {
+	if d, ok := g.WeightedShortestPath(src, tgt, chickpeas.Both, g.Match("KNOWS"), weight); ok && finite(d) {
 		return [][]value.Value{{value.Float(d)}}, nil
 	}
 	return [][]value.Value{{value.Float(-1.0)}}, nil

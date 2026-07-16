@@ -305,6 +305,9 @@ func (g *Snapshot) WeightedShortestPath(source, target NodeID, dir Direction, m 
 		}
 		for rel := range g.RelsMatch(s.node, d, m) {
 			next := s.cost + weight(s.node, rel)
+			if math.IsInf(next, 1) {
+				continue // +Inf prunes the rel, per the WeightFn contract
+			}
 			if cur, ok := dist[rel.Neighbor]; !ok || next < cur {
 				dist[rel.Neighbor] = next
 				h.push(dijkstraState{cost: next, node: rel.Neighbor})
