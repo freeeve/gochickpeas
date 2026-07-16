@@ -6,7 +6,6 @@
 package exec
 
 import (
-	"container/heap"
 	"math"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -120,8 +119,7 @@ type wpState struct {
 // then the smaller node id, matching the Rust ordering exactly.
 type wpHeap []wpState
 
-func (h wpHeap) Len() int { return len(h) }
-func (h wpHeap) Less(i, j int) bool {
+func (h wpHeap) less(i, j int) bool {
 	if h[i].cost != h[j].cost {
 		return h[i].cost < h[j].cost
 	}
@@ -130,9 +128,48 @@ func (h wpHeap) Less(i, j int) bool {
 	}
 	return h[i].node < h[j].node
 }
-func (h wpHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *wpHeap) Push(x any)   { *h = append(*h, x.(wpState)) }
-func (h *wpHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+
+// push and pop are hand-rolled sift operations: the container/heap form boxes
+// every state into an interface value, allocating once per push -- and the
+// weighted-shortest-path Dijkstra pushes once per explored edge, so on a large
+// search (IC14, BI Q19) that boxing dominates the query's allocations.
+func (h *wpHeap) push(s wpState) {
+	*h = append(*h, s)
+	a := *h
+	for i := len(a) - 1; i > 0; {
+		parent := (i - 1) / 2
+		if !a.less(i, parent) {
+			break
+		}
+		a[i], a[parent] = a[parent], a[i]
+		i = parent
+	}
+}
+
+func (h *wpHeap) pop() wpState {
+	a := *h
+	top := a[0]
+	n := len(a) - 1
+	a[0] = a[n]
+	a = a[:n]
+	*h = a
+	for i := 0; ; {
+		l := 2*i + 1
+		if l >= n {
+			break
+		}
+		small := l
+		if r := l + 1; r < n && a.less(r, l) {
+			small = r
+		}
+		if !a.less(small, i) {
+			break
+		}
+		a[i], a[small] = a[small], a[i]
+		i = small
+	}
+	return top
+}
 
 // nodeHops keys the distance/parent maps.
 type nodeHops struct {
@@ -177,8 +214,8 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 	dist := map[nodeHops]float64{{a, 0}: 0}
 	parent := map[nodeHops]wpParent{}
 	h := &wpHeap{{cost: 0, node: a, hops: 0}}
-	for h.Len() > 0 {
-		st := heap.Pop(h).(wpState)
+	for len(*h) > 0 {
+		st := h.pop()
 		k := key(st.node, st.hops)
 		if d, ok := dist[k]; ok && st.cost > d {
 			continue
@@ -216,7 +253,7 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 			if d, seen := dist[next]; !seen || nextCost < d {
 				dist[next] = nextCost
 				parent[next] = wpParent{prev: st.node, hops: st.hops, rel: pos}
-				heap.Push(h, wpState{cost: nextCost, node: nb, hops: st.hops + 1})
+				h.push(wpState{cost: nextCost, node: nb, hops: st.hops + 1})
 			}
 		}
 	}
