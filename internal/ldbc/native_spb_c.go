@@ -16,11 +16,11 @@ import (
 
 func init() {
 	registerNativeV("SPB", "a13", simpleKernelV(spbA13))
-	registerNative("SPB", "a14", simpleKernel(spbA14))
-	registerNative("SPB", "a15", simpleKernel(spbA15))
+	registerNativeV("SPB", "a14", simpleKernelV(spbA14))
+	registerNativeV("SPB", "a15", simpleKernelV(spbA15))
 	registerNative("SPB", "a16", simpleKernel(spbA16))
-	registerNative("SPB", "a17", simpleKernel(spbA17))
-	registerNative("SPB", "a18", simpleKernel(spbA18))
+	registerNativeV("SPB", "a17", simpleKernelV(spbA17))
+	registerNativeV("SPB", "a18", simpleKernelV(spbA18))
 	registerNative("SPB", "a19", simpleKernel(spbA19))
 }
 
@@ -85,15 +85,15 @@ func spbA13(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // thumbnail, audience rels + dateModified) with primaryFormat pinned to
 // the parameter node and a primaryContentOf web document of the pinned
 // webDocumentType, newest first.
-func spbA14(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA14(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	pf, okPF := spbNodeByURI(g, spbPrimaryFormat)
 	wdt, okWDT := spbNodeByURI(g, spbWebDocType)
 	if !okPF || !okWDT {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	var rows []spbDated
 	for w := range works.Iter() {
@@ -136,7 +136,7 @@ func spbA14(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA15 (advanced q15): title full-text works carrying a category rel
 // and an about-/mentions-target pair sharing the forward-chained Thing
 // entity type, sorted by id.
-func spbA15(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	var out []chickpeas.NodeID
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord2).Iter() {
 		if !spbHasRel(g, w, "category") {
@@ -209,10 +209,10 @@ func spbA16(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA17 (advanced q17, geo): works mentioning a Feature inside the
 // square box of half-extent deviation degrees around the reference
 // point, each carrying a dateModified; deduped, sorted by id.
-func spbA17(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA17(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	cworks, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	features := g.GeoWithinBBox("Feature", "lat", "long",
 		spbLat-spbDeviation, spbLon-spbDeviation, spbLat+spbDeviation, spbLon+spbDeviation)
@@ -236,10 +236,10 @@ func spbA17(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA18 (advanced q18): most-recently-modified works of the type in
 // the inclusive window carrying title, liveCoverage, and category +
 // audience rels.
-func spbA18(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA18(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel(spbCWType)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	var rows []spbDated
 	for w := range works.Iter() {

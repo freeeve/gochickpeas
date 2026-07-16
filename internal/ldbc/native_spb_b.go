@@ -15,7 +15,7 @@ import (
 )
 
 func init() {
-	registerNative("SPB", "a1", simpleKernel(spbA1))
+	registerNativeV("SPB", "a1", simpleKernelV(spbA1))
 	registerNative("SPB", "a2", spbA2)
 	registerNative("SPB", "a3", simpleKernel(spbA3))
 	registerNative("SPB", "a4", simpleKernel(spbA4))
@@ -74,14 +74,14 @@ func spbCountRows(g *chickpeas.Snapshot, counts map[chickpeas.NodeID]int64) [][]
 
 // spbA1 (advanced q1): creative works with an `about` rel to the topic
 // and a dateModified, newest first.
-func spbA1(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA1(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	topic, ok := spbNodeByURI(g, spbTopic)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	cworks, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	var rows []spbDated
 	for w := range g.Neighbors(topic, chickpeas.Incoming, "about") {

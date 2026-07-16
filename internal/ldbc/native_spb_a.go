@@ -15,6 +15,7 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 // The fixed SPB parameter set (src/spb/parity.rs).
@@ -44,12 +45,12 @@ const (
 var spbTagPreds = []string{"about", "mentions"}
 
 func init() {
-	registerNative("SPB", "q1", simpleKernel(spbQ1))
+	registerNativeV("SPB", "q1", simpleKernelV(spbQ1))
 	registerNative("SPB", "q2", spbQ2)
-	registerNative("SPB", "q3", simpleKernel(spbQ3))
-	registerNative("SPB", "q4", simpleKernel(spbQ4))
+	registerNativeV("SPB", "q3", simpleKernelV(spbQ3))
+	registerNativeV("SPB", "q4", simpleKernelV(spbQ4))
 	registerNative("SPB", "q5", simpleKernel(spbQ5))
-	registerNative("SPB", "q7", simpleKernel(spbQ7))
+	registerNativeV("SPB", "q7", simpleKernelV(spbQ7))
 	registerNative("SPB", "q9", spbQ9)
 }
 
@@ -68,11 +69,14 @@ func spbURIOf(g *chickpeas.Snapshot, n chickpeas.NodeID) string {
 }
 
 // spbURIRows renders ranked node ids as one-cell uri rows (the parity
-// JSON's uris kind).
-func spbURIRows(g *chickpeas.Snapshot, ids []chickpeas.NodeID) [][]any {
-	rows := make([][]any, len(ids))
+// JSON's uris kind), zero-box: one value.Str cell per id carved out of a single
+// flat backing.
+func spbURIRows(g *chickpeas.Snapshot, ids []chickpeas.NodeID) [][]value.Value {
+	cells := make([]value.Value, len(ids))
+	rows := make([][]value.Value, len(ids))
 	for i, n := range ids {
-		rows[i] = []any{spbURIOf(g, n)}
+		cells[i] = value.Str(spbURIOf(g, n))
+		rows[i] = cells[i : i+1 : i+1]
 	}
 	return rows
 }
@@ -208,7 +212,7 @@ func spbQ2CW(g *chickpeas.Snapshot) string {
 
 // spbQ1 (basic q1): creative works about|mentions the topic, ranked by
 // dateModified descending.
-func spbQ1(g *chickpeas.Snapshot) ([][]any, error) {
+func spbQ1(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	return spbURIRows(g, spbQ1Rank(g)), nil
 }
 
@@ -235,14 +239,14 @@ func spbQ2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 
 // spbQ3 (basic q3): works tagging the topic with a dateCreated, newest
 // first.
-func spbQ3(g *chickpeas.Snapshot) ([][]any, error) {
+func spbQ3(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	rows := spbTaggingWorks(g, spbTopic, "CreativeWork", "dateCreated")
 	return spbURIRows(g, spbRankDated(rows, spbAll)), nil
 }
 
 // spbQ4 (basic q4): blog posts tagging the topic with a dateCreated,
 // newest first.
-func spbQ4(g *chickpeas.Snapshot) ([][]any, error) {
+func spbQ4(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	rows := spbTaggingWorks(g, spbTopic, spbCWType, "dateCreated")
 	return spbURIRows(g, spbRankDated(rows, spbAll)), nil
 }
@@ -304,10 +308,10 @@ func spbSortKV(rows [][]any) {
 // spbQ7 (basic q7): date-range retrieval with facets -- works of the
 // type created inside [from, to] carrying title and liveCoverage, with
 // category/audience rels pinned to the parameter uris.
-func spbQ7(g *chickpeas.Snapshot) ([][]any, error) {
+func spbQ7(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel(spbCWType)
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	var out []chickpeas.NodeID
 	for w := range works.Iter() {

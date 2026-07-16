@@ -17,9 +17,9 @@ import (
 )
 
 func init() {
-	registerNative("SPB", "a20", simpleKernel(spbA20))
-	registerNative("SPB", "a21", simpleKernel(spbA21))
-	registerNative("SPB", "a22", simpleKernel(spbA22))
+	registerNativeV("SPB", "a20", simpleKernelV(spbA20))
+	registerNativeV("SPB", "a21", simpleKernelV(spbA21))
+	registerNativeV("SPB", "a22", simpleKernelV(spbA22))
 	registerNative("SPB", "a23", simpleKernel(spbA23))
 	registerNative("SPB", "a24", simpleKernel(spbA24))
 	registerNativeV("SPB", "a25", simpleKernelV(spbA25))
@@ -28,7 +28,7 @@ func init() {
 // spbA20 (advanced q20, full-text): works whose title OR description
 // matches the word (whole-word index union), ranked by dateModified
 // descending.
-func spbA20(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA20(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	hits := g.FullTextSearch("CreativeWork", "description", spbWord).
 		Or(g.FullTextSearch("CreativeWork", "title", spbWord))
 	var rows []spbDated
@@ -43,7 +43,7 @@ func spbA20(g *chickpeas.Snapshot) ([][]any, error) {
 // spbA21 (advanced q21, faceted search): title full-text works with at
 // least one about/mentions link, category pinned to the parameter
 // category and audience to the parameter audience; deduped, id-ordered.
-func spbA21(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA21(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	var out []chickpeas.NodeID
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord).Iter() {
 		if !spbHasRel(g, w, "about") && !spbHasRel(g, w, "mentions") {
@@ -63,7 +63,7 @@ func spbA21(g *chickpeas.Snapshot) ([][]any, error) {
 // BGP bound (description, liveCoverage, primaryFormat, about|mentions)
 // plus the pinned category/audience facets and the inclusive
 // dateCreated window; id-ordered.
-func spbA22(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA22(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	var out []chickpeas.NodeID
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord).Iter() {
 		created, ok := g.Prop(w, "dateCreated").Str()
