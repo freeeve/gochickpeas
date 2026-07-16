@@ -49,6 +49,47 @@ func TestByteSetArenaRealloc(t *testing.T) {
 	}
 }
 
+// TestByteSetInlineAndSpill exercises the inline small-key path and the
+// spill into the table form: dedup must hold across the boundary, for both
+// short keys (inline-eligible) and a long key that forces the spill early.
+func TestByteSetInlineAndSpill(t *testing.T) {
+	var s byteSet
+	short := [][]byte{[]byte("a1"), []byte("b22"), []byte("c333"), []byte("d4444")}
+	for _, k := range short {
+		if !s.add(k) {
+			t.Fatalf("first add of %q reported duplicate", k)
+		}
+		if s.add(k) {
+			t.Fatalf("re-add of %q (inline phase) reported new", k)
+		}
+	}
+	// Fifth key spills; the inline keys must remain deduped afterward.
+	if !s.add([]byte("e55555")) {
+		t.Fatal("spilling key reported duplicate")
+	}
+	for _, k := range short {
+		if s.add(k) {
+			t.Fatalf("re-add of %q after spill reported new", k)
+		}
+	}
+	if s.count != 5 {
+		t.Fatalf("count = %d, want 5", s.count)
+	}
+
+	// A key too long for an inline slot forces the spill immediately.
+	var s2 byteSet
+	long := []byte("this key is far longer than an inline slot holds")
+	if !s2.add([]byte("x")) || !s2.add(long) {
+		t.Fatal("adds reported duplicates")
+	}
+	if s2.add(long) || s2.add([]byte("x")) {
+		t.Fatal("post-spill re-adds reported new")
+	}
+	if s2.count != 2 {
+		t.Fatalf("count = %d, want 2", s2.count)
+	}
+}
+
 // TestByteSetEmptyAndSingle covers the empty set and single-element edge.
 func TestByteSetEmptyAndSingle(t *testing.T) {
 	var s byteSet

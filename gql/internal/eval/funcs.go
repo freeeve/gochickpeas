@@ -635,13 +635,40 @@ func applyRange(argv []value.Value) value.Value {
 	return value.List(out)
 }
 
+// asciiOnly reports whether s holds only single-byte runes, so character
+// indexing equals byte indexing.
+func asciiOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 // applySubstring is substring(s, start[, len]): character-based, start
 // past the end yields ""; a null string or negative start/len is null.
+// An all-ASCII source -- the overwhelmingly common case -- slices the
+// input string directly (a Go substring shares the backing), skipping the
+// rune conversion and the fresh string a hot aggregate argument would
+// otherwise pay per row.
 func applySubstring(argv []value.Value) value.Value {
 	s, ok1 := arg(argv, 0).AsStr()
 	start, ok2 := arg(argv, 1).AsInt()
 	if !ok1 || !ok2 || start < 0 {
 		return value.Null()
+	}
+	if asciiOnly(s) {
+		lo := min(int(start), len(s))
+		if len(argv) >= 3 {
+			n, ok := arg(argv, 2).AsInt()
+			if !ok || n < 0 {
+				return value.Null()
+			}
+			hi := min(lo+int(n), len(s))
+			return value.Str(s[lo:hi])
+		}
+		return value.Str(s[lo:])
 	}
 	runes := []rune(s)
 	lo := min(int(start), len(runes))

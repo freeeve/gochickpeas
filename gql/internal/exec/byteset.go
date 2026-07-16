@@ -16,6 +16,15 @@ type byteSet struct {
 	slots []bsSlot
 	mask  uint32
 	count int
+	// Inline first-keys fast path: a per-group DISTINCT set (one byteSet
+	// per group in the aggregator's slabs) usually holds a handful of
+	// short keys, and paying a table plus an arena per group dominated
+	// such aggregations. The first few short keys store inline and probe
+	// linearly; the fifth key (or an oversized one) spills them into the
+	// table form with identical semantics.
+	nSmall uint8
+	smLen  [4]uint8
+	small  [4][24]byte
 }
 
 // bsSlot is one open-addressing slot; filled=false marks an empty slot (a
@@ -37,13 +46,30 @@ func bsHash(b []byte) uint32 {
 	return h
 }
 
-// add reports whether b is newly seen, copying it into the arena on first
-// sight. The caller may reuse b's backing immediately after (the bytes are
-// copied, never aliased).
+// add reports whether b is newly seen, copying it into the inline store or
+// the arena on first sight. The caller may reuse b's backing immediately
+// after (the bytes are copied, never aliased).
 func (s *byteSet) add(b []byte) bool {
 	if s.slots == nil {
+		for i := 0; i < int(s.nSmall); i++ {
+			if int(s.smLen[i]) == len(b) && bytes.Equal(s.small[i][:s.smLen[i]], b) {
+				return false
+			}
+		}
+		if int(s.nSmall) < len(s.small) && len(b) <= len(s.small[0]) {
+			copy(s.small[s.nSmall][:], b)
+			s.smLen[s.nSmall] = uint8(len(b))
+			s.nSmall++
+			s.count++
+			return true
+		}
+		// Overflow (a fifth key, or one too long for a slot): spill the
+		// inline keys into the table form; count already includes them.
 		s.slots = make([]bsSlot, 16)
 		s.mask = 15
+		for i := 0; i < int(s.nSmall); i++ {
+			s.insertNew(s.small[i][:s.smLen[i]])
+		}
 	}
 	if s.count*4 >= len(s.slots)*3 {
 		s.grow()
@@ -62,6 +88,19 @@ func (s *byteSet) add(b []byte) bool {
 	s.slots[i] = bsSlot{hash: h, off: off, length: uint32(len(b)), filled: true}
 	s.count++
 	return true
+}
+
+// insertNew appends a key known to be absent into the arena and table
+// without recounting it (the spill path: inline keys are already counted).
+func (s *byteSet) insertNew(b []byte) {
+	h := bsHash(b)
+	i := h & s.mask
+	for s.slots[i].filled {
+		i = (i + 1) & s.mask
+	}
+	off := uint32(len(s.arena))
+	s.arena = append(s.arena, b...)
+	s.slots[i] = bsSlot{hash: h, off: off, length: uint32(len(b)), filled: true}
 }
 
 // grow doubles the table and rehashes the filled slots.
