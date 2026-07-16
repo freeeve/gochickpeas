@@ -21,7 +21,7 @@ func init() {
 	registerNativeV("SPB", "a21", simpleKernelV(spbA21))
 	registerNativeV("SPB", "a22", simpleKernelV(spbA22))
 	registerNativeV("SPB", "a23", simpleKernelV(spbA23))
-	registerNative("SPB", "a24", simpleKernel(spbA24))
+	registerNativeV("SPB", "a24", simpleKernelV(spbA24))
 	registerNativeV("SPB", "a25", simpleKernelV(spbA25))
 }
 
@@ -159,11 +159,11 @@ func spbA23(g *chickpeas.Snapshot) ([][]value.Value, error) {
 
 // spbA24 (advanced q24, relatedness time-line): per calendar day, the
 // count of works about BOTH entities, ["YYYY-MM-DD", count] ascending.
-func spbA24(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA24(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	a, okA := spbNodeByURI(g, spbTopic)
 	b, okB := spbNodeByURI(g, spbEntB)
 	if !okA || !okB {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	aboutA := map[chickpeas.NodeID]bool{}
 	for w := range g.Neighbors(a, chickpeas.Incoming, "about") {
@@ -189,11 +189,22 @@ func spbA24(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		perDay[fmt.Sprintf("%04d-%02d-%02d", y, m, d)]++
 	}
-	rows := make([][]any, 0, len(perDay))
-	for day, n := range perDay {
-		rows = append(rows, []any{day, n})
+	type dayCount struct {
+		day string
+		n   int64
 	}
-	sortByLess(rows, func(a, b []any) bool { return a[0].(string) < b[0].(string) })
+	tmp := make([]dayCount, 0, len(perDay))
+	for day, n := range perDay {
+		tmp = append(tmp, dayCount{day, n})
+	}
+	sortByLess(tmp, func(a, b dayCount) bool { return a.day < b.day })
+	cells := make([]value.Value, len(tmp)*2)
+	rows := make([][]value.Value, len(tmp))
+	for i, r := range tmp {
+		cells[i*2] = value.Str(r.day)
+		cells[i*2+1] = value.Int(r.n)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
+	}
 	return rows, nil
 }
 

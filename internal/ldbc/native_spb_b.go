@@ -16,15 +16,15 @@ import (
 
 func init() {
 	registerNativeV("SPB", "a1", simpleKernelV(spbA1))
-	registerNative("SPB", "a2", spbA2)
+	registerNativeV("SPB", "a2", spbA2)
 	registerNativeV("SPB", "a3", simpleKernelV(spbA3))
 	registerNativeV("SPB", "a4", simpleKernelV(spbA4))
 	registerNativeV("SPB", "a5", simpleKernelV(spbA5))
 	registerNativeV("SPB", "a6", simpleKernelV(spbA6))
 	registerNativeV("SPB", "a7", simpleKernelV(spbA7))
 	registerNativeV("SPB", "a8", simpleKernelV(spbA8))
-	registerNative("SPB", "a9", simpleKernel(spbA9))
-	registerNative("SPB", "a10", simpleKernel(spbA10))
+	registerNativeV("SPB", "a9", simpleKernelV(spbA9))
+	registerNativeV("SPB", "a10", simpleKernelV(spbA10))
 }
 
 // spbSubtypes are the concrete CreativeWork subclasses the SPB data
@@ -46,7 +46,7 @@ func spbOutCount(g *chickpeas.Snapshot, n chickpeas.NodeID, rel string) int64 {
 // spbCountRows renders a node->count map as (uri, count) rows, count
 // descending then uri ascending. Self-contained value.Value result: sorts a
 // typed (uri, count) slice and carves fixed-cap row views out of one flat
-// backing, so it does not depend on the boxed spbSortKV.
+// backing.
 func spbCountRows(g *chickpeas.Snapshot, counts map[chickpeas.NodeID]int64) [][]value.Value {
 	type kv struct {
 		uri string
@@ -98,20 +98,20 @@ func spbA1(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // spbA2 (advanced q2): the derived creative work's CreativeWork subtype
 // labels, sorted; empty for a missing or titleless work. The parameter
 // derivation is untimed prepare.
-func spbA2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func spbA2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cwURI := spbQ2CW(g)
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		work, ok := spbNodeByURI(g, cwURI)
 		if !ok || !g.HasLabel(work, "CreativeWork") {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		if _, hasTitle := g.Prop(work, "title").Str(); !hasTitle {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
-		var rows [][]any
+		var rows [][]value.Value
 		for _, label := range spbSubtypes {
 			if g.HasLabel(work, label) {
-				rows = append(rows, []any{label})
+				rows = append(rows, []value.Value{value.Str(label)})
 			}
 		}
 		return rows, nil
@@ -325,10 +325,10 @@ func spbA8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // spbA9 (advanced q9): the largest outgoing mentions count on any
 // single creative work, as the one-row [max, n] aggregate the parity
 // ref stores.
-func spbA9(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA9(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{{"max", int64(0)}}, nil
+		return [][]value.Value{{value.Str("max"), value.Int(0)}}, nil
 	}
 	var maxN int64
 	for w := range works.Iter() {
@@ -336,15 +336,15 @@ func spbA9(g *chickpeas.Snapshot) ([][]any, error) {
 			maxN = n
 		}
 	}
-	return [][]any{{"max", maxN}}, nil
+	return [][]value.Value{{value.Str("max"), value.Int(maxN)}}, nil
 }
 
 // spbA10 (advanced q10): every dateCreated-carrying work whose mentions
 // count attains the global maximum, as [uri, count] ordered by uri.
-func spbA10(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	type wc struct {
 		id chickpeas.NodeID
@@ -360,9 +360,13 @@ func spbA10(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 	}
 	if maxN == 0 {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
-	var rows [][]any
+	type row struct {
+		uri string
+		n   int64
+	}
+	var tmp []row
 	for _, c := range counts {
 		if c.n != maxN {
 			continue
@@ -370,8 +374,15 @@ func spbA10(g *chickpeas.Snapshot) ([][]any, error) {
 		if _, ok := g.Prop(c.id, "dateCreated").Str(); !ok {
 			continue
 		}
-		rows = append(rows, []any{spbURIOf(g, c.id), c.n})
+		tmp = append(tmp, row{spbURIOf(g, c.id), c.n})
 	}
-	sortByLess(rows, func(a, b []any) bool { return a[0].(string) < b[0].(string) })
+	sortByLess(tmp, func(a, b row) bool { return a.uri < b.uri })
+	cells := make([]value.Value, len(tmp)*2)
+	rows := make([][]value.Value, len(tmp))
+	for i, r := range tmp {
+		cells[i*2] = value.Str(r.uri)
+		cells[i*2+1] = value.Int(r.n)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
+	}
 	return rows, nil
 }

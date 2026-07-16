@@ -46,12 +46,12 @@ var spbTagPreds = []string{"about", "mentions"}
 
 func init() {
 	registerNativeV("SPB", "q1", simpleKernelV(spbQ1))
-	registerNative("SPB", "q2", spbQ2)
+	registerNativeV("SPB", "q2", spbQ2)
 	registerNativeV("SPB", "q3", simpleKernelV(spbQ3))
 	registerNativeV("SPB", "q4", simpleKernelV(spbQ4))
 	registerNativeV("SPB", "q5", simpleKernelV(spbQ5))
 	registerNativeV("SPB", "q7", simpleKernelV(spbQ7))
-	registerNative("SPB", "q9", spbQ9)
+	registerNativeV("SPB", "q9", spbQ9)
 }
 
 // spbNodeByURI resolves a node by its uri property (label-free lookup).
@@ -220,20 +220,20 @@ func spbQ1(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // CreativeWork with the derived uri, only if it carries the required
 // title. The parameter derivation is untimed prepare; the timed run is
 // the lookup itself.
-func spbQ2(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func spbQ2(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cwURI := spbQ2CW(g)
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		set, ok := g.NodesWithProperty("CreativeWork", "uri", cwURI)
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		for n := range set.Iter() {
 			if _, hasTitle := g.Prop(n, "title").Str(); hasTitle {
-				return [][]any{{spbURIOf(g, n)}}, nil
+				return [][]value.Value{{value.Str(spbURIOf(g, n))}}, nil
 			}
 			break // first (lowest-id) member only, like the Rust iter().next()
 		}
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}, nil
 }
 
@@ -298,19 +298,8 @@ func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	return rows, nil
 }
 
-// spbSortKV orders [key, count] rows count descending then key
+// spbSortKVV orders [key, count] rows count descending then key
 // ascending (the aggregate queries' shared ORDER BY).
-func spbSortKV(rows [][]any) {
-	sortByLess(rows, func(a, b []any) bool {
-		av, bv := a[1].(int64), b[1].(int64)
-		if av != bv {
-			return av > bv
-		}
-		return a[0].(string) < b[0].(string)
-	})
-}
-
-// spbSortKVV is spbSortKV for value.Value [key, count] rows.
 func spbSortKVV(rows [][]value.Value) {
 	sortByLess(rows, func(a, b []value.Value) bool {
 		av, _ := a[1].AsInt()
@@ -359,12 +348,12 @@ func spbQ7(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // + 1*(mentions,about) + 0.5*(mentions,mentions); the emitted score is
 // doubled to an integer, matching the stored ref (which sidesteps
 // decimal-coefficient quirks on the SPARQL side).
-func spbQ9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
+func spbQ9(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	cwURI := spbQ2CW(g)
-	return func() ([][]any, error) {
+	return func() ([][]value.Value, error) {
 		focal, ok := spbNodeByURI(g, cwURI)
 		if !ok {
-			return [][]any{}, nil
+			return [][]value.Value{}, nil
 		}
 		focalAbout := map[chickpeas.NodeID]bool{}
 		for e := range g.Neighbors(focal, chickpeas.Outgoing, "about") {
@@ -390,7 +379,11 @@ func spbQ9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 		collect(focalAbout)
 		collect(focalMentions)
 
-		var rows [][]any
+		type scored struct {
+			uri    string
+			score2 int64
+		}
+		var tmp []scored
 		for o := range candidates {
 			if _, hasDT := g.Prop(o, "dateModified").Str(); !hasDT {
 				continue
@@ -417,15 +410,21 @@ func spbQ9(g *chickpeas.Snapshot) (func() ([][]any, error), error) {
 			if score2 <= 0 {
 				continue
 			}
-			rows = append(rows, []any{spbURIOf(g, o), score2})
+			tmp = append(tmp, scored{spbURIOf(g, o), score2})
 		}
-		sortByLess(rows, func(a, b []any) bool {
-			av, bv := a[1].(int64), b[1].(int64)
-			if av != bv {
-				return av > bv
+		sortByLess(tmp, func(a, b scored) bool {
+			if a.score2 != b.score2 {
+				return a.score2 > b.score2
 			}
-			return a[0].(string) < b[0].(string)
+			return a.uri < b.uri
 		})
+		cells := make([]value.Value, len(tmp)*2)
+		rows := make([][]value.Value, len(tmp))
+		for i, r := range tmp {
+			cells[i*2] = value.Str(r.uri)
+			cells[i*2+1] = value.Int(r.score2)
+			rows[i] = cells[i*2 : i*2+2 : i*2+2]
+		}
 		return rows, nil
 	}, nil
 }

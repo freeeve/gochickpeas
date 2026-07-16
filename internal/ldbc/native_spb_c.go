@@ -18,10 +18,10 @@ func init() {
 	registerNativeV("SPB", "a13", simpleKernelV(spbA13))
 	registerNativeV("SPB", "a14", simpleKernelV(spbA14))
 	registerNativeV("SPB", "a15", simpleKernelV(spbA15))
-	registerNative("SPB", "a16", simpleKernel(spbA16))
+	registerNativeV("SPB", "a16", simpleKernelV(spbA16))
 	registerNativeV("SPB", "a17", simpleKernelV(spbA17))
 	registerNativeV("SPB", "a18", simpleKernelV(spbA18))
-	registerNative("SPB", "a19", simpleKernel(spbA19))
+	registerNativeV("SPB", "a19", simpleKernelV(spbA19))
 }
 
 // spbA13 (advanced q13): distinct (work, tag) pairs for works
@@ -169,7 +169,7 @@ func spbA15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 
 // spbA16 (advanced q16): distinct (work, tag) pairs of title full-text
 // works with a category rel and a title, ordered by tag then work.
-func spbA16(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA16(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	type key struct{ tag, work string }
 	seen := map[key]bool{}
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord2).Iter() {
@@ -199,9 +199,12 @@ func spbA16(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		return a.work < b.work
 	})
-	rows := make([][]any, len(keys))
+	cells := make([]value.Value, len(keys)*2)
+	rows := make([][]value.Value, len(keys))
 	for i, k := range keys {
-		rows[i] = []any{k.work, k.tag}
+		cells[i*2] = value.Str(k.work)
+		cells[i*2+1] = value.Str(k.tag)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
 	}
 	return rows, nil
 }
@@ -265,10 +268,10 @@ func spbA18(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // audience, ranked by newest tagging-work modification then count; each
 // row renders the topic's label (uri fallback), count, and that newest
 // date. Tag expands as about|mentions|tag deduped per work.
-func spbA19(g *chickpeas.Snapshot) ([][]any, error) {
+func spbA19(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	works, ok := g.NodesWithLabel("CreativeWork")
 	if !ok {
-		return [][]any{}, nil
+		return [][]value.Value{}, nil
 	}
 	startMs, endMs := spbParseMs(spbDateFrom), spbParseMs(spbDateTo)
 	type agg struct {
@@ -328,13 +331,17 @@ func spbA19(g *chickpeas.Snapshot) ([][]any, error) {
 		}
 		return a.id < b.id
 	})
-	out := make([][]any, len(rows))
+	cells := make([]value.Value, len(rows)*3)
+	out := make([][]value.Value, len(rows))
 	for i, r := range rows {
 		name, ok := g.Prop(r.id, "label").Str()
 		if !ok {
 			name = spbURIOf(g, r.id)
 		}
-		out[i] = []any{name, r.a.count, r.a.date}
+		cells[i*3] = value.Str(name)
+		cells[i*3+1] = value.Int(r.a.count)
+		cells[i*3+2] = value.Str(r.a.date)
+		out[i] = cells[i*3 : i*3+3 : i*3+3]
 	}
 	return out, nil
 }
