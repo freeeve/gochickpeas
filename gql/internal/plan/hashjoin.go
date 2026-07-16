@@ -211,6 +211,18 @@ func tryHashJoin(stages []Stage, k int, estIn float64, boundEst map[int]float64,
 						break
 					}
 				}
+				// A tracked var-expand joins the build only in its
+				// per-trail bounded contributing form: a check-only or
+				// dedup'd (reach-shaped) walk's output depends on the
+				// row's LIVE uniqueness pairs, which a keyed build cannot
+				// see, so those decline. The known mechanism that could
+				// admit the check-only reach class -- capture each
+				// trail's pair set at build with an empty exclusion, then
+				// reconstruct the endpoint set per row by emitting an
+				// endpoint iff some captured trail has no scope-live pair
+				// -- is deliberately not built: the sibling engine
+				// measured ~1.05x on its best case, and no workload here
+				// pays for this decline yet.
 				if ok && op.Kind == OpVarExpand && op.Uniq != nil &&
 					!(op.Max != nil && op.Uniq.Contribute && !op.DedupEndpoints) {
 					ok = false
