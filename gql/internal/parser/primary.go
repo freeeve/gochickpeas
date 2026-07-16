@@ -84,6 +84,17 @@ func (p *parser) parseIdentPrimary() (ast.Expr, error) {
 				}
 				return &ast.CountSub{Pattern: pat, Where: where}, nil
 			}
+		case "collect":
+			// COLLECT { ... } is the list subquery (the brace form); collect(...)
+			// is the aggregate function call and falls through to parseFuncCall.
+			if p.peekAt(1).Kind == TokLBrace {
+				p.i++
+				pat, where, proj, err := p.parseBracedCollect()
+				if err != nil {
+					return nil, err
+				}
+				return &ast.PatternComp{Pattern: pat, Where: where, Proj: proj}, nil
+			}
 		case "date", "datetime", "zoned_datetime", "localdatetime", "timestamp", "duration":
 			// A temporal keyword directly followed by a string literal is the
 			// GQL temporal-literal form (DATE '2024-01-01'); it lowers to the
@@ -342,6 +353,42 @@ func (p *parser) parseBracedMatch(what string) (*ast.Pattern, ast.Expr, error) {
 		return nil, nil, err
 	}
 	return pat, where, nil
+}
+
+// parseBracedCollect parses { [MATCH] pattern [WHERE expr] RETURN proj [AS
+// alias] } -- the body of a COLLECT subquery. Unlike EXISTS/COUNT, RETURN and
+// a single projection are required (COLLECT must be told what to gather); the
+// MATCH keyword is optional and an AS alias is accepted but ignored (a list
+// value carries no column name).
+func (p *parser) parseBracedCollect() (*ast.Pattern, ast.Expr, ast.Expr, error) {
+	if _, err := p.expect(TokLBrace, "'{' after COLLECT"); err != nil {
+		return nil, nil, nil, err
+	}
+	p.acceptKw("match")
+	pat, perr := p.parsePattern()
+	if perr != nil {
+		return nil, nil, nil, perr
+	}
+	where, werr := p.parseOptionalWhere()
+	if werr != nil {
+		return nil, nil, nil, werr
+	}
+	if kerr := p.expectKw("return"); kerr != nil {
+		return nil, nil, nil, kerr
+	}
+	proj, xerr := p.parseExpr()
+	if xerr != nil {
+		return nil, nil, nil, xerr
+	}
+	if p.acceptKw("as") {
+		if _, err := p.identName("a COLLECT alias"); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if _, err := p.expect(TokRBrace, "'}' closing COLLECT"); err != nil {
+		return nil, nil, nil, err
+	}
+	return pat, where, proj, nil
 }
 
 // parseListPred parses quant(var IN list WHERE pred).
