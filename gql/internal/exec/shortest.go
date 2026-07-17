@@ -163,9 +163,36 @@ type spScratch struct {
 	bFrontier, bNext []graph.NodeID
 	nbNodes          []graph.NodeID
 	nbPoss           []uint32
+	// arNodes/arRels are append-only path slabs: a stage emits thousands
+	// of short paths and one make per path dominated its allocations.
+	// Handed-out slices are RETAINED by emitted rows, so slabs are never
+	// reused or reset -- the per-stage-run scratch is simply abandoned,
+	// amortizing allocation count to one per slab.
+	arNodes []graph.NodeID
+	arRels  []uint32
 }
 
 func newSPScratch() *spScratch { return &spScratch{} }
+
+// nodeSlice hands out a full-capacity n-slice from the node slab.
+func (scr *spScratch) nodeSlice(n int) []graph.NodeID {
+	if cap(scr.arNodes)-len(scr.arNodes) < n {
+		scr.arNodes = make([]graph.NodeID, 0, max(4096, n))
+	}
+	off := len(scr.arNodes)
+	scr.arNodes = scr.arNodes[:off+n]
+	return scr.arNodes[off : off+n : off+n]
+}
+
+// relSlice hands out a full-capacity n-slice from the rel slab.
+func (scr *spScratch) relSlice(n int) []uint32 {
+	if cap(scr.arRels)-len(scr.arRels) < n {
+		scr.arRels = make([]uint32, 0, max(4096, n))
+	}
+	off := len(scr.arRels)
+	scr.arRels = scr.arRels[:off+n]
+	return scr.arRels[off : off+n : off+n]
+}
 
 // begin sizes the dense arrays for the graph's id space and opens a new
 // generation, returning its forward stamp (backward = stamp+1). Stamp
@@ -275,9 +302,11 @@ func spWalk(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelMatche
 // pathFromParents reads the minimum-hop node chain a..b off parent links:
 // a one-node chain when a == b, nil when b was never reached. Two passes
 // (count, then fill backward) give one exactly-sized allocation.
-func pathFromParents(parent map[graph.NodeID]graph.NodeID, a, b graph.NodeID) []graph.NodeID {
+func pathFromParents(scr *spScratch, parent map[graph.NodeID]graph.NodeID, a, b graph.NodeID) []graph.NodeID {
 	if a == b {
-		return []graph.NodeID{a}
+		s := scr.nodeSlice(1)
+		s[0] = a
+		return s
 	}
 	if _, ok := parent[b]; !ok {
 		return nil
@@ -286,7 +315,7 @@ func pathFromParents(parent map[graph.NodeID]graph.NodeID, a, b graph.NodeID) []
 	for cur := parent[b]; cur != a; cur = parent[cur] {
 		n++
 	}
-	nodes := make([]graph.NodeID, n)
+	nodes := scr.nodeSlice(n)
 	cur := b
 	for i := n - 1; i >= 0; i-- {
 		nodes[i] = cur
@@ -404,7 +433,7 @@ func stitchPath(scr *spScratch, a, b, fMeet, bMeet graph.NodeID) []graph.NodeID 
 	for cur := bMeet; cur != b; cur = scr.parent[cur] {
 		m++
 	}
-	nodes := make([]graph.NodeID, n+m)
+	nodes := scr.nodeSlice(n + m)
 	cur := fMeet
 	for i := n - 1; i >= 0; i-- {
 		nodes[i] = cur
@@ -440,7 +469,7 @@ func buildSPTree(ctx *eval.Ctx, a graph.NodeID, sp *plan.SpStage, rm *graph.RelM
 // pathTo reads the minimum-hop path source..b off the parent links,
 // returned by value.
 func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch) (nodesRels, bool) {
-	nodes := pathFromParents(t.parent, t.source, b)
+	nodes := pathFromParents(scr, t.parent, t.source, b)
 	if nodes == nil {
 		return nodesRels{}, false
 	}
@@ -453,7 +482,9 @@ func (t *spTree) pathTo(ctx *eval.Ctx, b graph.NodeID, sp *plan.SpStage, rm *gra
 // completed chain is a distinct minimum-hop path.
 func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch) []nodesRels {
 	if a == b {
-		return []nodesRels{{nodes: []graph.NodeID{a}}}
+		s := scr.nodeSlice(1)
+		s[0] = a
+		return []nodesRels{{nodes: s}}
 	}
 	// spWalk opens the generation; dist entries are valid under its stamp
 	// (scr.cur) until the next search begins.
@@ -485,7 +516,7 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Di
 	}
 	v := (*suffix)[len(*suffix)-1]
 	if v == a {
-		path := make([]graph.NodeID, len(*suffix))
+		path := scr.nodeSlice(len(*suffix))
 		copy(path, *suffix)
 		reverseNodes(path)
 		*out = append(*out, path)
@@ -516,7 +547,7 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Di
 // incoming seam maps to stored positions), so the side pick cannot change
 // the resolved rel set.
 func pathRelPositions(ctx *eval.Ctx, scr *spScratch, nodes []graph.NodeID, dir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []uint32 {
-	rels := make([]uint32, 0, max(len(nodes)-1, 0))
+	rels := scr.relSlice(max(len(nodes)-1, 0))[:0]
 	rdir := flipDir(dir)
 	for i := 0; i+1 < len(nodes); i++ {
 		x, y := nodes[i], nodes[i+1]
