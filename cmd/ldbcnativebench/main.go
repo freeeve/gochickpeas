@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
@@ -47,7 +49,13 @@ func run() error {
 	runs := flag.Int("runs", 5, "timed runs per matched query (median emitted)")
 	only := flag.String("only", "", "comma-separated query ids (e.g. Q1,IC3); empty = all")
 	verifyOnly := flag.Bool("verify-only", false, "check parity only; no timings, no emission")
+	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
 	flag.Parse()
+	if *memProfile != "" {
+		// Object-count attribution needs every allocation sampled, not the
+		// 512KB-spaced default; set before any kernel allocates.
+		runtime.MemProfileRate = 1
+	}
 	if *manifest == "" {
 		return fmt.Errorf("no manifest: pass -manifest or set GOCHICKPEAS_NATIVE_MANIFEST")
 	}
@@ -210,6 +218,16 @@ func run() error {
 	}
 	fmt.Printf("\n%d/%d MATCH, %d DIFF, %d SKIP; %d timing+profile pairs, %d source records emitted at %s\n",
 		match, len(outcomes), diff, skip, emitted, codeEmitted, stamp.Commit)
+	if *memProfile != "" {
+		f, err := os.Create(*memProfile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
+			return err
+		}
+	}
 	if diff > 0 {
 		return fmt.Errorf("%d queries DIFFed against their reference hashes", diff)
 	}

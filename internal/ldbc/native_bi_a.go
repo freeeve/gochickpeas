@@ -8,9 +8,12 @@ package ldbc
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 	"github.com/freeeve/gochickpeas/internal/parallel"
 )
 
@@ -158,19 +161,24 @@ func biQ2(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if !ok {
 		return [][]value.Value{}, nil
 	}
-	qualifying := map[chickpeas.NodeID]bool{}
+	// The qualifying tags are a small fixed set: index them once (sorted
+	// ids, position = dense index) so the parallel shards count into flat
+	// per-tag slabs and merge by vector add -- the per-shard count maps
+	// paid bucket growth on every shard.
+	var tags []uint32
 	for t := range g.Neighbors(target, chickpeas.Incoming, "HAS_TYPE") {
-		qualifying[t] = true
+		tags = append(tags, uint32(t))
 	}
+	slices.Sort(tags)
 	dayCol, err := nodeI64Col(g, "day")
 	if err != nil {
 		return nil, err
 	}
 	w1lo, w1hi := date0, date0+100
 	w2lo, w2hi := date0+100, date0+200
-	type winCounts struct{ c1, c2 map[chickpeas.NodeID]int64 }
-	c1 := map[chickpeas.NodeID]int64{}
-	c2 := map[chickpeas.NodeID]int64{}
+	type winCounts struct{ c1, c2 []int64 }
+	c1 := make([]int64, len(tags))
+	c2 := make([]int64, len(tags))
 	for _, label := range []string{"Post", "Comment"} {
 		set, ok := g.NodesWithLabel(label)
 		if !ok {
@@ -179,7 +187,7 @@ func biQ2(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		ids := set.ToSlice()
 		part := parallel.Fold(len(ids),
 			func() winCounts {
-				return winCounts{map[chickpeas.NodeID]int64{}, map[chickpeas.NodeID]int64{}}
+				return winCounts{make([]int64, len(tags)), make([]int64, len(tags))}
 			},
 			func(acc winCounts, i int) winCounts {
 				msg := ids[i]
@@ -190,44 +198,44 @@ func biQ2(g *chickpeas.Snapshot) ([][]value.Value, error) {
 					return acc
 				}
 				for t := range g.Neighbors(msg, chickpeas.Outgoing, "HAS_TAG") {
-					if qualifying[t] {
+					if ti, ok := slices.BinarySearch(tags, uint32(t)); ok {
 						if in1 {
-							acc.c1[t]++
+							acc.c1[ti]++
 						} else {
-							acc.c2[t]++
+							acc.c2[ti]++
 						}
 					}
 				}
 				return acc
 			},
 			func(a, b winCounts) winCounts {
-				for k, v := range b.c1 {
-					a.c1[k] += v
+				for i := range b.c1 {
+					a.c1[i] += b.c1[i]
 				}
-				for k, v := range b.c2 {
-					a.c2[k] += v
+				for i := range b.c2 {
+					a.c2[i] += b.c2[i]
 				}
 				return a
 			})
-		for k, v := range part.c1 {
-			c1[k] += v
+		for i := range part.c1 {
+			c1[i] += part.c1[i]
 		}
-		for k, v := range part.c2 {
-			c2[k] += v
+		for i := range part.c2 {
+			c2[i] += part.c2[i]
 		}
 	}
 	type cand struct {
 		name           string
 		n1, n2, absDif int64
 	}
-	cands := make([]cand, 0, len(qualifying))
-	for t := range qualifying {
-		n1, n2 := c1[t], c2[t]
+	cands := make([]cand, 0, len(tags))
+	for ti, t := range tags {
+		n1, n2 := c1[ti], c2[ti]
 		diff := n1 - n2
 		if diff < 0 {
 			diff = -diff
 		}
-		cands = append(cands, cand{strAt(g, t, "name"), n1, n2, diff})
+		cands = append(cands, cand{strAt(g, chickpeas.NodeID(t), "name"), n1, n2, diff})
 	}
 	sortByLess(cands, func(a, b cand) bool {
 		return cmpChain(cmpI64Desc(a.absDif, b.absDif), cmpStrAsc(a.name, b.name))
@@ -576,11 +584,15 @@ func biQ11(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		return nil, fmt.Errorf("rel column creationDate missing")
 	}
 	kd := kdCol.I64()
-	inCountry := personsOfCountry(g, country)
-	adj := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
-	for a := range inCountry {
+	inList, inSet := personsOfCountryFlat(g, country)
+	// The date-window KNOWS subgraph as one sorted (a<<32|b) edge-key slice
+	// (per-node spans) plus a flat probe set -- the map-of-maps form
+	// allocated an inner set per person with a qualifying edge.
+	var edges []uint64
+	var edgeSet flatset.U64Set
+	for _, a := range inList {
 		for e := range g.Rels(a, chickpeas.Both, "KNOWS") {
-			if !inCountry[e.Neighbor] {
+			if !inSet.Has(uint32(e.Neighbor)) {
 				continue
 			}
 			ms, ok := kd.Get(e.Pos)
@@ -589,25 +601,28 @@ func biQ11(g *chickpeas.Snapshot) ([][]value.Value, error) {
 			}
 			day := floorDiv(ms, msPerDay)
 			if day >= startDay && day <= endDay {
-				set := adj[a]
-				if set == nil {
-					set = map[chickpeas.NodeID]bool{}
-					adj[a] = set
+				key := uint64(uint32(a))<<32 | uint64(uint32(e.Neighbor))
+				if edgeSet.Add(key) {
+					edges = append(edges, key)
 				}
-				set[e.Neighbor] = true
 			}
 		}
 	}
+	slices.Sort(edges)
+	nbrSpan := func(p uint32) []uint64 {
+		lo := sort.Search(len(edges), func(i int) bool { return edges[i] >= uint64(p)<<32 })
+		hi := sort.Search(len(edges), func(i int) bool { return edges[i] > uint64(p)<<32|0xFFFFFFFF })
+		return edges[lo:hi]
+	}
 	var count int64
-	for a, nbrsA := range adj {
-		for b := range nbrsA {
-			if b <= a {
-				continue
-			}
-			for c := range adj[b] {
-				if c > b && nbrsA[c] {
-					count++
-				}
+	for _, ab := range edges {
+		a, b := uint32(ab>>32), uint32(ab)
+		if b <= a {
+			continue
+		}
+		for _, bc := range nbrSpan(b) {
+			if c := uint32(bc); c > b && edgeSet.Has(uint64(a)<<32|uint64(c)) {
+				count++
 			}
 		}
 	}

@@ -7,6 +7,7 @@ package ldbc
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 
@@ -114,37 +115,34 @@ func biQ14(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	commentedOn := func(p chickpeas.NodeID) map[chickpeas.NodeID]bool {
-		s := map[chickpeas.NodeID]bool{}
+	// Interaction membership as two flat pair-keyed probe sets shared by
+	// BOTH endpoints' directions -- commented(a->b) probes co.Has(a<<32|b)
+	// -- replacing a fresh map per person on each side of the loop.
+	var co, lc flatset.U64Set
+	var indexed flatset.U32Set
+	indexPerson := func(p chickpeas.NodeID) {
+		if !indexed.Add(uint32(p)) {
+			return
+		}
 		for msg := range g.Neighbors(p, chickpeas.Incoming, "HAS_CREATOR") {
 			for parent := range g.Neighbors(msg, chickpeas.Outgoing, "REPLY_OF") {
 				if cr, ok := creatorOf(g, parent); ok {
-					s[cr] = true
+					co.Add(uint64(uint32(p))<<32 | uint64(uint32(cr)))
 				}
 			}
 		}
-		return s
-	}
-	likedCreators := func(p chickpeas.NodeID) map[chickpeas.NodeID]bool {
-		s := map[chickpeas.NodeID]bool{}
 		for msg := range g.Neighbors(p, chickpeas.Outgoing, "LIKES") {
 			if cr, ok := creatorOf(g, msg); ok {
-				s[cr] = true
+				lc.Add(uint64(uint32(p))<<32 | uint64(uint32(cr)))
 			}
 		}
-		return s
 	}
-	inC2 := map[chickpeas.NodeID]bool{}
-	coC2 := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
-	lcC2 := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
+	var inC2 flatset.U32Set
 	for city := range g.Neighbors(country2, chickpeas.Incoming, "IS_PART_OF") {
 		for p := range g.Neighbors(city, chickpeas.Incoming, "IS_LOCATED_IN") {
-			if inC2[p] {
-				continue
+			if inC2.Add(uint32(p)) {
+				indexPerson(p)
 			}
-			inC2[p] = true
-			coC2[p] = commentedOn(p)
-			lcC2[p] = likedCreators(p)
 		}
 	}
 	var rows [][]value.Value
@@ -156,23 +154,22 @@ func biQ14(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		}
 		var best cand
 		for p1 := range g.Neighbors(city, chickpeas.Incoming, "IS_LOCATED_IN") {
-			p1co := commentedOn(p1)
-			p1lc := likedCreators(p1)
+			indexPerson(p1)
 			for p2 := range g.Neighbors(p1, chickpeas.Both, "KNOWS") {
-				if !inC2[p2] {
+				if !inC2.Has(uint32(p2)) {
 					continue
 				}
 				var score int64
-				if p1co[p2] {
+				if co.Has(uint64(uint32(p1))<<32 | uint64(uint32(p2))) {
 					score += 4
 				}
-				if coC2[p2][p1] {
+				if co.Has(uint64(uint32(p2))<<32 | uint64(uint32(p1))) {
 					score += 1
 				}
-				if p1lc[p2] {
+				if lc.Has(uint64(uint32(p1))<<32 | uint64(uint32(p2))) {
 					score += 10
 				}
-				if lcC2[p2][p1] {
+				if lc.Has(uint64(uint32(p2))<<32 | uint64(uint32(p1))) {
 					score += 1
 				}
 				pa, pb := i64At(idCol, p1), i64At(idCol, p2)

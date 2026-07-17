@@ -15,6 +15,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // aggState is one aggregate accumulator, allocated once per group per
@@ -136,9 +137,9 @@ type distinctSet struct {
 	nSmall uint8
 	smRel  bool
 	small  [8]uint32
-	nodes  u32Set
-	rels   u32Set
-	other  byteSet
+	nodes  flatset.U32Set
+	rels   flatset.U32Set
+	other  flatset.ByteSet
 }
 
 // add reports whether v is newly seen (and records it), reusing scratch for
@@ -156,14 +157,14 @@ func (d *distinctSet) add(v value.Value, scratch *[]byte) bool {
 		return d.addEntity(uint32(pos), true, &d.rels)
 	}
 	*scratch = value.AppendKey((*scratch)[:0], v)
-	return d.other.add(*scratch)
+	return d.other.Add(*scratch)
 }
 
 // addEntity dedups one entity id through the inline array (when this kind
 // holds the claim) or the kind's probe set, spilling the inline ids into
 // the set on overflow.
-func (d *distinctSet) addEntity(id uint32, isRel bool, m *u32Set) bool {
-	if m.slots == nil {
+func (d *distinctSet) addEntity(id uint32, isRel bool, m *flatset.U32Set) bool {
+	if !m.Built() {
 		if d.nSmall == 0 || d.smRel == isRel {
 			d.smRel = isRel
 			for _, s := range d.small[:d.nSmall] {
@@ -179,11 +180,11 @@ func (d *distinctSet) addEntity(id uint32, isRel bool, m *u32Set) bool {
 		}
 		if d.smRel == isRel {
 			for _, s := range d.small[:d.nSmall] {
-				m.add(s)
+				m.Add(s)
 			}
 		}
 	}
-	return m.add(id)
+	return m.Add(id)
 }
 
 // aggregator is the single-pass group-by accumulator. Group state lives in
@@ -197,8 +198,8 @@ func (d *distinctSet) addEntity(id uint32, isRel bool, m *u32Set) bool {
 type aggregator struct {
 	groupC []RowEval
 	aggC   []RowEval // nil entry = count(*)
-	index  byteMap
-	indexI u64Map
+	index  flatset.ByteMap
+	indexI flatset.U64Map
 
 	nGroups     int
 	keysChunks  [][]value.Value
@@ -371,14 +372,14 @@ func packedEntity30(v value.Value) (uint64, bool) {
 // group on first sight.
 func (a *aggregator) groupIdx(keys []value.Value) int {
 	if gk64, packed := packGroupKey(keys); packed {
-		return a.indexI.getOrCreate(gk64, func() int { return a.appendGroup(keys) })
+		return a.indexI.GetOrCreate(gk64, func() int { return a.appendGroup(keys) })
 	}
 	gk := a.gkScratch[:0]
 	for _, v := range keys {
 		gk = value.AppendKey(gk, v)
 	}
 	a.gkScratch = gk
-	return a.index.getOrCreate(gk, func() int { return a.appendGroup(keys) })
+	return a.index.GetOrCreate(gk, func() int { return a.appendGroup(keys) })
 }
 
 // update routes one matched row into its group.

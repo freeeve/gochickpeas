@@ -13,6 +13,7 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // inf is the sentinel weight for "no usable edge" in the derived-weight
@@ -99,6 +100,22 @@ func personsOfCountry(g *chickpeas.Snapshot, country chickpeas.NodeID) map[chick
 		}
 	}
 	return out
+}
+
+// personsOfCountryFlat is personsOfCountry as an iteration list plus a
+// flat probe set -- the map form pays bucket growth as it fills where the
+// pair costs one slice and one probe table.
+func personsOfCountryFlat(g *chickpeas.Snapshot, country chickpeas.NodeID) ([]chickpeas.NodeID, flatset.U32Set) {
+	var list []chickpeas.NodeID
+	var set flatset.U32Set
+	for city := range g.Neighbors(country, chickpeas.Incoming, "IS_PART_OF") {
+		for p := range g.Neighbors(city, chickpeas.Incoming, "IS_LOCATED_IN") {
+			if set.Add(uint32(p)) {
+				list = append(list, p)
+			}
+		}
+	}
+	return list, set
 }
 
 // sortTruncate sorts rows by less and keeps the top limit. The generic

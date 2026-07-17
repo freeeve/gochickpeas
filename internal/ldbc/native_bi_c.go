@@ -6,8 +6,12 @@
 package ldbc
 
 import (
+	"slices"
+	"sort"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 func init() {
@@ -403,6 +407,7 @@ func biQ17(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		taggedSet[m] = true
 	}
 	type m1Rec struct {
+		f1  chickpeas.NodeID
 		p1  chickpeas.NodeID
 		ms1 int64
 	}
@@ -410,14 +415,17 @@ func biQ17(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		p2, p3, msg2, f2 chickpeas.NodeID
 		ms2              int64
 	}
-	m1ByForum := map[chickpeas.NodeID][]m1Rec{}
+	var m1s []m1Rec
 	var cands []candRec
-	relevant := map[chickpeas.NodeID]bool{}
+	var relevantSet flatset.U32Set
+	var relevant []chickpeas.NodeID
 	for _, m := range tagged {
 		if p1, ok := creatorOf(g, m); ok {
 			if f1, ok := forumOf(m); ok {
-				m1ByForum[f1] = append(m1ByForum[f1], m1Rec{p1, i64At(msCol, m)})
-				relevant[f1] = true
+				m1s = append(m1s, m1Rec{f1, p1, i64At(msCol, m)})
+				if relevantSet.Add(uint32(f1)) {
+					relevant = append(relevant, f1)
+				}
 			}
 		}
 		msg2, ok := g.FirstNeighbor(m, chickpeas.Outgoing, "REPLY_OF")
@@ -429,41 +437,60 @@ func biQ17(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		f2, ok3 := forumOf(msg2)
 		if ok1 && ok2 && ok3 {
 			cands = append(cands, candRec{p2, p3, msg2, f2, i64At(msCol, msg2)})
-			relevant[f2] = true
+			if relevantSet.Add(uint32(f2)) {
+				relevant = append(relevant, f2)
+			}
 		}
 	}
-	pm := map[chickpeas.NodeID]map[chickpeas.NodeID]bool{}
-	for f := range relevant {
+	// m1s sorted by forum: the per-forum record lookup is a span of one
+	// flat slice (a map of per-forum slices costs an allocation per forum
+	// plus growth per append).
+	sortByLess(m1s, func(a, b m1Rec) bool { return a.f1 < b.f1 })
+	m1Span := func(f chickpeas.NodeID) []m1Rec {
+		lo := sort.Search(len(m1s), func(i int) bool { return m1s[i].f1 >= f })
+		hi := sort.Search(len(m1s), func(i int) bool { return m1s[i].f1 > f })
+		return m1s[lo:hi]
+	}
+	// Person-forum membership as one sorted (person<<32|forum) key slice
+	// (span iteration) plus a flat probe set (O(1) membership) -- the
+	// map-of-maps form allocated an inner map per member, half this
+	// kernel's allocations.
+	var pfPairs []uint64
+	var pfSet flatset.U64Set
+	for _, f := range relevant {
 		for p := range g.Neighbors(f, chickpeas.Outgoing, "HAS_MEMBER") {
-			set := pm[p]
-			if set == nil {
-				set = map[chickpeas.NodeID]bool{}
-				pm[p] = set
+			key := uint64(uint32(p))<<32 | uint64(uint32(f))
+			if pfSet.Add(key) {
+				pfPairs = append(pfPairs, key)
 			}
-			set[f] = true
 		}
+	}
+	slices.Sort(pfPairs)
+	forumsOf := func(p chickpeas.NodeID) []uint64 {
+		lo := sort.Search(len(pfPairs), func(i int) bool { return pfPairs[i] >= uint64(uint32(p))<<32 })
+		hi := sort.Search(len(pfPairs), func(i int) bool { return pfPairs[i] > uint64(uint32(p))<<32|0xFFFFFFFF })
+		return pfPairs[lo:hi]
+	}
+	member := func(p, f chickpeas.NodeID) bool {
+		return pfSet.Has(uint64(uint32(p))<<32 | uint64(uint32(f)))
 	}
 	// Distinct msg2 per person, counted via a flat (person, msg2) pair-set plus
 	// a per-person counter incremented on first sight, rather than an inner map
-	// per person: these inner sets were only read for their length. (pm above
-	// stays a map-of-maps -- it is probed for membership in the hot loop.)
-	type pMsg struct{ p1, msg chickpeas.NodeID }
-	seen := map[pMsg]bool{}
+	// per person: these inner sets were only read for their length.
+	var seen flatset.U64Set
 	counts := map[chickpeas.NodeID]int64{}
 	for _, c := range cands {
 		if c.p2 == c.p3 {
 			continue
 		}
-		fp2, fp3 := pm[c.p2], pm[c.p3]
-		for f1 := range fp2 {
-			if f1 == c.f2 || !fp3[f1] {
+		for _, key := range forumsOf(c.p2) {
+			f1 := chickpeas.NodeID(uint32(key))
+			if f1 == c.f2 || !member(c.p3, f1) {
 				continue
 			}
-			for _, m1 := range m1ByForum[f1] {
-				if c.ms2 > m1.ms1+deltaMS && !pm[m1.p1][c.f2] {
-					pair := pMsg{m1.p1, c.msg2}
-					if !seen[pair] {
-						seen[pair] = true
+			for _, m1 := range m1Span(f1) {
+				if c.ms2 > m1.ms1+deltaMS && !member(m1.p1, c.f2) {
+					if seen.Add(uint64(uint32(m1.p1))<<32 | uint64(uint32(c.msg2))) {
 						counts[m1.p1]++
 					}
 				}

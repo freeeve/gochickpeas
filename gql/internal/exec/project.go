@@ -16,6 +16,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // projSink is the non-aggregated terminal sink.
@@ -36,7 +37,7 @@ type projSink struct {
 	// otherwise); a multi-column row keys on the concatenated AppendKey
 	// encoding -- both dedups thus share one canonical value encoding.
 	seenOne *distinctSet
-	seen    *byteSet
+	seen    *flatset.ByteSet
 	key     []byte
 	// topk is the streaming bounded accumulator under ORDER BY + LIMIT:
 	// at most skip+limit rows are retained, ordered by the sort's exact
@@ -91,7 +92,7 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 		if len(proj.Returns) == 1 {
 			p.seenOne = &distinctSet{}
 		} else {
-			p.seen = &byteSet{}
+			p.seen = &flatset.ByteSet{}
 		}
 	}
 	if bound := orderBound(proj); bound >= 0 {
@@ -194,7 +195,7 @@ func (p *projSink) push(row []value.Value) bool {
 		for _, v := range out {
 			p.key = value.AppendKey(p.key, v)
 		}
-		if !p.seen.add(p.key) {
+		if !p.seen.Add(p.key) {
 			p.oArena.rollback()
 			return true
 		}
