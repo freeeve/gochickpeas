@@ -25,6 +25,11 @@ type projSink struct {
 	proj    *plan.ProjPlan
 	slots   map[string]int
 	returns []RowEval
+	// slotIdx[i] >= 0 marks output column i as a bare variable projection
+	// -- a direct gather row[slotIdx[i]] that skips the RowEval interface
+	// dispatch and its per-column closure. Fires on any RETURN a, b, c...
+	// shape (structure, not query identity); -1 keeps the general Eval.
+	slotIdx []int
 	outs    [][]value.Value
 	oArena  rowArena
 	// needM: an ORDER BY key evaluates over the matched row, so matched
@@ -78,8 +83,15 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 		oArena:   rowArena{width: len(proj.Returns)},
 		limitCap: -1,
 	}
+	p.slotIdx = make([]int, len(proj.Returns))
 	for i, r := range proj.Returns {
 		p.returns[i] = compileEval(ctx, r.Expr, slots)
+		p.slotIdx[i] = -1
+		if v, ok := r.Expr.(*ast.Var); ok {
+			if s, ok := slots[v.Name]; ok {
+				p.slotIdx[i] = s
+			}
+		}
 	}
 	for i := range proj.OrderBy {
 		if plan.OrderColIndex(proj.OrderBy[i].Expr, proj.Columns, proj.Returns) < 0 {
@@ -172,7 +184,12 @@ func (p *projSink) push(row []value.Value) bool {
 			out[p.kColIdx[k]] = p.kBuf[k]
 		}
 		for i, c := range p.returns {
-			if !p.kGateCol(i) {
+			if p.kGateCol(i) {
+				continue
+			}
+			if s := p.slotIdx[i]; s >= 0 {
+				out[i] = row[s]
+			} else {
 				out[i] = c.Eval(p.ctx, row, p.slots)
 			}
 		}
@@ -183,7 +200,11 @@ func (p *projSink) push(row []value.Value) bool {
 	}
 	out := p.oArena.alloc()
 	for i, c := range p.returns {
-		out[i] = c.Eval(p.ctx, row, p.slots)
+		if s := p.slotIdx[i]; s >= 0 {
+			out[i] = row[s]
+		} else {
+			out[i] = c.Eval(p.ctx, row, p.slots)
+		}
 	}
 	if p.seenOne != nil {
 		if !p.seenOne.add(out[0], &p.key) {
