@@ -175,6 +175,15 @@ func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, 
 				blocked = true
 				break
 			}
+			// The probe hop's own pair against this row's live pairs: in
+			// effective execution order the build ops precede the probe, so
+			// a Check-marked probe must not reuse a relationship the row
+			// already bound. (The outer env cannot catch this -- the row's
+			// pairs push only after the probe's own check ran.)
+			if pu != nil && pu.Check && p.live && p.scope == pu.Scope && p.a == pa && p.b == pb {
+				blocked = true
+				break
+			}
 		}
 		if blocked {
 			continue

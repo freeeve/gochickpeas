@@ -131,9 +131,14 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 	// After flagDedupEndpoints: a contributing var-expand must keep its
 	// trails distinct, so the marking pass clears that flag where set.
 	markRelUniqueness(stages)
-	// After marking: the hash-join extraction preserves each op's original
-	// uniqueness flags, which the executor's capture/replay depends on.
+	// After marking: the hash-join extraction reads the flags (its build
+	// admission gate declines check-only var-expands), then the re-mark
+	// recomputes Check/Contribute over the post-extraction effective
+	// execution order -- extraction moves the probe and build ops relative
+	// to the ops left in place, and stale flags would let a moved hop skip
+	// the used-pair exclusion entirely.
 	stages = hashJoinStages(stages, slots, inWidth, g)
+	remarkRelUniqueness(stages)
 
 	if postWhere != nil {
 		if semantics.ExprHasAgg(postWhere) {
@@ -264,6 +269,14 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 			if bothEndsUnboundParamSeek(pattern, slots, bound) {
 				pc.ties = append(pc.ties, spec.pattern)
 			}
+			// Leaf cardinality first: it is a FILTERED quantity (the seek's
+			// posting length, the label's population), where any chain
+			// fan-out product is unfiltered -- and for a total chain the
+			// honest fan-out estimate counts the same path multiset from
+			// either end, so a total-cost comparison decides by estimate
+			// noise and overrides the real signal (measured: replacing this
+			// ladder with anchorCard x label-conditional chain fan-out
+			// regressed Q17 6x and Q16 12x while flipping nothing usefully).
 			cs := anchorCard(&pattern.Start, where, slots, bound, g)
 			ce := anchorCard(pattern.EndNode(), where, slots, bound, g)
 			if ce != cs {

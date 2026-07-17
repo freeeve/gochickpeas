@@ -424,6 +424,92 @@ func TestHashJoinUniquenessReplayDeepHop(t *testing.T) {
 	}
 }
 
+// TestHashJoinUniquenessOrderInversion pins the post-extraction re-mark
+// plus the probe-vs-build-row pair check (task 194): the connecting
+// expand the rewrite consumes as its probe can MOVE ahead of a same-type
+// hop left behind the join, inverting the Check/Contribute flags the
+// nested order justified -- the probe (stale Check-only) pushed nothing
+// while the hop now running after it (stale Contribute-only) was checked
+// by nobody, so a row binding one physical relationship for BOTH hops
+// leaked. Found on BI Q17 when an anchor-choice change produced the
+// inverted stitching: one forum's membership edge served both person
+// hops. The fixture mirrors that shape: the q-chain reads the outer f
+// and the build-payload bb, so it must run post-join, and q = p1 reuses
+// the probe's (f, p1) MEM pair.
+func TestHashJoinUniquenessOrderInversion(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 128)
+	tag, _ := b.AddNode("Tag")
+	_ = b.SetProp(tag, "name", "t")
+	mk := func(label string, i int) chickpeas.NodeID {
+		n, _ := b.AddNode(label)
+		_ = b.SetProp(n, "name", fmt.Sprintf("%s%d", strings.ToLower(label), i))
+		return n
+	}
+	var fs, ps []chickpeas.NodeID
+	for i := range 11 {
+		a := mk("A", i)
+		b.AddRel(tag, a, "AT")
+		fi := min(i, 9)
+		if fi == len(fs) {
+			fs = append(fs, mk("F", fi))
+		}
+		b.AddRel(a, fs[fi], "AF")
+	}
+	var bbs []chickpeas.NodeID
+	for j := range 8 {
+		bb := mk("BB", j)
+		b.AddRel(tag, bb, "BT")
+		bbs = append(bbs, bb)
+		pj := j
+		if j == 7 {
+			pj = 1
+		}
+		if pj == len(ps) {
+			ps = append(ps, mk("P", pj))
+		}
+		b.AddRel(bb, ps[pj], "BC")
+	}
+	for range 9 {
+		b.AddRel(fs[9], ps[1], "MEM")
+	}
+	b.AddRel(fs[4], ps[1], "MEM")
+	b.AddRel(fs[0], ps[1], "MEM")
+	// The q hop's alternative target: each MEM forum reaches p8 (nine
+	// parallel rels apiece, keeping the global MEM fan-out high enough
+	// that the reorderer still nests the branches instead of chaining
+	// through the reversed MEM hop), and both member bb's BC2 both p1
+	// (the reuse bait) and p8 (the survivor).
+	p8 := mk("P", 8)
+	for _, fi := range []int{0, 4, 9} {
+		for range 9 {
+			b.AddRel(fs[fi], p8, "MEM")
+		}
+	}
+	for _, j := range []int{1, 7} {
+		b.AddRel(bbs[j], ps[1], "BC2")
+		b.AddRel(bbs[j], p8, "BC2")
+	}
+	g := b.Finalize("hashjoin-uniq-order-fixture")
+
+	rows := hjCompare(t, g,
+		"MATCH (t:Tag {name: 't'}), (t)-[:BT]->(bb:BB)-[:BC]->(p:P), (t)-[:AT]->(a:A)-[:AF]->(f:F), (f)-[:MEM]->(p), (f)-[:MEM]->(q:P)<-[:BC2]-(bb) RETURN a.name AS an, bb.name AS bn, p.name AS pn, q.name AS qn",
+		true)
+	// The probe rows are the base fixture's 40 (f0 + f4 + 9-parallel f9,
+	// each x {b1, b7}), each times nine parallel MEM rels to p8; q must
+	// be p8 on every one -- q = p1 would reuse the probe's (f, p1) MEM
+	// pair (parallel rels collapse to one key, the documented multigraph
+	// deviation) and pairwise distinctness is order-independent, so both
+	// executions must reject it.
+	if len(rows) != 360 {
+		t.Fatalf("rows = %d, want 360 (40 probe rows x 9 parallel MEMs to p8; q=p1 reuses the probe's MEM pair)", len(rows))
+	}
+	for _, r := range rows {
+		if !strings.Contains(r, "p8") {
+			t.Fatalf("pair-reusing row leaked (q != p8): %v", r)
+		}
+	}
+}
+
 // TestCartesianBuildOnce pins 130 piece 1: a genuinely disconnected
 // component with NO relating predicate joins keylessly -- the build
 // materializes once and every build row emits per outer row. The output

@@ -35,21 +35,6 @@ func markRelUniqueness(stages []Stage) {
 			}
 		}
 	}
-	// An empty type list matches any relationship, so it intersects
-	// everything.
-	intersects := func(a, b []string) bool {
-		if len(a) == 0 || len(b) == 0 {
-			return true
-		}
-		for _, t := range a {
-			for _, u := range b {
-				if t == u {
-					return true
-				}
-			}
-		}
-		return false
-	}
 	for i := range infos {
 		cur := &infos[i]
 		check, contribute := false, false
@@ -73,6 +58,86 @@ func markRelUniqueness(stages []Stage) {
 		op.Uniq = &RelUniq{Scope: cur.scope, Check: check, Contribute: contribute}
 		if op.Kind == OpVarExpand && contribute {
 			op.DedupEndpoints = false
+		}
+	}
+}
+
+// intersects reports whether two type lists can name the same relationship.
+// An empty type list matches any relationship, so it intersects everything.
+func intersects(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, t := range a {
+		for _, u := range b {
+			if t == u {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// remarkRelUniqueness recomputes every tracked op's Check/Contribute over
+// the FINAL stage list's EFFECTIVE execution order: hash-join extraction
+// moves the consumed connecting expand (the probe) and the collected build
+// ops relative to the ops left in place, so flags assigned on the nested
+// order can invert -- an op that was the last of its scope (Check-only)
+// can come to execute FIRST as the join's probe, pushing nothing while the
+// op now after it contributes to nobody, and a reused relationship sails
+// through. Extraction never changes WHICH ops intersect (only their
+// order), so the tracked set is exactly the ops already carrying Uniq;
+// their recorded scope survives the move. Effective order is stage order
+// with a hash join expanding to its build stages' ops then its probe
+// (builds materialize before any probe emission).
+func remarkRelUniqueness(stages []Stage) {
+	type info struct {
+		scope uint32
+		types []string
+		op    *BindOp
+	}
+	var infos []info
+	add := func(ms *MatchStage) {
+		if ms.Walk {
+			return
+		}
+		for oi := range ms.Ops {
+			if op := &ms.Ops[oi]; op.Uniq != nil {
+				infos = append(infos, info{scope: op.Uniq.Scope, types: op.Types, op: op})
+			}
+		}
+	}
+	for _, stage := range stages {
+		switch s := stage.(type) {
+		case *MatchStage:
+			add(s)
+		case *HashJoinStage:
+			for _, b := range s.Build {
+				add(b)
+			}
+			if s.Probe.Uniq != nil {
+				infos = append(infos, info{scope: s.Probe.Uniq.Scope, types: s.Probe.Types, op: &s.Probe})
+			}
+		}
+	}
+	for i := range infos {
+		cur := &infos[i]
+		check, contribute := false, false
+		for j := range infos[:i] {
+			if infos[j].scope == cur.scope && intersects(cur.types, infos[j].types) {
+				check = true
+				break
+			}
+		}
+		for j := i + 1; j < len(infos); j++ {
+			if infos[j].scope == cur.scope && intersects(cur.types, infos[j].types) {
+				contribute = true
+				break
+			}
+		}
+		cur.op.Uniq = &RelUniq{Scope: cur.scope, Check: check, Contribute: contribute}
+		if cur.op.Kind == OpVarExpand && contribute {
+			cur.op.DedupEndpoints = false
 		}
 	}
 }
