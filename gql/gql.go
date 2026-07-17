@@ -22,14 +22,32 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// Run executes a GQL query over the snapshot.
+// Run executes a GQL query over the snapshot, through the snapshot's
+// implicit plan cache (see DefaultCacheFor): repeats skip parse + plan,
+// results are identical to the uncached path by the -cached-parity
+// contract, and structurally flipped templates route through sighted
+// planning. Use RunUncached for the always-literal-planned path.
 func Run(g *chickpeas.Snapshot, query string) (*Rows, error) {
 	return RunWithParams(g, query, nil)
 }
 
-// RunWithParams executes a GQL query with explicit $name parameter values.
-// An unsupplied parameter reads as null.
+// RunWithParams is Run with explicit $name parameter values. An
+// unsupplied parameter reads as null.
 func RunWithParams(g *chickpeas.Snapshot, query string, params map[string]value.Value) (*Rows, error) {
+	return DefaultCacheFor(g).RunWithParams(g, query, params)
+}
+
+// RunUncached executes a GQL query with literal-sighted planning on
+// every call, bypassing the implicit plan cache -- the cold path, for
+// benchmarks separating cold from warm and for callers that mutate
+// planner behavior between runs.
+func RunUncached(g *chickpeas.Snapshot, query string) (*Rows, error) {
+	return RunUncachedWithParams(g, query, nil)
+}
+
+// RunUncachedWithParams is RunUncached with explicit $name parameter
+// values.
+func RunUncachedWithParams(g *chickpeas.Snapshot, query string, params map[string]value.Value) (*Rows, error) {
 	q, gr, p, planTime, err := prepare(g, query)
 	if err != nil {
 		return nil, err

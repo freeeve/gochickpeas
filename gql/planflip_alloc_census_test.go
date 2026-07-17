@@ -71,10 +71,10 @@ func TestPlanFlipAllocCensus(t *testing.T) {
 			valueBlind(explain.Canonical(chosen, plan.Estimate(chosen, gr)))
 
 		// Sighted path: full Run per call, one warm run measured.
-		if _, err := Run(g, row.GQL); err != nil {
+		if _, err := RunUncached(g, row.GQL); err != nil {
 			t.Fatalf("%s: sighted run: %v", row.Query, err)
 		}
-		sa, _, err := ldbc.MeasureAllocs(func() error { _, err := Run(g, row.GQL); return err })
+		sa, _, err := ldbc.MeasureAllocs(func() error { _, err := RunUncached(g, row.GQL); return err })
 		if err != nil {
 			t.Fatalf("%s: sighted measure: %v", row.Query, err)
 		}

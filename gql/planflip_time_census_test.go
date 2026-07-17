@@ -83,7 +83,7 @@ func TestPlanFlipTimeCensus(t *testing.T) {
 			}
 			return time.Since(start).Seconds() * 1000
 		}
-		sighted := func() error { _, err := Run(g, row.GQL); return err }
+		sighted := func() error { _, err := RunUncached(g, row.GQL); return err }
 		cached := func() error { _, err := c.Run(g, row.GQL); return err }
 		if err := sighted(); err != nil {
 			t.Fatal(err)

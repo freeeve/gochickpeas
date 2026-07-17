@@ -38,7 +38,7 @@ func TestChainMemoForcedTiming(t *testing.T) {
 	graphs := map[string]*chickpeas.Snapshot{}
 	rowKeys := func(g *chickpeas.Snapshot, q string) []string {
 		t.Helper()
-		res, err := Run(g, q)
+		res, err := RunUncached(g, q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -59,7 +59,7 @@ func TestChainMemoForcedTiming(t *testing.T) {
 		var ms []float64
 		for range reps {
 			start := time.Now()
-			res, err := Run(g, q)
+			res, err := RunUncached(g, q)
 			if err != nil {
 				t.Fatal(err)
 			}

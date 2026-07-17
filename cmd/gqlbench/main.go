@@ -299,7 +299,7 @@ func run() error {
 			fmt.Printf("%-16s SKIP  blocked by manifest\n", id)
 			continue
 		}
-		res, err := gql.Run(g, row.GQL)
+		res, err := gql.RunUncached(g, row.GQL)
 		if err != nil {
 			outcomes = append(outcomes, outcome{row: row, status: "SKIP", detail: err.Error()})
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
@@ -406,7 +406,7 @@ func run() error {
 			return err
 		}
 		samples, err := ldbc.TimeSamples(*runs, func() error {
-			_, err := gql.Run(g, row.GQL)
+			_, err := gql.RunUncached(g, row.GQL)
 			return err
 		})
 		if err != nil {
@@ -431,7 +431,7 @@ func run() error {
 		}); err != nil {
 			return err
 		}
-		nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { _, err := gql.Run(g, row.GQL); return err })
+		nAllocs, nBytes, err := ldbc.MeasureAllocs(func() error { _, err := gql.RunUncached(g, row.GQL); return err })
 		if err != nil {
 			return fmt.Errorf("%s (profiled run): %w", id, err)
 		}

@@ -113,7 +113,7 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 	// L1: a verbatim repeat skips parse + plan.
 	if cp, lifted, ok := c.l1Lookup(query); ok {
 		if cp.flipped {
-			return RunWithParams(g, query, params)
+			return RunUncachedWithParams(g, query, params)
 		}
 		return c.execCached(gr, cp, lifted, params)
 	}
@@ -143,7 +143,7 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 	}
 	c.insert(query, cp, lifted)
 	if cp.flipped {
-		return RunWithParams(g, query, params)
+		return RunUncachedWithParams(g, query, params)
 	}
 	return c.execCached(gr, cp, lifted, params)
 }
