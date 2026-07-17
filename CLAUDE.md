@@ -38,6 +38,25 @@ gql MATCH, 89/89 native; the manifest grows as the ldbc session authors
 queries) -- the gate is what proves a fast path never diverges from the
 general path.
 
+## Backed-out experiments go to a research branch, not the bit bucket
+
+When an optimization is **correct and general but shows no measured win**
+(or a win the current box/workload can't confirm), don't `git checkout`
+it away -- preserve it on a pushed `research/<name>` branch off the commit
+it was built against. Many such changes are not wrong, only unconfirmable
+here-and-now: a macOS profile mislocated the cost, the shape is
+bandwidth-bound so the CPU-side change can't show, or the change only pays
+once a larger piece (batch execution, a different anchor) lands and
+composes with it. The branch commit message must record what it does, that
+it is parity-green, the measured (non-)result, and the revisit conditions.
+A change that actively REGRESSES stays out of the tree too, but its design
+belongs in the task ledger; a change that is merely unproven belongs on a
+branch where a later session can pick it up. (Precedent: research/proj-
+slot-gather, the Q11 projection slot-gather -- parity-green, no wall win,
+macOS-profile-artifact motivation.) This composes with the measurement
+discipline below: measure first, and when the verdict is "correct but
+flat," branch rather than discard.
+
 ## Allocation work: consult and extend the strategy catalog
 
 `docs/zero_alloc_target.md` is the running catalog of generalized Go
