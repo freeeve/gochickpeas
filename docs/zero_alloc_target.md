@@ -93,21 +93,24 @@ lookups). Cures, roughly in order of effort:
   warm fold allocates goroutine machinery only (2dced1f: 501 → 61).
 - **Mind goroutine machinery itself**: one goroutine per chunk is ~2
   allocations each; W long-lived range workers beat 4W chunk goroutines.
-- **Do NOT drop the chunk queue for static per-worker ranges on wall-time
-  grounds without measuring on the target box.** The Rust sibling measured
-  plain one-range-per-worker beating its pooled-worker chunk queue on
-  uniform work (their f9b0cdb, 20 vs 27 ms); on Apple Silicon the SAME
-  A/B inverts -- the 4x-oversplit atomic queue beat static ranges in all
-  three regimes (uniform 267 vs 321 us, scattered skew 0.97 vs 1.2 ms,
-  clustered skew 2.4 vs 9.2 ms; internal/parallel BenchmarkFor*). Cause:
-  heterogeneous cores (12P+4E here) make any static equal split gate on
-  the efficiency-core ranges even when per-item cost is uniform, so the
-  queue is doing HARDWARE balancing, not just workload balancing. The
-  alloc-side rule above still holds (accumulators per worker, never per
-  chunk); it is only the dispatch shape that is box-dependent. Known
-  tension: `Fold`/`FoldInto` use static contiguous ranges for their
-  in-order reduce contract and eat the E-core tax -- revisit only with
-  sweep-refereed timings if a fold ever dominates a kernel's wall.
+- **The queue-vs-static-ranges dispatch verdict is RUNTIME-dependent --
+  measure on YOUR scheduler before changing it.** The Rust sibling
+  measured plain one-range-per-worker beating its pooled-worker chunk
+  queue on uniform work (their f9b0cdb, 20 vs 27 ms); in Go on the SAME
+  12P+4E box the A/B inverts -- the 4x-oversplit atomic queue beat
+  static goroutine ranges in all three regimes (uniform 267 vs 321 us,
+  scattered skew 0.97 vs 1.2 ms, clustered skew 2.4 vs 9.2 ms;
+  internal/parallel BenchmarkFor*). Same silicon, opposite verdicts, so
+  the split keys on the runtime, not the cores (their re-run falsified
+  this entry's first draft, which blamed P/E heterogeneity). Candidate
+  mechanisms, unproven: OS thread migration policies differ from
+  goroutine scheduling within a range, and workload memory-density
+  shifts the P/E throughput gap. The alloc-side rule above holds in
+  BOTH runtimes (accumulators per worker, never per chunk); only the
+  dispatch shape is scheduler-dependent. Known tension: `Fold`/
+  `FoldInto` use static contiguous ranges for their in-order reduce
+  contract -- revisit only with sweep-refereed timings if a fold ever
+  dominates a kernel's wall.
 
 ### 4. Iterator closures (`iter.Seq`) on hot seams
 
