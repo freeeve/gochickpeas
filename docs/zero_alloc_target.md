@@ -57,6 +57,17 @@ lookups). Cures, roughly in order of effort:
 - **Dense slabs over a known index**: if the key universe is small and
   enumerable up front, index it once (sorted keys, position = dense
   index) and count into `[]int64` slabs merged by vector add.
+- **Map-of-bucket-slices → intrusive chains behind a flat probe table**:
+  `m[k] = append(m[k], idx)` pays a first-append allocation per distinct
+  key plus a growth ladder per bucket. Give each stored row a `next
+  int32` link, keep per-key `heads/tails` in parallel slabs behind a
+  flat table (`U64Map`/`ByteMap` → chain slot), and append at the tail
+  --insertion order survives, per-row cost drops to zero. Pairs
+  naturally with packing the rows' own payload slices into append-only
+  table slabs handed out as capped sub-slices (a later slab growth
+  copies the backing but retained sub-slices stay valid). Here: the
+  hash-join build table and group-join side table, Q17 -79% / Q12 -85%
+  (058361a).
 
 ### 2. Scratch allocated per call / per iteration
 
