@@ -52,7 +52,12 @@ type typedRuns struct {
 // lookup: 64 ids per bucket keeps the hint at one uint32 per 64 id-space
 // slots while bounding each lookup's search to the entries of 64
 // consecutive nodes of a below-floor type -- typically a handful, always
-// contiguous.
+// contiguous. The known alternative is a FULL per-id starts array --
+// strictly O(1) runRange at ~64x the memory per consulted direction
+// (id-space proportional, the very array the typed floor avoids); since
+// these views already build lazily per consulted (type, direction), that
+// trade is one constant swap away if a CPU profile ever shows the
+// bucketed search hot on a hub-heavy workload.
 const runHintShift = 6
 
 // runRange is node's [lo, hi) span in the run view: the hint bounds the
