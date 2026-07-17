@@ -444,14 +444,36 @@ var pairScratchPool = sync.Pool{New: func() any { return &pairScratch{} }}
 // order, so output order is deterministic); counting scatters from each
 // source through its mids (a "push"), far cheaper than per-pair set
 // intersections when few pairs share a neighbor.
+// cncChunk is the pair accumulator's slab size: fixed chunks replace the
+// per-worker doubling ladder (each doubling discarded its predecessor,
+// dominating the primitive's allocation profile), and the final assembly
+// is one exact-size copy.
+const cncChunk = 4096
+
+// cncAcc is one worker's accumulation state: the worker-held scratch
+// (one pool round-trip per worker, not per source) and the ordered pair
+// slabs.
+type cncAcc struct {
+	sc   *pairScratch
+	full [][]CommonNeighborCount
+	cur  []CommonNeighborCount
+}
+
+// seal closes the open slab into the ordered list.
+func (a *cncAcc) seal() {
+	if len(a.cur) > 0 {
+		a.full = append(a.full, a.cur)
+		a.cur = nil
+	}
+}
+
 func (g *Snapshot) CommonNeighborCounts(sources []NodeID, dir Direction, m RelMatch, targets *nodeset.Set) []CommonNeighborCount {
 	n := int(g.CSRIDSpace())
-	perChunk := parallel.Fold(len(sources),
-		func() []CommonNeighborCount { return nil },
-		func(acc []CommonNeighborCount, i int) []CommonNeighborCount {
+	acc := parallel.Fold(len(sources),
+		func() *cncAcc { return &cncAcc{sc: pairScratchPool.Get().(*pairScratch)} },
+		func(acc *cncAcc, i int) *cncAcc {
 			s := sources[i]
-			sc := pairScratchPool.Get().(*pairScratch)
-			defer pairScratchPool.Put(sc)
+			sc := acc.sc
 			if len(sc.val) < n {
 				sc.val = make([]uint64, n)
 				sc.gen = make([]uint32, n)
@@ -497,10 +519,42 @@ func (g *Snapshot) CommonNeighborCounts(sources []NodeID, dir Direction, m RelMa
 				}
 			}
 			for _, t := range sc.touched {
-				acc = append(acc, CommonNeighborCount{Source: s, Target: t, Count: sc.val[t]})
+				if len(acc.cur) == cncChunk {
+					acc.full = append(acc.full, acc.cur)
+					acc.cur = make([]CommonNeighborCount, 0, cncChunk)
+				}
+				if acc.cur == nil {
+					acc.cur = make([]CommonNeighborCount, 0, cncChunk)
+				}
+				acc.cur = append(acc.cur, CommonNeighborCount{Source: s, Target: t, Count: sc.val[t]})
 			}
 			return acc
 		},
-		func(a, b []CommonNeighborCount) []CommonNeighborCount { return append(a, b...) })
-	return perChunk
+		// Merge keeps slab order (ascending worker ranges): the left side's
+		// open slab seals before the right side's slabs append, and the
+		// right side's scratch returns to the pool.
+		func(a, b *cncAcc) *cncAcc {
+			a.seal()
+			b.seal()
+			a.full = append(a.full, b.full...)
+			if b.sc != nil {
+				pairScratchPool.Put(b.sc)
+				b.sc = nil
+			}
+			return a
+		})
+	acc.seal()
+	if acc.sc != nil {
+		pairScratchPool.Put(acc.sc)
+		acc.sc = nil
+	}
+	total := 0
+	for _, ch := range acc.full {
+		total += len(ch)
+	}
+	out := make([]CommonNeighborCount, 0, total)
+	for _, ch := range acc.full {
+		out = append(out, ch...)
+	}
+	return out
 }
