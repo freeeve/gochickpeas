@@ -103,3 +103,38 @@ func TestByteSetEmptyAndSingle(t *testing.T) {
 		t.Fatalf("count = %d, want 1", s.Len())
 	}
 }
+
+// TestU32SetRecycle pins the shared-recycler contract: many sets growing
+// through the same ladder stay membership-exact while outgrown arrays are
+// reused across sets (a reused array must come back zeroed -- a stale
+// slot would fabricate members).
+func TestU32SetRecycle(t *testing.T) {
+	var rec Recycle
+	const sets, n = 40, 500
+	ss := make([]U32Set, sets)
+	for i := range ss {
+		ss[i].Rec = &rec
+		for v := 0; v < n; v++ {
+			id := uint32(i*100000 + v*7)
+			if !ss[i].Add(id) {
+				t.Fatalf("set %d: fresh id %d reported seen", i, id)
+			}
+			if ss[i].Add(id) {
+				t.Fatalf("set %d: duplicate id %d reported new", i, id)
+			}
+		}
+	}
+	for i := range ss {
+		if ss[i].Len() != n {
+			t.Fatalf("set %d: len %d, want %d", i, ss[i].Len(), n)
+		}
+		for v := 0; v < n; v++ {
+			if !ss[i].Has(uint32(i*100000 + v*7)) {
+				t.Fatalf("set %d: lost id %d", i, v*7)
+			}
+		}
+		if ss[i].Has(uint32(i*100000 + 3)) {
+			t.Fatal("phantom member from a recycled array")
+		}
+	}
+}

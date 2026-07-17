@@ -16,12 +16,68 @@ type U32Set struct {
 	slots []uint32
 	mask  uint32
 	count int
+	// Rec, when set, recycles slot arrays across the sets sharing it:
+	// grow returns the outgrown array to the pool and draws replacements
+	// from it. Many same-shaped sets climbing the growth ladder together
+	// (one DISTINCT set per aggregation group) then churn roughly one
+	// array per rung instead of one per set per rung -- the discarded
+	// doublings otherwise dominate the aggregation's allocation profile.
+	Rec *Recycle
+}
+
+// Recycle is a slot-array free list keyed by size class, shared by many
+// U32Sets within ONE single-threaded execution (no locking). Arrays are
+// zeroed on reuse (the same memclr a fresh make pays), so the saving is
+// purely the allocation and its GC/scavenger shadow.
+type Recycle struct {
+	byLog [26][][]uint32
+}
+
+// take returns a zeroed array of exactly n slots (n a power of two), or
+// nil when the class is empty.
+func (r *Recycle) take(n int) []uint32 {
+	if r == nil {
+		return nil
+	}
+	lg := logOf(n)
+	free := r.byLog[lg]
+	if len(free) == 0 {
+		return nil
+	}
+	a := free[len(free)-1]
+	r.byLog[lg] = free[:len(free)-1]
+	clear(a)
+	return a
+}
+
+// put files an outgrown array under its size class.
+func (r *Recycle) put(a []uint32) {
+	if r == nil || len(a) == 0 {
+		return
+	}
+	lg := logOf(len(a))
+	r.byLog[lg] = append(r.byLog[lg], a)
+}
+
+// logOf is log2 for the power-of-two slot sizes, clamped into byLog.
+func logOf(n int) int {
+	lg := 0
+	for n > 1 {
+		n >>= 1
+		lg++
+	}
+	if lg >= 26 {
+		lg = 25
+	}
+	return lg
 }
 
 // Add reports whether id is newly seen (and records it).
 func (s *U32Set) Add(id uint32) bool {
 	if s.slots == nil {
-		s.slots = make([]uint32, 16)
+		if s.slots = s.Rec.take(16); s.slots == nil {
+			s.slots = make([]uint32, 16)
+		}
 		s.mask = 15
 	}
 	if s.count*4 >= len(s.slots)*3 {
@@ -66,7 +122,9 @@ func (s *U32Set) Built() bool { return s.slots != nil }
 
 func (s *U32Set) grow() {
 	old := s.slots
-	s.slots = make([]uint32, len(old)*2)
+	if s.slots = s.Rec.take(len(old) * 2); s.slots == nil {
+		s.slots = make([]uint32, len(old)*2)
+	}
 	s.mask = uint32(len(s.slots) - 1)
 	for _, k := range old {
 		if k == 0 {
@@ -78,6 +136,7 @@ func (s *U32Set) grow() {
 		}
 		s.slots[i] = k
 	}
+	s.Rec.put(old)
 }
 
 // u64Hash is the Fibonacci multiplicative hash over the full key.

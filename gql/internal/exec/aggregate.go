@@ -221,6 +221,12 @@ type aggregator struct {
 	keyScratch []value.Value
 	gkScratch  []byte
 	dkScratch  []byte
+	// rec recycles DISTINCT-set slot arrays across this aggregation's
+	// groups: thousands of per-group sets climb the same growth ladder,
+	// and without pooling every doubling's outgrown array is garbage --
+	// the dominant allocation of entity-DISTINCT aggregations over large
+	// groups.
+	rec flatset.Recycle
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
@@ -298,7 +304,12 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, chunkGroups*len(a.groupC)))
 		a.stateChunks = append(a.stateChunks, make([]aggState, 0, chunkGroups*len(a.aggC)))
 		if a.hasDistinct {
-			a.seenChunks = append(a.seenChunks, make([]distinctSet, chunkGroups*len(a.aggC)))
+			seen := make([]distinctSet, chunkGroups*len(a.aggC))
+			for i := range seen {
+				seen[i].nodes.Rec = &a.rec
+				seen[i].rels.Rec = &a.rec
+			}
+			a.seenChunks = append(a.seenChunks, seen)
 		}
 		if a.hasMinMax {
 			a.mmChunks = append(a.mmChunks, make([]value.Value, chunkGroups*len(a.aggC)))
