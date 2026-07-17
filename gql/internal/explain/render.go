@@ -205,6 +205,17 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 			for _, l := range sub[2:] {
 				*out = append(*out, ind+"    "+l)
 			}
+		case *plan.GroupJoinStage:
+			keys := make([]string, len(s.KeySlots))
+			for i, ks := range s.KeySlots {
+				keys[i] = nameOf(ks, names)
+			}
+			line(out, ind, "GroupJoin (key="+strings.Join(keys, ", ")+") ["+strings.Join(s.Sub.Columns, ", ")+"]", singleEst(numse, ti), singleCount(numsp, ti))
+			// The standalone inner renders indented like a CALL subquery's.
+			sub := Render(s.Sub, nil, 0, nil)
+			for _, l := range sub[2:] {
+				*out = append(*out, ind+"    "+l)
+			}
 		}
 	}
 

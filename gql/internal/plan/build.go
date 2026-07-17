@@ -26,6 +26,11 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 	if err := checkPatternVarKinds(specs); err != nil {
 		return nil, err
 	}
+	// Group-join detection runs on the final spec list (the cost pre-passes
+	// never split or reorder an OPTIONAL spec); the breadth gate and the
+	// rewrite fire when the candidate spec is reached below, once the
+	// outer stages exist to estimate.
+	gjc := detectGroupJoin(specs, &projAST, inCols)
 	inWidth := len(inCols)
 	slots := make(map[string]int, inWidth+8)
 	bound := make(map[int]bool, inWidth+8)
@@ -41,6 +46,17 @@ func buildSegment(specs []stageSpec, projAST ast.Projection, postWhere ast.Expr,
 		spec := &specs[si]
 		switch spec.kind {
 		case specMatch:
+			if gjc != nil && si == gjc.specIdx && gjGate(gjc, stages, g) {
+				// Unshare the projection items first -- the ast is shared
+				// across plannings (plan cache, flip sibling) and the
+				// rewrite replaces aggregate items in place.
+				projAST.Items = append([]ast.ReturnItem(nil), projAST.Items...)
+				if gj, gerr := buildGroupJoinStage(gjc, spec, &projAST, slots, bound, &nextSlot, g); gerr == nil {
+					stages = append(stages, gj)
+					continue
+				}
+				// A declined inner plan falls back to the nested execution.
+			}
 			stage, err := buildMatchStage(spec, slots, bound, &nextSlot, &matchWheres, g, pc)
 			if err != nil {
 				return nil, err

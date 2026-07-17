@@ -37,6 +37,12 @@ func (s *SnapshotGraph) AvgDegree(relType string, dir chickpeas.Direction) float
 	return s.g.AvgDegree(relType, dir)
 }
 
+// AvgDegreeByLabel forwards the engine's label-conditional degree
+// statistic.
+func (s *SnapshotGraph) AvgDegreeByLabel(label, relType string, dir chickpeas.Direction) (float64, bool) {
+	return s.g.AvgDegreeByLabel(label, relType, dir)
+}
+
 // Degree forwards the O(1) untyped incident-relationship count.
 func (s *SnapshotGraph) Degree(node chickpeas.NodeID, dir chickpeas.Direction) int {
 	return s.g.Degree(node, dir)

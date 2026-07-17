@@ -419,6 +419,34 @@ type GateDerived struct {
 	Expr ast.Expr
 }
 
+// GroupJoinFill is a decorrelated aggregate's empty-group identity: the
+// value an outer row binds when the inner table has no entry for its key.
+type GroupJoinFill uint8
+
+const (
+	// FillNull is the null-skipping aggregates' identity (sum/min/max over
+	// an empty group is null).
+	FillNull GroupJoinFill = iota
+	// FillZero is count's identity (an empty group counts zero).
+	FillZero
+)
+
+// GroupJoinStage is a decorrelated OPTIONAL-MATCH aggregate join
+// (groupjoin.go): the OPTIONAL clause's pattern planned as a standalone
+// query (free to take its own selective anchor) whose projection is the
+// correlation keys followed by the consumed aggregates. Sub executes once
+// into a key -> aggregate-values table; each outer row binds OutSlots by
+// KeySlots lookup, with Fills as the empty-group identities. The segment
+// projection's aggregates are rewritten to re-aggregate the synthetic
+// columns (count -> sum), which reproduces the nested left-join answer
+// exactly, including over duplicate outer rows.
+type GroupJoinStage struct {
+	Sub      *Plan
+	KeySlots []int
+	OutSlots []int
+	Fills    []GroupJoinFill
+}
+
 type Stage interface{ isStage() }
 
 func (*MatchStage) isStage()        {}
@@ -428,3 +456,4 @@ func (*GateStage) isStage()         {}
 func (*CallStage) isStage()         {}
 func (*UnwindStage) isStage()       {}
 func (*CallSubqueryStage) isStage() {}
+func (*GroupJoinStage) isStage()    {}

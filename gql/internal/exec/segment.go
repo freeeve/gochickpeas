@@ -173,6 +173,11 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 			ctx: ctx, list: compileEval(ctx, s.List, seg.Slots), slots: seg.Slots,
 			out: s.OutSlot, buf: make([]value.Value, seg.RowWidth), next: next, count: single(),
 		}
+	case *plan.GroupJoinStage:
+		return &groupJoinSink{
+			ctx: ctx, gj: s, buf: make([]value.Value, seg.RowWidth),
+			next: next, count: single(),
+		}
 	default:
 		s2 := st.(*plan.CallSubqueryStage)
 		return &subquerySink{
@@ -221,6 +226,10 @@ func segmentBoundSlots(seg *plan.Segment) []bool {
 		case *plan.UnwindStage:
 			set(s.OutSlot)
 		case *plan.CallSubqueryStage:
+			for _, o := range s.OutSlots {
+				set(o)
+			}
+		case *plan.GroupJoinStage:
 			for _, o := range s.OutSlots {
 				set(o)
 			}

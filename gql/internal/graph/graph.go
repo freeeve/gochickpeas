@@ -32,6 +32,14 @@ type Graph interface {
 	// AvgDegree is the average degree over relType in dir -- a planner
 	// statistic used to break anchor ties; 0 when the type is unknown.
 	AvgDegree(relType string, dir chickpeas.Direction) float64
+	// AvgDegreeByLabel is AvgDegree conditioned on the node's label: the
+	// average number of relType rels in dir per node carrying label,
+	// zero-degree members included -- the hop fan-out a chain estimate
+	// multiplies when it knows what it stands on (a hub-heavy type
+	// inflates the global average for every label merely touching it).
+	// ok=false when the label is unknown (caller falls back to the
+	// global AvgDegree); a known label with no such rels is (0, true).
+	AvgDegreeByLabel(label, relType string, dir chickpeas.Direction) (float64, bool)
 	// Degree is node's untyped incident-relationship count in dir, O(1)
 	// per side -- a runtime fan-out signal for adaptive anchor decisions
 	// (which of two bound endpoints a probe should expand from).

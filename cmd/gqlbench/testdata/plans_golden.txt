@@ -234,11 +234,13 @@ Segment 4
 === BI/Q12
 Segment 0
   NodeScan (person:Person)
-  Argument (person)
-  Expand (person)<-[:HAS_CREATOR]-(message)
-  VarExpand (message)-[:REPLY_OF*0..]->(post)
-  Filter (message.content IS NOT NULL AND message.length < 20 AND message.creationDate > zoned_datetime('2010-07-22') AND post.language IN ['ar', 'hu'])
-  Aggregate (group=[person]; count(message))
+  GroupJoin (key=person) [person, $gj0]
+      NodeScan (post:Post)
+      VarExpand (post)<-[:REPLY_OF*0..]-(message)
+      Expand (message)-[:HAS_CREATOR]->(person)
+      Filter (message.content IS NOT NULL AND message.length < 20 AND message.creationDate > zoned_datetime('2010-07-22') AND post.language IN ['ar', 'hu'])
+      Aggregate (group=[person]; count(message))
+  Aggregate (group=[person]; sum($gj0))
 Segment 1
   Aggregate (group=[messageCount]; count(person))
   OrderBy [personCount DESC, messageCount DESC]
