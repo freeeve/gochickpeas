@@ -539,6 +539,42 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 			break
 		}
 	}
+	// Contiguous key records instead of a sorted index permutation: the
+	// index sort gathers words[a*nk+k] per comparison -- random access
+	// into a multi-megabyte key array on every one of the n log n
+	// comparisons -- where records compare adjacent memory and move with
+	// the sort. The record's index field doubles as the total-order
+	// tiebreak, identical to the index path's a-b. Wider key tuples keep
+	// the index path (unused record words stay zero, so they never
+	// perturb a tie).
+	if allTyped && nk <= sortRecKeys {
+		recs := make([]sortRec, len(outs))
+		for i := range outs {
+			r := sortRec{idx: int32(i)}
+			for k := 0; k < nk; k++ {
+				var w uint64
+				if colClass[k] == colNumeric {
+					w = packSortWordF64(fkeys[i*nk+k])
+				} else {
+					w = ukeys[i*nk+k]
+				}
+				if proj.OrderBy[k].Desc {
+					w = ^w
+				}
+				r.w[k] = w
+			}
+			recs[i] = r
+		}
+		if bound := orderBound(proj); bound >= 0 && bound < len(recs) {
+			recs = topKSel(recs, bound, cmpSortRec)
+		}
+		slices.SortFunc(recs, cmpSortRec)
+		sorted := make([][]value.Value, len(recs))
+		for i := range recs {
+			sorted[i] = outs[recs[i].idx]
+		}
+		return sorted
+	}
 	if allTyped {
 		words := make([]uint64, len(outs)*nk)
 		for k := range nk {
@@ -574,7 +610,7 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 	// skip+limit rows: select those with a bounded heap (one comparison
 	// per rejected row) instead of sorting everything.
 	if bound := orderBound(proj); bound >= 0 && bound < len(idx) {
-		idx = topKIdx(idx, bound, cmp)
+		idx = topKSel(idx, bound, cmp)
 	}
 	slices.SortFunc(idx, cmp)
 	sorted := make([][]value.Value, len(idx))
@@ -612,30 +648,54 @@ func orderBound(proj *plan.ProjPlan) int {
 	return int(k)
 }
 
-// topKIdx selects the k smallest elements of idx under the total order
-// cmp, order among them unspecified (the caller sorts the survivors). A
+// sortRec is one row's packed sort key -- up to sortRecKeys
+// order-preserving words plus the row index as the final tiebreak.
+type sortRec struct {
+	w   [sortRecKeys]uint64
+	idx int32
+}
+
+// sortRecKeys caps the record form's key width; wider tuples keep the
+// index-permutation sort.
+const sortRecKeys = 3
+
+// cmpSortRec is the record total order: word compares, then the index.
+func cmpSortRec(a, b sortRec) int {
+	for k := 0; k < sortRecKeys; k++ {
+		if a.w[k] != b.w[k] {
+			if a.w[k] < b.w[k] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return int(a.idx) - int(b.idx)
+}
+
+// topKSel selects the k smallest elements under the total order cmp,
+// order among them unspecified (the caller sorts the survivors). A
 // size-k max-heap over the prefix; every further candidate is rejected
 // with a single comparison against the current k-th unless it improves
 // the set. Equal to sort-then-truncate because cmp is total.
-func topKIdx(idx []int, k int, cmp func(a, b int) int) []int {
+func topKSel[T any](items []T, k int, cmp func(a, b T) int) []T {
 	if k == 0 {
-		return idx[:0]
+		return items[:0]
 	}
-	h := idx[:k]
+	h := items[:k]
 	for i := k/2 - 1; i >= 0; i-- {
-		siftDownIdx(h, i, cmp)
+		siftDownSel(h, i, cmp)
 	}
-	for _, cand := range idx[k:] {
+	for _, cand := range items[k:] {
 		if cmp(cand, h[0]) < 0 {
 			h[0] = cand
-			siftDownIdx(h, 0, cmp)
+			siftDownSel(h, 0, cmp)
 		}
 	}
 	return h
 }
 
-// siftDownIdx restores the max-heap property below i.
-func siftDownIdx(h []int, i int, cmp func(a, b int) int) {
+// siftDownSel restores the max-heap property below i.
+func siftDownSel[T any](h []T, i int, cmp func(a, b T) int) {
 	for {
 		l := 2*i + 1
 		if l >= len(h) {
