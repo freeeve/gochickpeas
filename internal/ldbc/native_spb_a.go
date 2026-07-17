@@ -265,7 +265,7 @@ func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		return [][]value.Value{}, nil
 	}
 	startMs, endMs := spbParseMs(spbDateFrom), spbParseMs(spbDateTo)
-	counts := map[chickpeas.NodeID]int64{}
+	var counts nodeCounter
 	// topics is the per-work distinct-tag scratch, reused across the work
 	// loop (a work carries a handful of tags, so linear dedup over a small
 	// slice beats a fresh map per work).
@@ -291,19 +291,17 @@ func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		}
 		for _, t := range topics {
 			if _, hasLabel := g.Prop(t, "label").Str(); hasLabel {
-				counts[t]++
+				counts.bump(t)
 			}
 		}
 	}
-	cells := make([]value.Value, len(counts)*2)
-	rows := make([][]value.Value, 0, len(counts))
-	i := 0
-	for t, n := range counts {
+	cells := make([]value.Value, len(counts.nodes)*2)
+	rows := make([][]value.Value, 0, len(counts.nodes))
+	for i, t := range counts.nodes {
 		label, _ := g.Prop(t, "label").Str()
 		cells[i*2] = value.Str(label)
-		cells[i*2+1] = value.Int(n)
+		cells[i*2+1] = value.Int(counts.counts[i])
 		rows = append(rows, cells[i*2:i*2+2:i*2+2])
-		i++
 	}
 	spbSortKVV(rows)
 	return rows, nil

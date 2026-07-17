@@ -14,6 +14,7 @@ import (
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 func init() {
@@ -97,16 +98,13 @@ func spbA22(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // count of distinct dateCreated calendar days; [uri, days] count
 // descending then uri.
 func spbA23(g *chickpeas.Snapshot) ([][]value.Value, error) {
-	// Distinct calendar days per tag, held in a flat (tag, day) pair-set plus a
-	// per-tag counter bumped on first sight rather than a map-of-maps: the inner
-	// day sets were only read for their length, so one flat set avoids an inner
-	// map per tag.
-	type tagDay struct {
-		t   chickpeas.NodeID
-		day int64
-	}
-	seen := map[tagDay]bool{}
-	counts := map[chickpeas.NodeID]int64{}
+	// Distinct calendar days per tag as a packed (tag, epoch-day)
+	// first-sight set plus a flat counter bumped on first sight: the inner
+	// day sets were only read for their length, and the Go maps paid their
+	// growth ladders per run (day fits 32 bits for any civil date the data
+	// can hold).
+	var seen flatset.U64Set
+	var counts nodeCounter
 	for w := range g.FullTextSearch("CreativeWork", "title", spbWord).Iter() {
 		if !spbHasNeighborWithURI(g, w, "category", spbCategory) {
 			continue
@@ -136,22 +134,18 @@ func spbA23(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		day := dayFromCivil(y, m, d)
 		for _, pred := range spbTagPreds {
 			for t := range g.Neighbors(w, chickpeas.Outgoing, pred) {
-				pair := tagDay{t, day}
-				if !seen[pair] {
-					seen[pair] = true
-					counts[t]++
+				if seen.Add(uint64(t)<<32 | uint64(uint32(day))) {
+					counts.bump(t)
 				}
 			}
 		}
 	}
-	cells := make([]value.Value, len(counts)*2)
-	rows := make([][]value.Value, 0, len(counts))
-	i := 0
-	for t, c := range counts {
+	cells := make([]value.Value, len(counts.nodes)*2)
+	rows := make([][]value.Value, 0, len(counts.nodes))
+	for i, t := range counts.nodes {
 		cells[i*2] = value.Str(spbURIOf(g, t))
-		cells[i*2+1] = value.Int(c)
+		cells[i*2+1] = value.Int(counts.counts[i])
 		rows = append(rows, cells[i*2:i*2+2:i*2+2])
-		i++
 	}
 	spbSortKVV(rows)
 	return rows, nil
@@ -216,16 +210,14 @@ func spbA25(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if !ok {
 		return [][]value.Value{}, nil
 	}
-	// Distinct dateCreated days per co-occurring entity, held in a flat
-	// (who, day) pair-set plus a per-entity counter bumped on first sight
-	// rather than a map-of-maps: the inner day sets were only read for their
-	// length, so one flat set avoids an inner map per entity.
-	type whoDay struct {
-		who chickpeas.NodeID
-		day string
-	}
-	seen := map[whoDay]bool{}
-	counts := map[chickpeas.NodeID]int64{}
+	// Distinct dateCreated days per co-occurring entity: day strings
+	// intern into a small dense index (a few hundred distinct days), the
+	// (who, dayIdx) pair packs into a flat U64Set, and a flat counter
+	// bumps on first sight -- the two Go maps here (one string-keyed)
+	// paid their growth ladders per run.
+	dayIdx := map[string]uint32{}
+	var seen flatset.U64Set
+	var counts nodeCounter
 	for cw := range g.Neighbors(a, chickpeas.Incoming, "about") {
 		if !g.HasLabel(cw, "CreativeWork") {
 			continue
@@ -235,14 +227,17 @@ func spbA25(g *chickpeas.Snapshot) ([][]value.Value, error) {
 			continue
 		}
 		day := created[:10]
+		di, ok := dayIdx[day]
+		if !ok {
+			di = uint32(len(dayIdx))
+			dayIdx[day] = di
+		}
 		for who := range g.Neighbors(cw, chickpeas.Outgoing, "about") {
 			if who == a {
 				continue
 			}
-			pair := whoDay{who, day}
-			if !seen[pair] {
-				seen[pair] = true
-				counts[who]++
+			if seen.Add(uint64(who)<<32 | uint64(di)) {
+				counts.bump(who)
 			}
 		}
 	}
@@ -250,9 +245,9 @@ func spbA25(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		who chickpeas.NodeID
 		n   int64
 	}
-	rows := make([]row, 0, len(counts))
-	for who, c := range counts {
-		rows = append(rows, row{who, c})
+	rows := make([]row, 0, len(counts.nodes))
+	for i, who := range counts.nodes {
+		rows = append(rows, row{who, counts.counts[i]})
 	}
 	sortByLess(rows, func(a, b row) bool {
 		if a.n != b.n {

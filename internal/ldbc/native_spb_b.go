@@ -11,8 +11,54 @@ package ldbc
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
+
+// nodeCounter is the flat per-node tally the SPB counting kernels share:
+// a packed-key index into parallel node/count slabs. The Go map it
+// replaces paid its bucket-growth ladder per run on every kernel tallying
+// tens of thousands of entities.
+type nodeCounter struct {
+	idx    flatset.U64Map
+	nodes  []chickpeas.NodeID
+	counts []int64
+}
+
+func (c *nodeCounter) bump(n chickpeas.NodeID) {
+	i := c.idx.GetOrCreate(uint64(n), func() int {
+		c.nodes = append(c.nodes, n)
+		c.counts = append(c.counts, 0)
+		return len(c.counts) - 1
+	})
+	c.counts[i]++
+}
+
+// spbCountRowsFlat is spbCountRows over the flat counter.
+func spbCountRowsFlat(g *chickpeas.Snapshot, c *nodeCounter) [][]value.Value {
+	type kv struct {
+		uri string
+		n   int64
+	}
+	tmp := make([]kv, 0, len(c.nodes))
+	for i, n := range c.nodes {
+		tmp = append(tmp, kv{spbURIOf(g, n), c.counts[i]})
+	}
+	sortByLess(tmp, func(a, b kv) bool {
+		if a.n != b.n {
+			return a.n > b.n
+		}
+		return a.uri < b.uri
+	})
+	cells := make([]value.Value, len(tmp)*2)
+	rows := make([][]value.Value, len(tmp))
+	for i, r := range tmp {
+		cells[i*2] = value.Str(r.uri)
+		cells[i*2+1] = value.Int(r.n)
+		rows[i] = cells[i*2 : i*2+2 : i*2+2]
+	}
+	return rows
+}
 
 func init() {
 	registerNativeV("SPB", "a1", simpleKernelV(spbA1))
@@ -210,7 +256,7 @@ func spbA5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if !ok {
 		return [][]value.Value{}, nil
 	}
-	counts := map[chickpeas.NodeID]int64{}
+	var counts nodeCounter
 	for w := range works.Iter() {
 		inCategory := false
 		for c := range g.Neighbors(w, chickpeas.Outgoing, "category") {
@@ -224,11 +270,11 @@ func spbA5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		}
 		for about := range g.Neighbors(w, chickpeas.Outgoing, "about") {
 			if entities.Contains(about) {
-				counts[about]++
+				counts.bump(about)
 			}
 		}
 	}
-	return spbCountRows(g, counts), nil
+	return spbCountRowsFlat(g, &counts), nil
 }
 
 // spbA6 (advanced q6): about-entity types (leaf classes plus the
@@ -286,16 +332,16 @@ func spbA7(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if !ok {
 		return [][]value.Value{}, nil
 	}
-	counts := map[chickpeas.NodeID]int64{}
+	var counts nodeCounter
 	for w := range works.Iter() {
 		if spbOutCount(g, w, "primaryContentOf") <= 1 {
 			continue
 		}
 		for m := range g.Neighbors(w, chickpeas.Outgoing, "mentions") {
-			counts[m]++
+			counts.bump(m)
 		}
 	}
-	return spbCountRows(g, counts), nil
+	return spbCountRowsFlat(g, &counts), nil
 }
 
 // spbA8 (advanced q8): topics ranked by tag rels (the loader's
@@ -306,7 +352,7 @@ func spbA8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if !ok {
 		return [][]value.Value{}, nil
 	}
-	counts := map[chickpeas.NodeID]int64{}
+	var counts nodeCounter
 	for w := range works.Iter() {
 		dt, ok := g.Prop(w, "dateModified").Str()
 		if !ok || !(dt > spbDateFrom && dt < spbDateTo) {
@@ -316,10 +362,10 @@ func spbA8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 			continue
 		}
 		for t := range g.Neighbors(w, chickpeas.Outgoing, "tag") {
-			counts[t]++
+			counts.bump(t)
 		}
 	}
-	return spbCountRows(g, counts), nil
+	return spbCountRowsFlat(g, &counts), nil
 }
 
 // spbA9 (advanced q9): the largest outgoing mentions count on any
