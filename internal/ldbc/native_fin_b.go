@@ -11,6 +11,7 @@ import (
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 func init() {
@@ -102,56 +103,65 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 		return nil, fmt.Errorf("node column loanAmount missing")
 	}
 	la := laCol.F64()
+	type depRel struct {
+		acct chickpeas.NodeID
+		amt  float64
+	}
+	type qe struct {
+		node   chickpeas.NodeID
+		dist   uint32
+		inflow float64
+	}
+	type amtRel struct {
+		amt float64
+		nbr chickpeas.NodeID
+	}
+	// Per-run scratch hoisted into the prepare scope: the flat results
+	// table (packed-key probe index over parallel inflow/dist slabs), the
+	// per-deposit visited set and BFS queue, and the rel gather. Warm runs
+	// reset each into its high-water backing instead of re-growing maps
+	// and queue arrays from empty.
+	var (
+		deposits []depRel
+		queue    []qe
+		rels     []amtRel
+		visited  flatset.U32Set
+		resIdx   flatset.U64Map
+		resNode  []chickpeas.NodeID
+		resIn    []float64
+		resDist  []uint32
+	)
 	return func() ([][]value.Value, error) {
 		const threshold = 0.0
 		loanAmount, ok := la.Get(loan)
 		if !ok {
 			loanAmount = 1.0
 		}
-		type depRel struct {
-			acct chickpeas.NodeID
-			amt  float64
-		}
-		var deposits []depRel
+		deposits = deposits[:0]
 		for r := range g.Rels(loan, chickpeas.Outgoing, "deposit") {
 			ts := cols.relTS(r.Pos)
 			if ts >= finWS && ts <= finWE {
 				deposits = append(deposits, depRel{r.Neighbor, cols.relAmt(r.Pos)})
 			}
 		}
-		type acc struct {
-			inflow float64
-			dist   uint32
-		}
-		// Value map (not map[K]*acc): the (inflow, dist) struct is stored inline,
-		// so no per-reached-account heap allocation.
-		results := map[chickpeas.NodeID]acc{}
-		type amtRel struct {
-			amt float64
-			nbr chickpeas.NodeID
-		}
-		var rels []amtRel
+		resIdx.Reset()
+		resNode, resIn, resDist = resNode[:0], resIn[:0], resDist[:0]
 		for _, dep := range deposits {
-			visited := map[chickpeas.NodeID]bool{dep.acct: true}
-			type qe struct {
-				node   chickpeas.NodeID
-				dist   uint32
-				inflow float64
-			}
-			queue := []qe{{dep.acct, 1, dep.amt}}
-			for len(queue) > 0 {
-				cur := queue[0]
-				queue = queue[1:]
-				e, ok := results[cur.node]
-				if !ok {
-					e = acc{cur.inflow, cur.dist}
-				} else {
-					e.inflow += cur.inflow
-					if cur.dist < e.dist {
-						e.dist = cur.dist
-					}
+			visited.Reset()
+			visited.Add(uint32(dep.acct))
+			queue = append(queue[:0], qe{dep.acct, 1, dep.amt})
+			for head := 0; head < len(queue); head++ {
+				cur := queue[head]
+				i := resIdx.GetOrCreate(uint64(cur.node), func() int {
+					resNode = append(resNode, cur.node)
+					resIn = append(resIn, 0)
+					resDist = append(resDist, ^uint32(0))
+					return len(resNode) - 1
+				})
+				resIn[i] += cur.inflow
+				if cur.dist < resDist[i] {
+					resDist[i] = cur.dist
 				}
-				results[cur.node] = e
 				if cur.dist >= 3 {
 					continue
 				}
@@ -163,7 +173,7 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 					}
 				}
 				rels = rels[:0]
-				for _, relType := range []string{"transfer", "withdraw"} {
+				for _, relType := range [...]string{"transfer", "withdraw"} {
 					for r := range g.Rels(cur.node, chickpeas.Outgoing, relType) {
 						ts := cols.relTS(r.Pos)
 						if ts >= finWS && ts <= finWE {
@@ -180,32 +190,38 @@ func finCR8(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 					rels = rels[:finTruncLimit]
 				}
 				for _, r := range rels {
-					if r.amt > threshold*upstream && !visited[r.nbr] {
-						visited[r.nbr] = true
+					if r.amt > threshold*upstream && visited.Add(uint32(r.nbr)) {
 						queue = append(queue, qe{r.nbr, cur.dist + 1, r.amt})
 					}
 				}
 			}
 		}
-		rows := make([][]value.Value, 0, len(results))
-		for did, a := range results {
-			rows = append(rows, []value.Value{
-				value.Int(cols.oid(did)), value.Float(round3f(a.inflow / loanAmount)), value.Int(int64(a.dist)),
-			})
+		// Typed sort, then one flat cell block for the boxed rows.
+		type cand struct {
+			id    int64
+			ratio float64
+			dist  int64
 		}
-		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
-			a2, _ := a[2].AsInt()
-			b2, _ := b[2].AsInt()
-			a1, _ := a[1].AsFloat()
-			b1, _ := b[1].AsFloat()
-			a0, _ := a[0].AsInt()
-			b0, _ := b[0].AsInt()
+		cands := make([]cand, 0, len(resNode))
+		for i, did := range resNode {
+			cands = append(cands, cand{cols.oid(did), round3f(resIn[i] / loanAmount), int64(resDist[i])})
+		}
+		sortByLess(cands, func(a, b cand) bool {
 			return cmpChain(
-				cmpI64Desc(a2, b2),
-				cmpF64Desc(a1, b1),
-				cmpI64Asc(a0, b0),
+				cmpI64Desc(a.dist, b.dist),
+				cmpF64Desc(a.ratio, b.ratio),
+				cmpI64Asc(a.id, b.id),
 			)
-		}), nil
+		})
+		cells := make([]value.Value, len(cands)*3)
+		rows := make([][]value.Value, len(cands))
+		for i, c := range cands {
+			cells[i*3] = value.Int(c.id)
+			cells[i*3+1] = value.Float(c.ratio)
+			cells[i*3+2] = value.Int(c.dist)
+			rows[i] = cells[i*3 : i*3+3 : i*3+3]
+		}
+		return rows, nil
 	}, nil
 }
 

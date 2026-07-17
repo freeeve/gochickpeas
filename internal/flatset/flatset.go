@@ -115,6 +115,13 @@ func (s *U32Set) Has(id uint32) bool {
 // Len is the number of distinct ids added.
 func (s *U32Set) Len() int { return s.count }
 
+// Reset empties the set keeping its slot backing, so a reused set's next
+// fill allocates nothing until it outgrows its high-water size.
+func (s *U32Set) Reset() {
+	clear(s.slots)
+	s.count = 0
+}
+
 // Built reports whether the probe table has been materialized (any Add
 // ran) -- callers layering their own inline fast path ahead of the set
 // key their spill decision on it.
@@ -191,6 +198,13 @@ func (s *U64Set) Has(key uint64) bool {
 
 // Len is the number of distinct keys added.
 func (s *U64Set) Len() int { return s.count }
+
+// Reset empties the set keeping its slot backing, so a reused set's next
+// fill allocates nothing until it outgrows its high-water size.
+func (s *U64Set) Reset() {
+	clear(s.slots)
+	s.count = 0
+}
 
 func (s *U64Set) grow() {
 	old := s.slots

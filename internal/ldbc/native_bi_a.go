@@ -462,38 +462,44 @@ func biQ8(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	score := map[chickpeas.NodeID]int64{}
+	var score nodeCounter
 	for p := range g.Neighbors(tag, chickpeas.Incoming, "HAS_INTEREST") {
-		score[p] += 100
+		score.add(p, 100)
 	}
 	for msg := range g.Neighbors(tag, chickpeas.Incoming, "HAS_TAG") {
 		day := i64At(dayCol, msg)
 		if day > startDay && day < endDay {
 			for creator := range g.Neighbors(msg, chickpeas.Outgoing, "HAS_CREATOR") {
-				score[creator]++
+				score.add(creator, 1)
 			}
 		}
 	}
-	rows := make([][]value.Value, 0, len(score))
-	for p, s := range score {
+	// Typed rows, sorted/truncated typed, boxing only the top 100 -- the
+	// candidate set spans every scored person, far more than the output.
+	type cand struct{ id, s, fs int64 }
+	cands := make([]cand, 0, len(score.nodes))
+	for i, p := range score.nodes {
 		var fs int64
 		for f := range g.Neighbors(p, chickpeas.Both, "KNOWS") {
-			fs += score[f]
+			fs += score.get(f)
 		}
-		rows = append(rows, []value.Value{value.Int(i64At(idCol, p)), value.Int(s), value.Int(fs)})
+		cands = append(cands, cand{i64At(idCol, p), score.counts[i], fs})
 	}
-	return sortTruncate(rows, 100, func(a, b []value.Value) bool {
-		a1, _ := a[1].AsInt()
-		a2, _ := a[2].AsInt()
-		b1, _ := b[1].AsInt()
-		b2, _ := b[2].AsInt()
-		a0, _ := a[0].AsInt()
-		b0, _ := b[0].AsInt()
+	cands = sortTruncate(cands, 100, func(a, b cand) bool {
 		return cmpChain(
-			cmpI64Desc(a1+a2, b1+b2),
-			cmpI64Asc(a0, b0),
+			cmpI64Desc(a.s+a.fs, b.s+b.fs),
+			cmpI64Asc(a.id, b.id),
 		)
-	}), nil
+	})
+	cells := make([]value.Value, len(cands)*3)
+	rows := make([][]value.Value, len(cands))
+	for i, c := range cands {
+		cells[i*3] = value.Int(c.id)
+		cells[i*3+1] = value.Int(c.s)
+		cells[i*3+2] = value.Int(c.fs)
+		rows[i] = cells[i*3 : i*3+3 : i*3+3]
+	}
+	return rows, nil
 }
 
 // biQ9 -- top thread initiators (2011-10-01..15 inclusive). Per person:

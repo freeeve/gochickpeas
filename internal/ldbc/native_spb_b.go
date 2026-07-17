@@ -15,8 +15,8 @@ import (
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 
-// nodeCounter is the flat per-node tally the SPB counting kernels share:
-// a packed-key index into parallel node/count slabs. The Go map it
+// nodeCounter is the flat per-node tally the counting kernels share: a
+// packed-key index into parallel node/count slabs. The Go map it
 // replaces paid its bucket-growth ladder per run on every kernel tallying
 // tens of thousands of entities.
 type nodeCounter struct {
@@ -25,13 +25,23 @@ type nodeCounter struct {
 	counts []int64
 }
 
-func (c *nodeCounter) bump(n chickpeas.NodeID) {
+func (c *nodeCounter) bump(n chickpeas.NodeID) { c.add(n, 1) }
+
+func (c *nodeCounter) add(n chickpeas.NodeID, d int64) {
 	i := c.idx.GetOrCreate(uint64(n), func() int {
 		c.nodes = append(c.nodes, n)
 		c.counts = append(c.counts, 0)
 		return len(c.counts) - 1
 	})
-	c.counts[i]++
+	c.counts[i] += d
+}
+
+// get returns n's tally, zero when never counted.
+func (c *nodeCounter) get(n chickpeas.NodeID) int64 {
+	if i, ok := c.idx.Get(uint64(n)); ok {
+		return c.counts[i]
+	}
+	return 0
 }
 
 // spbCountRowsFlat is spbCountRows over the flat counter.

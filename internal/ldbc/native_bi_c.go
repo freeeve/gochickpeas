@@ -202,29 +202,31 @@ func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		return nil, err
 	}
 	dist := g.BFSDistances(start, chickpeas.Both, g.Match("KNOWS"), maxDist)
-	inCountry := personsOfCountry(g, country)
-	classTags := map[chickpeas.NodeID]bool{}
+	_, inCountry := personsOfCountryFlat(g, country)
+	var classTags flatset.U32Set
 	for t := range g.Neighbors(tc, chickpeas.Incoming, "HAS_TYPE") {
-		classTags[t] = true
+		classTags.Add(uint32(t))
 	}
-	// Distinct messages per (expert, tag), counted via a flat (expert, tag,
-	// message) dedup set plus a per-group counter incremented on first sight,
-	// rather than a map-of-maps: the inner sets were only read for their
-	// length, so this avoids allocating an inner map per (expert, tag) group.
-	type expertTag struct{ expert, tag chickpeas.NodeID }
-	type expertTagMsg struct{ expert, tag, msg chickpeas.NodeID }
-	seen := map[expertTagMsg]bool{}
-	counts := map[expertTag]int64{}
+	// Distinct messages per (expert, tag): the walk visits one expert at a
+	// time, so the message dedup set only needs (tag, msg) keys -- a packed
+	// flat set reset per expert -- and the per-group counters live in
+	// parallel slabs behind a packed (expert, tag) probe table. The Go maps
+	// these replace paid their bucket-growth ladders per run.
+	var seen flatset.U64Set // tag<<32|msg, reset per expert
+	var groupIdx flatset.U64Map
+	var gExpert, gTag []chickpeas.NodeID
+	var gCount []int64
 	var tags []chickpeas.NodeID // message's tag list, reused per message
 	for expert, d := range dist {
-		if d < minDist || d > maxDist || !inCountry[expert] {
+		if d < minDist || d > maxDist || !inCountry.Has(uint32(expert)) {
 			continue
 		}
+		seen.Reset()
 		for msg := range g.Neighbors(expert, chickpeas.Incoming, "HAS_CREATOR") {
 			tags = tags[:0]
 			anyClass := false
 			for t := range g.Neighbors(msg, chickpeas.Outgoing, "HAS_TAG") {
-				if classTags[t] {
+				if classTags.Has(uint32(t)) {
 					anyClass = true
 				}
 				tags = append(tags, t)
@@ -233,10 +235,14 @@ func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 				continue
 			}
 			for _, t := range tags {
-				triple := expertTagMsg{expert, t, msg}
-				if !seen[triple] {
-					seen[triple] = true
-					counts[expertTag{expert, t}]++
+				if seen.Add(uint64(t)<<32 | uint64(msg)) {
+					i := groupIdx.GetOrCreate(uint64(expert)<<32|uint64(t), func() int {
+						gExpert = append(gExpert, expert)
+						gTag = append(gTag, t)
+						gCount = append(gCount, 0)
+						return len(gCount) - 1
+					})
+					gCount[i]++
 				}
 			}
 		}
@@ -246,9 +252,9 @@ func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		id, count int64
 		name      string
 	}
-	cands := make([]cand, 0, len(counts))
-	for k, c := range counts {
-		cands = append(cands, cand{i64At(idCol, k.expert), c, strAt(g, k.tag, "name")})
+	cands := make([]cand, 0, len(gCount))
+	for i, c := range gCount {
+		cands = append(cands, cand{i64At(idCol, gExpert[i]), c, strAt(g, gTag[i], "name")})
 	}
 	sortByLess(cands, func(a, b cand) bool {
 		return cmpChain(cmpI64Desc(a.count, b.count), cmpStrAsc(a.name, b.name), cmpI64Asc(a.id, b.id))
