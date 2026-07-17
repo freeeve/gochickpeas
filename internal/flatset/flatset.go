@@ -188,6 +188,31 @@ func (m *U64Map) GetOrCreate(key uint64, create func() int) int {
 	return v
 }
 
+// Get returns the index mapped to key; ok is false when absent.
+func (m *U64Map) Get(key uint64) (int, bool) {
+	if m.slots == nil {
+		return 0, false
+	}
+	i := u64Hash(key) & m.mask
+	for m.slots[i].used {
+		if m.slots[i].key == key {
+			return int(m.slots[i].val), true
+		}
+		i = (i + 1) & m.mask
+	}
+	return 0, false
+}
+
+// ForEach visits every (key, index) pair in table order. The visit
+// function must not mutate the map.
+func (m *U64Map) ForEach(visit func(key uint64, val int)) {
+	for _, sl := range m.slots {
+		if sl.used {
+			visit(sl.key, int(sl.val))
+		}
+	}
+}
+
 // Len is the number of distinct keys mapped.
 func (m *U64Map) Len() int { return m.count }
 

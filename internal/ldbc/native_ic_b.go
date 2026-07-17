@@ -7,6 +7,7 @@ package ldbc
 
 import (
 	"fmt"
+	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -356,15 +357,20 @@ func icIS3(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 		return nil, err
 	}
 	return func() ([][]value.Value, error) {
-		var rows [][]value.Value
+		// Sort the raw ids and flat-back the rows: a slice per row cost one
+		// allocation per friend.
+		var ids []int64
 		for f := range g.Neighbors(person, chickpeas.Both, "KNOWS") {
-			rows = append(rows, []value.Value{value.Int(i64At(idCol, f))})
+			ids = append(ids, i64At(idCol, f))
 		}
-		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
-			a0, _ := a[0].AsInt()
-			b0, _ := b[0].AsInt()
-			return a0 < b0
-		}), nil
+		slices.Sort(ids)
+		cells := make([]value.Value, len(ids))
+		rows := make([][]value.Value, len(ids))
+		for i, id := range ids {
+			cells[i] = value.Int(id)
+			rows[i] = cells[i : i+1 : i+1]
+		}
+		return rows, nil
 	}, nil
 }
 

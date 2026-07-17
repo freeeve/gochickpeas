@@ -287,7 +287,8 @@ func biQ15(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		return nil, err
 	}
 	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
-		return 1.0 / (w[pairKey(from, rel.Neighbor)] + 1.0)
+		wv, _ := w.get(pairKey64(from, rel.Neighbor)) // absent pair scores 0
+		return 1.0 / (wv + 1.0)
 	}
 	if d, ok := g.WeightedShortestPath(src, tgt, chickpeas.Both, g.Match("KNOWS"), weight); ok && finite(d) {
 		return [][]value.Value{{value.Float(d)}}, nil

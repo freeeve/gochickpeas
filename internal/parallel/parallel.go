@@ -87,24 +87,45 @@ func ForWorker(n int, body func(worker, lo, hi int)) {
 	wg.Wait()
 }
 
-// Fold is the rayon fold/reduce shape over [0, n): one accumulator per chunk
-// (never per element), seeded by identity, folded over the chunk's indices,
-// then merged with reduce in ascending chunk order -- so the result is
-// deterministic for any associative reduce. identity is called once per
-// chunk plus once for an empty input.
+// Fold is the rayon fold/reduce shape over [0, n): one accumulator per
+// WORKER (never per chunk or element), each worker folding one contiguous
+// index range in ascending order, then merged with reduce in ascending
+// worker order -- so an order-sensitive associative reduce (a concat)
+// still sees the fully in-order sequence, exactly like the former
+// one-accumulator-per-chunk form. A heavy accumulator (a count slab, a
+// map) is built once per worker instead of once per 4x-oversplit chunk;
+// the oversplit's load-balancing headroom is deliberately traded away
+// here because a fold's per-index cost is near-uniform in the kernels
+// (For/ForWorker keep it). identity is called once per worker plus once
+// for an empty input.
 func Fold[T any](n int, identity func() T, fold func(acc T, i int) T, reduce func(a, b T) T) T {
-	count, _ := chunkPlan(n)
-	if count == 0 {
+	if n <= 0 {
 		return identity()
 	}
-	accs := make([]T, count)
-	ForWorker(n, func(worker, lo, hi int) {
+	workers := min(n, max(Workers(), 1))
+	if workers <= 1 {
 		acc := identity()
-		for i := lo; i < hi; i++ {
+		for i := 0; i < n; i++ {
 			acc = fold(acc, i)
 		}
-		accs[worker] = acc
-	})
+		return acc
+	}
+	size := (n + workers - 1) / workers
+	accs := make([]T, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := range workers {
+		lo, hi := w*size, min((w+1)*size, n)
+		go func() {
+			defer wg.Done()
+			acc := identity()
+			for i := lo; i < hi; i++ {
+				acc = fold(acc, i)
+			}
+			accs[w] = acc
+		}()
+	}
+	wg.Wait()
 	out := accs[0]
 	for _, acc := range accs[1:] {
 		out = reduce(out, acc)

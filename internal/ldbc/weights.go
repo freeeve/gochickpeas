@@ -10,14 +10,51 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 	"github.com/freeeve/gochickpeas/internal/parallel"
 )
+
+// weightMap is a flat undirected-pair -> float64 accumulator: a probe
+// index over packed (lo<<32|hi) keys plus a parallel weight slab -- the
+// map[interactionKey]float64 form paid bucket growth per fold shard.
+type weightMap struct {
+	idx flatset.U64Map
+	w   []float64
+}
+
+// pairKey64 packs the undirected pair as lo<<32|hi.
+func pairKey64(a, b chickpeas.NodeID) uint64 {
+	if a > b {
+		a, b = b, a
+	}
+	return uint64(uint32(a))<<32 | uint64(uint32(b))
+}
+
+// addAt accumulates v into the pair's weight, minting the slot on first
+// sight.
+func (m *weightMap) addAt(key uint64, v float64) {
+	i := m.idx.GetOrCreate(key, func() int {
+		m.w = append(m.w, 0)
+		return len(m.w) - 1
+	})
+	m.w[i] += v
+}
+
+// get returns the pair's accumulated weight; ok is false when the pair
+// never scored.
+func (m *weightMap) get(key uint64) (float64, bool) {
+	i, ok := m.idx.Get(key)
+	if !ok {
+		return 0, false
+	}
+	return m.w[i], true
+}
 
 // q15WeightMap is Q15's discounted reply-interaction weights: replies
 // whose thread-root forum was created in the Nov-2010 window score their
 // creator pair (a Post parent 1.0, a Comment parent 0.5), keyed by
 // undirected pair. The traversal weight is 1/(score+1).
-func q15WeightMap(g *chickpeas.Snapshot) (map[interactionKey]float64, error) {
+func q15WeightMap(g *chickpeas.Snapshot) (*weightMap, error) {
 	startDay, endDay := dayFromCivil(2010, 11, 1), dayFromCivil(2010, 12, 1)
 	fdayCol, err := nodeI64Col(g, "fday")
 	if err != nil {
@@ -27,13 +64,13 @@ func q15WeightMap(g *chickpeas.Snapshot) (map[interactionKey]float64, error) {
 	comments, ok := g.NodesWithLabel("Comment")
 	replyOf, okRt := g.RelType("REPLY_OF")
 	if !ok || !okRt {
-		return map[interactionKey]float64{}, nil
+		return &weightMap{}, nil
 	}
 	roots := g.RootsVia(replyOf, chickpeas.Outgoing)
 	ids := comments.ToSlice()
 	return parallel.Fold(len(ids),
-		func() map[interactionKey]float64 { return map[interactionKey]float64{} },
-		func(acc map[interactionKey]float64, i int) map[interactionKey]float64 {
+		func() *weightMap { return &weightMap{} },
+		func(acc *weightMap, i int) *weightMap {
 			c := ids[i]
 			parent, ok := g.FirstNeighbor(c, chickpeas.Outgoing, "REPLY_OF")
 			if !ok {
@@ -55,14 +92,14 @@ func q15WeightMap(g *chickpeas.Snapshot) (map[interactionKey]float64, error) {
 				if posts != nil && posts.Contains(parent) {
 					contrib = 1.0
 				}
-				acc[pairKey(cc, pc)] += contrib
+				acc.addAt(pairKey64(cc, pc), contrib)
 			}
 			return acc
 		},
-		func(a, b map[interactionKey]float64) map[interactionKey]float64 {
-			for k, v := range b {
-				a[k] += v
-			}
+		func(a, b *weightMap) *weightMap {
+			b.idx.ForEach(func(key uint64, bi int) {
+				a.addAt(key, b.w[bi])
+			})
 			return a
 		}), nil
 }
@@ -175,7 +212,8 @@ func DeriveWeightRels(g *chickpeas.Snapshot) (map[string][]WeightEdge, error) {
 		out[typ] = append(out[typ], WeightEdge{k.lo, k.hi, w}, WeightEdge{k.hi, k.lo, w})
 	}
 	for _, k := range pairs {
-		both("q15weight", k, 1.0/(q15w[k]+1.0))
+		q15v, _ := q15w.get(pairKey64(k.lo, k.hi)) // absent pair scores 0
+		both("q15weight", k, 1.0/(q15v+1.0))
 		both("ic14weight", k, 1.0/(float64(inter[k])+1.0))
 		if n := inter[k]; n > 0 {
 			both("interactsWith", k, 1.0/float64(n))

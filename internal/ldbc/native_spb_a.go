@@ -266,6 +266,10 @@ func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	}
 	startMs, endMs := spbParseMs(spbDateFrom), spbParseMs(spbDateTo)
 	counts := map[chickpeas.NodeID]int64{}
+	// topics is the per-work distinct-tag scratch, reused across the work
+	// loop (a work carries a handful of tags, so linear dedup over a small
+	// slice beats a fresh map per work).
+	var topics []chickpeas.NodeID
 	for cw := range works.Iter() {
 		if !spbHasNeighborWithURI(g, cw, "audience", spbAudience) {
 			continue
@@ -277,13 +281,15 @@ func spbQ5(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		if ms := spbParseMs(dt); !(ms > startMs && ms < endMs) {
 			continue
 		}
-		topics := map[chickpeas.NodeID]bool{}
+		topics = topics[:0]
 		for _, pred := range spbTagPreds {
 			for t := range g.Neighbors(cw, chickpeas.Outgoing, pred) {
-				topics[t] = true
+				if !slices.Contains(topics, t) {
+					topics = append(topics, t)
+				}
 			}
 		}
-		for t := range topics {
+		for _, t := range topics {
 			if _, hasLabel := g.Prop(t, "label").Str(); hasLabel {
 				counts[t]++
 			}
