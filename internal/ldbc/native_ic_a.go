@@ -112,25 +112,38 @@ func icIC1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	}
 	return func() ([][]value.Value, error) {
 		dist := g.BFSDistances(person, chickpeas.Both, g.Match("KNOWS"), 3)
-		var rows [][]value.Value
+		// Typed candidates, boxed into flat cells only for the top 20: a
+		// slice per matching person dominated the kernel.
+		type cand struct {
+			d        int64
+			lastName string
+			id       int64
+		}
+		var cands []cand
 		for p, d := range dist {
 			if d >= 1 && strAt(g, p, "firstName") == icSeedFirstName {
-				rows = append(rows, []value.Value{value.Int(int64(d)), value.Str(strAt(g, p, "lastName")), value.Int(i64At(idCol, p))})
+				cands = append(cands, cand{int64(d), strAt(g, p, "lastName"), i64At(idCol, p)})
 			}
 		}
-		return sortTruncate(rows, 20, func(a, b []value.Value) bool {
-			a0, _ := a[0].AsInt()
-			b0, _ := b[0].AsInt()
-			a1, _ := a[1].AsStr()
-			b1, _ := b[1].AsStr()
-			a2, _ := a[2].AsInt()
-			b2, _ := b[2].AsInt()
+		sortByLess(cands, func(a, b cand) bool {
 			return cmpChain(
-				cmpI64Asc(a0, b0),
-				cmpStrAsc(a1, b1),
-				cmpI64Asc(a2, b2),
+				cmpI64Asc(a.d, b.d),
+				cmpStrAsc(a.lastName, b.lastName),
+				cmpI64Asc(a.id, b.id),
 			)
-		}), nil
+		})
+		if len(cands) > 20 {
+			cands = cands[:20]
+		}
+		cells := make([]value.Value, len(cands)*3)
+		rows := make([][]value.Value, len(cands))
+		for i, c := range cands {
+			cells[i*3] = value.Int(c.d)
+			cells[i*3+1] = value.Str(c.lastName)
+			cells[i*3+2] = value.Int(c.id)
+			rows[i] = cells[i*3 : i*3+3 : i*3+3]
+		}
+		return rows, nil
 	}, nil
 }
 
