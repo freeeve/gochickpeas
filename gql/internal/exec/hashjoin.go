@@ -15,6 +15,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // hjPair is one captured relationship-uniqueness pair of a payload row:
@@ -27,18 +28,61 @@ type hjPair struct {
 }
 
 // hjRow is one materialized build row: its payload-slot values and its
-// captured pairs.
+// captured pairs (capped sub-slices of the table's append-only slabs),
+// plus the intrusive link to the next row sharing its join key.
 type hjRow struct {
 	vals  []value.Value
 	pairs []hjPair
+	next  int32
 }
 
 // hjTable is one build's result, indexed by the key slot's node (expand-
 // keyed joins) or the key expression's encoded value (value-keyed joins).
+// Rows chain per key through hjRow.next in insertion order (heads/tails
+// hold each chain's ends), and payload values and pairs pack into shared
+// slabs -- the per-row map-bucket appends and slice makes the map-of-
+// slices form paid were the build sink's whole allocation profile.
 type hjTable struct {
-	rows  []hjRow
-	byKey map[graph.NodeID][]int32
-	byVal map[string][]int32
+	rows     []hjRow
+	valSlab  []value.Value
+	pairSlab []hjPair
+	byKey    flatset.U64Map
+	byVal    flatset.ByteMap
+	heads    []int32
+	tails    []int32
+}
+
+// mintChain opens an empty chain slot (the GetOrCreate create hook).
+func (t *hjTable) mintChain() int {
+	t.heads = append(t.heads, -1)
+	t.tails = append(t.tails, -1)
+	return len(t.heads) - 1
+}
+
+// link appends row idx to chain ci, preserving insertion order.
+func (t *hjTable) link(ci int, idx int32) {
+	if t.tails[ci] < 0 {
+		t.heads[ci] = idx
+	} else {
+		t.rows[t.tails[ci]].next = idx
+	}
+	t.tails[ci] = idx
+}
+
+// headKey is chain head for an expand key; -1 when the key has no rows.
+func (t *hjTable) headKey(key graph.NodeID) int32 {
+	if ci, ok := t.byKey.Get(uint64(key)); ok {
+		return t.heads[ci]
+	}
+	return -1
+}
+
+// headVal is chain head for an encoded value key; -1 when absent.
+func (t *hjTable) headVal(k []byte) int32 {
+	if ci, ok := t.byVal.Get(k); ok {
+		return t.heads[ci]
+	}
+	return -1
 }
 
 // hashJoinSink is the stage's row sink.
@@ -107,7 +151,7 @@ func (h *hashJoinSink) push(row []value.Value) bool {
 	// disconnected join -- one bucket, the same emission protocol).
 	if h.hj.Cartesian {
 		copy(h.buf, row)
-		return h.emitRows(t, t.byVal[""], nil, 0, 0)
+		return h.emitRows(t, t.headVal(nil), nil, 0, 0)
 	}
 	// Value-keyed probe: the outer row's key value looks the bucket up
 	// directly -- no expand, no probe uniqueness (no relationship binds).
@@ -119,7 +163,7 @@ func (h *hashJoinSink) push(row []value.Value) bool {
 		}
 		h.valBuf = value.AppendKey(h.valBuf[:0], v)
 		copy(h.buf, row)
-		return h.emitRows(t, t.byVal[string(h.valBuf)], nil, 0, 0)
+		return h.emitRows(t, t.headVal(h.valBuf), nil, 0, 0)
 	}
 	from, ok := row[h.hj.Probe.From].AsNode()
 	if !ok {
@@ -143,8 +187,8 @@ func (h *hashJoinSink) push(row []value.Value) bool {
 		if !h.hj.Reversed && !h.ctx.G.NodeMatcherAccepts(h.probeM, cand) {
 			continue
 		}
-		idxs := t.byKey[cand]
-		if len(idxs) == 0 {
+		head := t.headKey(cand)
+		if head < 0 {
 			continue
 		}
 		var pa, pb graph.NodeID
@@ -154,7 +198,7 @@ func (h *hashJoinSink) push(row []value.Value) bool {
 				continue
 			}
 		}
-		if !h.emitRows(t, idxs, pu, pa, pb) {
+		if !h.emitRows(t, head, pu, pa, pb) {
 			return false
 		}
 	}
@@ -166,8 +210,8 @@ func (h *hashJoinSink) push(row []value.Value) bool {
 // against the outer used-pair env, captured live pairs (plus the probe
 // hop's own, when there is one) push for downstream ops. Reports the
 // downstream keep-going verdict; a stop still restores the pair stack.
-func (h *hashJoinSink) emitRows(t *hjTable, idxs []int32, pu *plan.RelUniq, pa, pb graph.NodeID) bool {
-	for _, ri := range idxs {
+func (h *hashJoinSink) emitRows(t *hjTable, head int32, pu *plan.RelUniq, pa, pb graph.NodeID) bool {
+	for ri := head; ri >= 0; ri = t.rows[ri].next {
 		r := &t.rows[ri]
 		blocked := false
 		for _, p := range r.pairs {
@@ -227,7 +271,7 @@ func (h *hashJoinSink) close() { h.next.close() }
 // build runs the branch chain once over a seed row carrying only the
 // external slots, materializing key -> payload rows with captured pairs.
 func (h *hashJoinSink) build(row []value.Value) *hjTable {
-	t := &hjTable{byKey: map[graph.NodeID][]int32{}}
+	t := &hjTable{}
 	seed := make([]value.Value, h.seg.RowWidth)
 	for _, s := range h.hj.ExtSlots {
 		seed[s] = row[s]
@@ -238,11 +282,7 @@ func (h *hashJoinSink) build(row []value.Value) *hjTable {
 		ext[s] = true
 	}
 	bs := &hjBuildSink{t: t, hj: h.hj, uniq: benv}
-	if h.hj.Cartesian {
-		t.byVal = map[string][]int32{}
-	}
 	if h.hj.KeyBuild != nil {
-		t.byVal = map[string][]int32{}
 		bs.keyBuild = compileEval(h.ctx, h.hj.KeyBuild, h.seg.Slots)
 		bs.ctx, bs.slots = h.ctx, h.seg.Slots
 	}
@@ -290,26 +330,31 @@ func (b *hjBuildSink) push(row []value.Value) bool {
 			return true
 		}
 	}
-	r := hjRow{vals: make([]value.Value, len(b.hj.PayloadSlots))}
-	for i, s := range b.hj.PayloadSlots {
-		r.vals[i] = row[s]
+	r := hjRow{next: -1}
+	vo := len(b.t.valSlab)
+	for _, s := range b.hj.PayloadSlots {
+		b.t.valSlab = append(b.t.valSlab, row[s])
 	}
+	r.vals = b.t.valSlab[vo:len(b.t.valSlab):len(b.t.valSlab)]
 	if n := len(b.uniq.stack); n > 0 {
-		r.pairs = make([]hjPair, n)
-		for i, k := range b.uniq.stack {
-			r.pairs[i] = hjPair{scope: k.scope, a: k.a, b: k.b, check: k.check, live: !k.dead}
+		po := len(b.t.pairSlab)
+		for _, k := range b.uniq.stack {
+			b.t.pairSlab = append(b.t.pairSlab, hjPair{scope: k.scope, a: k.a, b: k.b, check: k.check, live: !k.dead})
 		}
+		r.pairs = b.t.pairSlab[po:len(b.t.pairSlab):len(b.t.pairSlab)]
 	}
 	idx := int32(len(b.t.rows))
 	b.t.rows = append(b.t.rows, r)
+	var ci int
 	switch {
 	case b.hj.Cartesian:
-		b.t.byVal[""] = append(b.t.byVal[""], idx)
+		ci = b.t.byVal.GetOrCreate(nil, b.t.mintChain)
 	case b.keyBuild != nil:
-		b.t.byVal[string(b.valBuf)] = append(b.t.byVal[string(b.valBuf)], idx)
+		ci = b.t.byVal.GetOrCreate(b.valBuf, b.t.mintChain)
 	default:
-		b.t.byKey[key] = append(b.t.byKey[key], idx)
+		ci = b.t.byKey.GetOrCreate(uint64(key), b.t.mintChain)
 	}
+	b.t.link(ci, idx)
 	return true
 }
 

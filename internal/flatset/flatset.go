@@ -473,6 +473,23 @@ func (m *ByteMap) GetOrCreate(b []byte, create func() int) int {
 	return v
 }
 
+// Get returns the int mapped to b; ok is false when absent.
+func (m *ByteMap) Get(b []byte) (int, bool) {
+	if m.slots == nil {
+		return 0, false
+	}
+	h := bsHash(b)
+	i := h & m.mask
+	for m.slots[i].filled {
+		if sl := m.slots[i]; sl.hash == h && int(sl.length) == len(b) &&
+			bytes.Equal(m.arena[sl.off:sl.off+sl.length], b) {
+			return sl.val, true
+		}
+		i = (i + 1) & m.mask
+	}
+	return 0, false
+}
+
 // Len is the number of distinct keys mapped.
 func (m *ByteMap) Len() int { return m.count }
 

@@ -11,13 +11,18 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 type groupJoinSink struct {
-	ctx    *eval.Ctx
-	gj     *plan.GroupJoinStage
-	buf    []value.Value
-	table  map[string][]value.Value
+	ctx *eval.Ctx
+	gj  *plan.GroupJoinStage
+	buf []value.Value
+	// table maps an encoded correlation key to its group's aggregate
+	// values through the interned-key probe table -- the map[string] form
+	// paid one heap string per group on build.
+	table  flatset.ByteMap
+	groups [][]value.Value
 	built  bool
 	keyBuf []byte
 	next   rowSink
@@ -27,14 +32,18 @@ type groupJoinSink struct {
 func (s *groupJoinSink) push(row []value.Value) bool {
 	if !s.built {
 		nk := len(s.gj.KeySlots)
-		s.table = map[string][]value.Value{}
 		for _, sr := range runSubplan(s.ctx, s.gj.Sub, nil) {
 			k := s.keyBuf[:0]
 			for i := range nk {
 				k = value.AppendKey(k, sr[i])
 			}
 			s.keyBuf = k
-			s.table[string(k)] = sr[nk:]
+			vals := sr[nk:]
+			i := s.table.GetOrCreate(k, func() int {
+				s.groups = append(s.groups, vals)
+				return len(s.groups) - 1
+			})
+			s.groups[i] = vals
 		}
 		s.built = true
 	}
@@ -44,7 +53,8 @@ func (s *groupJoinSink) push(row []value.Value) bool {
 	}
 	s.keyBuf = k
 	copy(s.buf, row)
-	if vals, ok := s.table[string(k)]; ok {
+	if i, ok := s.table.Get(k); ok {
+		vals := s.groups[i]
 		for i, o := range s.gj.OutSlots {
 			s.buf[o] = vals[i]
 		}
