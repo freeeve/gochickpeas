@@ -56,6 +56,14 @@ func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 				continue
 			}
 		}
+		// The walk-aggregate sibling: a label-scan-plus-expand-chain
+		// segment feeding a grouped COUNT fuses into a level-batched
+		// column pass (colwalk.go); a declined segment falls through.
+		if out, ok := tryColumnarWalkAgg(ctx, segments, i, rows); ok {
+			rows = out
+			i++
+			continue
+		}
 		j := i
 		// Runs never stream INTO a chain head: the fused pass needs its
 		// materialized seed rows.
