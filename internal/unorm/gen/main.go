@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"go/format"
 	"io"
 	"net/http"
 	"os"
@@ -272,7 +273,11 @@ func main() {
 	writeRanges("qcNFKC", qc["NFKC"])
 	writeRanges("qcNFKD", qc["NFKD"])
 
-	if err := os.WriteFile("internal/unorm/tables.go", []byte(b.String()), 0o644); err != nil {
+	src, err := format.Source([]byte(b.String()))
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile("internal/unorm/tables.go", src, 0o644); err != nil {
 		panic(err)
 	}
 	fmt.Printf("tables.go: %d ccc, %d canon, %d compat, %d comp pairs\n",
