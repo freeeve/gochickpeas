@@ -100,6 +100,11 @@ type Snapshot struct {
 
 	// relStats builds the per-type count store once on first access.
 	relStats func() map[string]RelStats
+
+	// labelDegrees caches per-label conditional degree counts (labelstats.go),
+	// built lazily per consulted label.
+	labelDegreeMu sync.Mutex
+	labelDegrees  map[Label]*labelDegreeEntry
 }
 
 // RelStats is the per-type relationship statistics entry: total count and
@@ -135,6 +140,7 @@ func newSnapshot() *Snapshot {
 		labelBits:      map[Label][]uint64{},
 		fulltextIndex:  map[propIndexKey]*FullTextField{},
 		geoIndex:       map[geoKey]*GeoIndex{},
+		labelDegrees:   map[Label]*labelDegreeEntry{},
 	}
 	g.relStats = sync.OnceValue(g.buildRelStats)
 	return g
