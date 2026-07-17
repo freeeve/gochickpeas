@@ -210,6 +210,11 @@ type aggregator struct {
 	// slots don't pack, and every miss, falls through to the unchanged
 	// generic path, so claim/seed logic exists once.
 	keySlots []int
+	// argSlots holds each aggregate argument's row slot when that argument
+	// is a bare variable reference (-1 otherwise): the per-row argument
+	// "evaluation" is then a direct slot read instead of a compiled-eval
+	// dispatch. Same identity argument as keySlots.
+	argSlots []int
 
 	nGroups     int
 	keysChunks  [][]value.Value
@@ -261,11 +266,18 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 		}
 	}
 	for _, ac := range proj.Aggs {
+		argSlot := -1
 		if ac.Arg != nil {
 			a.aggC = append(a.aggC, compileEval(ctx, ac.Arg, slots))
+			if v, ok := ac.Arg.(*ast.Var); ok {
+				if s, ok2 := slots[v.Name]; ok2 {
+					argSlot = s
+				}
+			}
 		} else {
 			a.aggC = append(a.aggC, nil)
 		}
+		a.argSlots = append(a.argSlots, argSlot)
 		a.kinds = append(a.kinds, ac.Kind)
 		if ac.Distinct {
 			a.hasDistinct = true
@@ -481,7 +493,11 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 		var arg value.Value
 		present := a.aggC[j] != nil
 		if present {
-			arg = a.aggC[j].Eval(ctx, m, slots)
+			if s := a.argSlots[j]; s >= 0 {
+				arg = m[s]
+			} else {
+				arg = a.aggC[j].Eval(ctx, m, slots)
+			}
 		}
 		if proj.Aggs[j].Distinct && present && !arg.IsNull() {
 			if !seen[j].add(arg, &a.dkScratch) {
