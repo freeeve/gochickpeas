@@ -8,6 +8,7 @@ package chickpeas
 import (
 	"cmp"
 	"slices"
+	"sync"
 
 	"github.com/freeeve/gochickpeas/internal/parallel"
 )
@@ -69,32 +70,51 @@ func (n *NeighborGroups) Sizes() []SourceSize {
 		}
 		return out
 	}
-	parallel.For(len(n.sources), func(lo, hi int) {
-		counts := map[NodeID]uint32{}
-		for i := lo; i < hi; i++ {
-			src := n.sources[i]
-			clear(counts)
-			for nb := range n.g.NeighborsMatch(src, n.dir, n.m) {
-				cur, projected := nb, true
-				for _, step := range steps {
-					next, found := n.g.FirstNeighborMatch(cur, step.dir, step.m)
-					if !found {
-						projected = false
-						break
+	// One contiguous range per WORKER (not per 4x-oversplit chunk): the
+	// per-range scratch is heavy -- a counts map and a neighbors buffer --
+	// and both reach a high-water bounded by a single source (counts
+	// clears per source, the buffer by max degree), so fewer ranges cost
+	// strictly fewer allocations with no growth penalty. Neighbors batch
+	// into the reused buffer; the iterator form built a closure per
+	// source.
+	nsrc := len(n.sources)
+	workers := max(min(nsrc, parallel.Workers()), 1)
+	size := (nsrc + workers - 1) / workers
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := range workers {
+		lo, hi := w*size, min((w+1)*size, nsrc)
+		go func() {
+			defer wg.Done()
+			counts := map[NodeID]uint32{}
+			var nbrs []NodeID
+			for i := lo; i < hi; i++ {
+				src := n.sources[i]
+				clear(counts)
+				nbrs = n.g.AppendNeighborsMatch(nbrs[:0], src, n.dir, n.m)
+				for _, nb := range nbrs {
+					cur, projected := nb, true
+					for _, step := range steps {
+						next, found := n.g.FirstNeighborMatch(cur, step.dir, step.m)
+						if !found {
+							projected = false
+							break
+						}
+						cur = next
 					}
-					cur = next
+					if projected {
+						counts[cur]++
+					}
 				}
-				if projected {
-					counts[cur]++
+				best := uint32(0)
+				for _, c := range counts {
+					best = max(best, c)
 				}
+				out[i] = SourceSize{Source: src, Size: best}
 			}
-			best := uint32(0)
-			for _, c := range counts {
-				best = max(best, c)
-			}
-			out[i] = SourceSize{Source: src, Size: best}
-		}
-	})
+		}()
+	}
+	wg.Wait()
 	return out
 }
 
