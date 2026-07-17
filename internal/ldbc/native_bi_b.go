@@ -5,6 +5,8 @@
 package ldbc
 
 import (
+	"slices"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/internal/flatset"
@@ -219,12 +221,16 @@ func biQ18(g *chickpeas.Snapshot) ([][]value.Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Bulk-build the endpoint set from the sorted id list: per-person
+	// Insert paid roaring container work on every add.
 	var interested []chickpeas.NodeID
-	endpoints := nodeset.New()
+	var epIDs []uint32
 	for p := range g.Neighbors(tag, chickpeas.Incoming, "HAS_INTEREST") {
 		interested = append(interested, p)
-		endpoints.Insert(p)
+		epIDs = append(epIDs, uint32(p))
 	}
+	slices.Sort(epIDs)
+	endpoints := nodeset.Of(epIDs...)
 	pairs := g.CommonNeighborCounts(interested, chickpeas.Both, g.Match("KNOWS"), endpoints)
 	// Collect survivors as typed rows, sort+truncate typed, and box only the
 	// top 20 -- the candidate set is far larger than the output, so boxing

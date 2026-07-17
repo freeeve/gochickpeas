@@ -129,19 +129,26 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 		return nil, fmt.Errorf("node column isBlocked missing")
 	}
 	blocked := blockedCol.Bool()
+	// BFS scratch and typed output, borrowed across runs: the visited map
+	// clears (buckets persist), the queue walks by head index so its
+	// backing survives, and rows box into flat cells only after the sort.
+	type qe struct {
+		node   chickpeas.NodeID
+		depth  uint32
+		lastTS int64
+	}
+	type cr1Row struct{ oid, dist, mid int64 }
+	visited := map[chickpeas.NodeID]bool{}
+	var queue []qe
+	var rels []tsRel
+	var out []cr1Row
 	return func() ([][]value.Value, error) {
-		var rows [][]value.Value
-		visited := map[chickpeas.NodeID]bool{account: true}
-		type qe struct {
-			node   chickpeas.NodeID
-			depth  uint32
-			lastTS int64
-		}
-		queue := []qe{{account, 0, math.MaxInt64}}
-		var rels []tsRel
-		for len(queue) > 0 {
-			cur := queue[0]
-			queue = queue[1:]
+		clear(visited)
+		visited[account] = true
+		queue = append(queue[:0], qe{account, 0, math.MaxInt64})
+		out = out[:0]
+		for head := 0; head < len(queue); head++ {
+			cur := queue[head]
 			if cur.depth >= 3 {
 				continue
 			}
@@ -164,28 +171,29 @@ func finCR1(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 				dist := cur.depth + 1
 				for sig := range g.Rels(e.nbr, chickpeas.Incoming, "signIn") {
 					if b, ok := blocked.Get(sig.Neighbor); ok && b {
-						rows = append(rows, []value.Value{
-							value.Int(cols.oid(e.nbr)), value.Int(int64(dist)),
-							value.Int(cols.oid(sig.Neighbor)), value.Str("Medium"),
-						})
+						out = append(out, cr1Row{cols.oid(e.nbr), int64(dist), cols.oid(sig.Neighbor)})
 					}
 				}
 				queue = append(queue, qe{e.nbr, dist, e.ts})
 			}
 		}
-		return sortTruncate(rows, 0, func(a, b []value.Value) bool {
-			a1, _ := a[1].AsInt()
-			b1, _ := b[1].AsInt()
-			a0, _ := a[0].AsInt()
-			b0, _ := b[0].AsInt()
-			a2, _ := a[2].AsInt()
-			b2, _ := b[2].AsInt()
+		sortByLess(out, func(a, b cr1Row) bool {
 			return cmpChain(
-				cmpI64Asc(a1, b1),
-				cmpI64Asc(a0, b0),
-				cmpI64Asc(a2, b2),
+				cmpI64Asc(a.dist, b.dist),
+				cmpI64Asc(a.oid, b.oid),
+				cmpI64Asc(a.mid, b.mid),
 			)
-		}), nil
+		})
+		cells := make([]value.Value, len(out)*4)
+		rows := make([][]value.Value, len(out))
+		for i, r := range out {
+			cells[i*4] = value.Int(r.oid)
+			cells[i*4+1] = value.Int(r.dist)
+			cells[i*4+2] = value.Int(r.mid)
+			cells[i*4+3] = value.Str("Medium")
+			rows[i] = cells[i*4 : i*4+4 : i*4+4]
+		}
+		return rows, nil
 	}, nil
 }
 
