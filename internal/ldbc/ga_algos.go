@@ -262,11 +262,21 @@ func GALCC(g *chickpeas.Snapshot, directed bool) []float64 {
 
 	result := make([]float64, n)
 	nWords := (n + 63) / 64
-	parallel.For(n, func(lo, hi int) {
-		// Per-chunk scratch: the N(v) membership bitset and neighbour
-		// buffer, reused across the chunk's nodes.
-		mark := make([]uint64, nWords)
-		var nbrs, raw []uint32
+	// Per-WORKER scratch (the mark bitset self-cleans per node, so a
+	// worker's successive chunks share it): the 4x chunk oversplit
+	// otherwise pays one id-space bitset and one buffer growth ladder per
+	// CHUNK -- the kernel's dominant allocation.
+	type lccScratch struct {
+		mark      []uint64
+		nbrs, raw []uint32
+	}
+	scratch := make([]lccScratch, parallel.Workers())
+	parallel.ForWorker(n, func(worker, lo, hi int) {
+		sc := &scratch[worker]
+		if sc.mark == nil {
+			sc.mark = make([]uint64, nWords)
+		}
+		mark, nbrs, raw := sc.mark, sc.nbrs, sc.raw
 		all := chickpeas.MatchAll()
 		// A membership probe against mark is one load and mask on a
 		// sequential scan; each binary-search level in the gallop pays a
@@ -325,6 +335,7 @@ func GALCC(g *chickpeas.Snapshot, directed bool) []float64 {
 				mark[u>>6] &^= 1 << (u & 63)
 			}
 		}
+		sc.nbrs, sc.raw = nbrs, raw
 	})
 	return result
 }
