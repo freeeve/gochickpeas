@@ -43,6 +43,12 @@ func fpClause(b *strings.Builder, c Clause) {
 		if n.Acyclic {
 			b.WriteByte('a')
 		}
+		if n.Repeatable {
+			// REPEATABLE ELEMENTS changes the clause's relationship-
+			// uniqueness semantics; without this byte a walk-mode query
+			// shared a template (and its plan) with its TRAIL twin.
+			b.WriteByte('r')
+		}
 		for i := range n.Patterns {
 			fpPattern(b, &n.Patterns[i])
 		}
@@ -282,6 +288,28 @@ func fpExpr(b *strings.Builder, e Expr) {
 		fpExpr(b, n.List)
 	case *IsNull:
 		b.WriteString("z")
+		if n.Negated {
+			b.WriteByte('!')
+		}
+		fpExpr(b, n.Expr)
+	case *IsTruth:
+		// Missing cases here are CORRECTNESS bugs, not cosmetics: an expr
+		// node the fingerprint cannot see hashes to the same "?" as any
+		// other, so two different queries share one cached template plan
+		// (found: 1 IS TYPED FLOAT returned 1.5's answer).
+		b.WriteString("zt")
+		if n.Want {
+			b.WriteByte('T')
+		} else {
+			b.WriteByte('F')
+		}
+		if n.Negated {
+			b.WriteByte('!')
+		}
+		fpExpr(b, n.Expr)
+	case *IsTyped:
+		b.WriteString("zk")
+		b.WriteString(strconv.Quote(n.Kind))
 		if n.Negated {
 			b.WriteByte('!')
 		}

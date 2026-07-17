@@ -11,7 +11,8 @@ import (
 )
 
 func fmtAgg(a *plan.AggCol) string {
-	kind := [...]string{"count", "sum", "avg", "min", "max", "collect"}[a.Kind]
+	kind := [...]string{"count", "sum", "avg", "min", "max", "collect",
+		"stddev_samp", "stddev_pop", "percentile_cont", "percentile_disc"}[a.Kind]
 	inner := "*"
 	if a.Arg != nil {
 		inner = fmtExpr(a.Arg)
