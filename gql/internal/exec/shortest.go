@@ -330,17 +330,17 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 	var fMeet, bMeet graph.NodeID
 	found := false
 	df, db := uint64(0), uint64(0)
-	// The side to expand is chosen by the frontier's PENDING EDGE count
-	// (sum of member degrees in its walk direction), not its node count:
-	// cost is edges touched, and a one-node frontier sitting on a hub is
-	// the most expensive frontier in the graph. Node counts under-predict
-	// exactly where hubs make the choice matter.
-	fDeg := uint64(ctx.G.Degree(a, sp.Dir))
-	bDeg := uint64(ctx.G.Degree(b, dirB))
+	// The side to expand is chosen by frontier NODE COUNT. The degree-sum
+	// alternative (pending-edge count) was measured deterministically
+	// (sp_frontier_ab_test.go): on realistic moderate-skew graphs it saves
+	// under 1% of edge touches while paying a Degree read per accepted
+	// node -- pure overhead -- and only wins (42% fewer edges) on extreme
+	// synthetic hubs. If a hub-dominated workload ever appears, the
+	// degree-sum form can return behind a skew heuristic; the A/B harness
+	// is the record of the trade.
 	for len(fFront) > 0 && len(bFront) > 0 && df+db < spCap(sp) && !found {
-		if fDeg <= bDeg {
+		if len(fFront) <= len(bFront) {
 			fNext = fNext[:0]
-			fDeg = 0
 			for _, u := range fFront {
 				for _, v := range appendHopNeighbors(ctx, scr, u, sp.Dir, rm, hop) {
 					switch scr.gen[v] {
@@ -350,7 +350,6 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 					default:
 						scr.gen[v], scr.parent[v], scr.dist[v] = fs, u, uint32(df+1)
 						fNext = append(fNext, v)
-						fDeg += uint64(ctx.G.Degree(v, sp.Dir))
 					}
 					if found {
 						break
@@ -364,7 +363,6 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 			df++
 		} else {
 			bNext = bNext[:0]
-			bDeg = 0
 			for _, u := range bFront {
 				for _, v := range appendHopNeighbors(ctx, scr, u, dirB, rm, hop) {
 					switch scr.gen[v] {
@@ -374,7 +372,6 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 					default:
 						scr.gen[v], scr.parent[v], scr.dist[v] = bs, u, uint32(db+1)
 						bNext = append(bNext, v)
-						bDeg += uint64(ctx.G.Degree(v, dirB))
 					}
 					if found {
 						break
