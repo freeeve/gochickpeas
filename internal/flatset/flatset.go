@@ -216,6 +216,13 @@ func (m *U64Map) ForEach(visit func(key uint64, val int)) {
 // Len is the number of distinct keys mapped.
 func (m *U64Map) Len() int { return m.count }
 
+// Reset empties the map keeping its table backing, so a reused map's
+// next fill allocates nothing until it outgrows its high-water size.
+func (m *U64Map) Reset() {
+	clear(m.slots)
+	m.count = 0
+}
+
 func (m *U64Map) grow() {
 	old := m.slots
 	m.slots = make([]u64Slot, len(old)*2)

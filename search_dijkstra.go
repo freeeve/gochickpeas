@@ -4,7 +4,10 @@
 
 package chickpeas
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 // WeightFn returns the non-negative cost of traversing a rel (Dijkstra's
 // assumption). It receives the step's source node and the RelRef, so it can
@@ -256,6 +259,19 @@ func (g *Snapshot) dijkstra(source NodeID, dir Direction, m RelMatch, weight Wei
 	return p
 }
 
+// wspScratch is one bidirectional search's reusable state, pooled so a
+// stage running many point-to-point searches (one per candidate pair)
+// pays map and heap construction once per pool entry instead of per
+// search -- clear keeps the maps' buckets, the heaps keep their backing.
+type wspScratch struct {
+	distF, distB map[NodeID]float64
+	heapF, heapB dijkstraHeap
+}
+
+var wspPool = sync.Pool{New: func() any {
+	return &wspScratch{distF: map[NodeID]float64{}, distB: map[NodeID]float64{}}
+}}
+
 // WeightedShortestPath is the shortest-path cost from source to target via
 // bidirectional Dijkstra: it searches from both ends and meets in the
 // middle, exploring far fewer nodes than a one-directional search for a
@@ -268,10 +284,16 @@ func (g *Snapshot) WeightedShortestPath(source, target NodeID, dir Direction, m 
 		return 0, true
 	}
 	rev := dir.Reverse()
-	distF := map[NodeID]float64{source: 0}
-	distB := map[NodeID]float64{target: 0}
-	heapF := dijkstraHeap{{cost: 0, node: source}}
-	heapB := dijkstraHeap{{cost: 0, node: target}}
+	scr := wspPool.Get().(*wspScratch)
+	defer wspPool.Put(scr)
+	clear(scr.distF)
+	clear(scr.distB)
+	distF, distB := scr.distF, scr.distB
+	distF[source] = 0
+	distB[target] = 0
+	heapF := append(scr.heapF[:0], dijkstraState{cost: 0, node: source})
+	heapB := append(scr.heapB[:0], dijkstraState{cost: 0, node: target})
+	defer func() { scr.heapF, scr.heapB = heapF[:0], heapB[:0] }()
 	// Best meeting cost so far; the frontiers cannot beat topF + topB.
 	best := math.Inf(1)
 

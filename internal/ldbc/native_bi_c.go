@@ -18,7 +18,7 @@ func init() {
 	registerNativeV("BI", "Q3", simpleKernelV(biQ3))
 	registerNativeV("BI", "Q4", simpleKernelV(biQ4))
 	registerNativeV("BI", "Q10", simpleKernelV(biQ10))
-	registerNativeV("BI", "Q15", simpleKernelV(biQ15))
+	registerNativeV("BI", "Q15", biQ15)
 	registerNativeV("BI", "Q16", simpleKernelV(biQ16))
 	registerNativeV("BI", "Q17", simpleKernelV(biQ17))
 }
@@ -275,25 +275,31 @@ func biQ10(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // (bidirectional meet-in-the-middle -- the native twin of the gql plan's
 // WeightedShortestPath operator) replaces the one-directional Dijkstra;
 // the undirected pairKey makes the weight symmetric, as that search
-// requires.
-func biQ15(g *chickpeas.Snapshot) ([][]value.Value, error) {
-	src, ok1 := nodeByID(g, "Person", 14)
-	tgt, ok2 := nodeByID(g, "Person", 16)
-	if !ok1 || !ok2 {
+// requires. Prepare-form only for the borrowed weight accumulators: the
+// weight DERIVATION still runs inside the timed closure (the timing
+// basis is unchanged), it just fills reused slabs on warm runs.
+func biQ15(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
+	accs := newWeightAccs()
+	m := g.Match("KNOWS")
+	return func() ([][]value.Value, error) {
+		src, ok1 := nodeByID(g, "Person", 14)
+		tgt, ok2 := nodeByID(g, "Person", 16)
+		if !ok1 || !ok2 {
+			return [][]value.Value{{value.Float(-1.0)}}, nil
+		}
+		w, err := q15WeightMap(g, accs)
+		if err != nil {
+			return nil, err
+		}
+		weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
+			wv, _ := w.get(pairKey64(from, rel.Neighbor)) // absent pair scores 0
+			return 1.0 / (wv + 1.0)
+		}
+		if d, ok := g.WeightedShortestPath(src, tgt, chickpeas.Both, m, weight); ok && finite(d) {
+			return [][]value.Value{{value.Float(d)}}, nil
+		}
 		return [][]value.Value{{value.Float(-1.0)}}, nil
-	}
-	w, err := q15WeightMap(g)
-	if err != nil {
-		return nil, err
-	}
-	weight := func(from chickpeas.NodeID, rel chickpeas.RelRef) float64 {
-		wv, _ := w.get(pairKey64(from, rel.Neighbor)) // absent pair scores 0
-		return 1.0 / (wv + 1.0)
-	}
-	if d, ok := g.WeightedShortestPath(src, tgt, chickpeas.Both, g.Match("KNOWS"), weight); ok && finite(d) {
-		return [][]value.Value{{value.Float(d)}}, nil
-	}
-	return [][]value.Value{{value.Float(-1.0)}}, nil
+	}, nil
 }
 
 // biQ16Param -- persons who made a message with the tag on the day and

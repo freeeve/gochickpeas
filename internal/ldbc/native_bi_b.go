@@ -345,30 +345,42 @@ func biQ19(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 			c2 = append(c2, p)
 		}
 		m := g.Match("KNOWS")
-		rows := chickpeas.ParNeighborFold(g, city1, chickpeas.Incoming, g.Match("IS_LOCATED_IN"),
-			func() [][]value.Value { return nil },
-			func(acc [][]value.Value, p1 chickpeas.NodeID) [][]value.Value {
+		// Typed candidate rows, boxed into flat cells only after the top-20
+		// truncation: a slice per surviving pair dominated the kernel.
+		type q19Row struct {
+			p1, p2 int64
+			d      float64
+		}
+		cands := chickpeas.ParNeighborFold(g, city1, chickpeas.Incoming, g.Match("IS_LOCATED_IN"),
+			func() []q19Row { return nil },
+			func(acc []q19Row, p1 chickpeas.NodeID) []q19Row {
 				for _, p2 := range c2 {
 					if d, ok := g.WeightedShortestPath(p1, p2, chickpeas.Both, m, weight); ok && finite(d) {
-						acc = append(acc, []value.Value{value.Int(i64At(idCol, p1)), value.Int(i64At(idCol, p2)), value.Float(d)})
+						acc = append(acc, q19Row{i64At(idCol, p1), i64At(idCol, p2), d})
 					}
 				}
 				return acc
 			},
-			func(a, b [][]value.Value) [][]value.Value { return append(a, b...) })
-		return sortTruncate(rows, 20, func(a, b []value.Value) bool {
-			a2, _ := a[2].AsFloat()
-			b2, _ := b[2].AsFloat()
-			a0, _ := a[0].AsInt()
-			b0, _ := b[0].AsInt()
-			a1, _ := a[1].AsInt()
-			b1, _ := b[1].AsInt()
+			func(a, b []q19Row) []q19Row { return append(a, b...) })
+		sortByLess(cands, func(a, b q19Row) bool {
 			return cmpChain(
-				cmpF64Asc(a2, b2),
-				cmpI64Asc(a0, b0),
-				cmpI64Asc(a1, b1),
+				cmpF64Asc(a.d, b.d),
+				cmpI64Asc(a.p1, b.p1),
+				cmpI64Asc(a.p2, b.p2),
 			)
-		}), nil
+		})
+		if len(cands) > 20 {
+			cands = cands[:20]
+		}
+		cells := make([]value.Value, len(cands)*3)
+		rows := make([][]value.Value, len(cands))
+		for i, c := range cands {
+			cells[i*3] = value.Int(c.p1)
+			cells[i*3+1] = value.Int(c.p2)
+			cells[i*3+2] = value.Float(c.d)
+			rows[i] = cells[i*3 : i*3+3 : i*3+3]
+		}
+		return rows, nil
 	}, nil
 }
 

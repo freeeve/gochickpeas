@@ -50,15 +50,35 @@ func (m *weightMap) get(key uint64) (float64, bool) {
 	return m.w[i], true
 }
 
+// reset empties the map keeping index table and slab backings.
+func (m *weightMap) reset() {
+	m.idx.Reset()
+	m.w = m.w[:0]
+}
+
+// newWeightAccs seeds one weightMap per worker for FoldInto.
+func newWeightAccs() []*weightMap {
+	accs := make([]*weightMap, parallel.Workers())
+	for i := range accs {
+		accs[i] = &weightMap{}
+	}
+	return accs
+}
+
 // q15WeightMap is Q15's discounted reply-interaction weights: replies
 // whose thread-root forum was created in the Nov-2010 window score their
 // creator pair (a Post parent 1.0, a Comment parent 0.5), keyed by
-// undirected pair. The traversal weight is 1/(score+1).
-func q15WeightMap(g *chickpeas.Snapshot) (*weightMap, error) {
+// undirected pair. The traversal weight is 1/(score+1). accs supplies the
+// borrowed per-worker accumulators (reset here), so a repeat caller's
+// warm build allocates nothing for accumulator state.
+func q15WeightMap(g *chickpeas.Snapshot, accs []*weightMap) (*weightMap, error) {
 	startDay, endDay := dayFromCivil(2010, 11, 1), dayFromCivil(2010, 12, 1)
 	fdayCol, err := nodeI64Col(g, "fday")
 	if err != nil {
 		return nil, err
+	}
+	for _, a := range accs {
+		a.reset()
 	}
 	posts, _ := g.NodesWithLabel("Post")
 	comments, ok := g.NodesWithLabel("Comment")
@@ -68,8 +88,7 @@ func q15WeightMap(g *chickpeas.Snapshot) (*weightMap, error) {
 	}
 	roots := g.RootsVia(replyOf, chickpeas.Outgoing)
 	ids := comments.ToSlice()
-	return parallel.Fold(len(ids),
-		func() *weightMap { return &weightMap{} },
+	return parallel.FoldInto(accs, len(ids),
 		func(acc *weightMap, i int) *weightMap {
 			c := ids[i]
 			parent, ok := g.FirstNeighbor(c, chickpeas.Outgoing, "REPLY_OF")
@@ -198,7 +217,7 @@ func DeriveWeightRels(g *chickpeas.Snapshot) (map[string][]WeightEdge, error) {
 	})
 
 	inter := buildInteractionMap(g)
-	q15w, err := q15WeightMap(g)
+	q15w, err := q15WeightMap(g, newWeightAccs())
 	if err != nil {
 		return nil, err
 	}
