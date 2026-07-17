@@ -87,13 +87,13 @@ type subqueryShape struct {
 // refreshed from the outer row, building (and caching) it on first use.
 // With both endpoints anchored, the forward or reversed shape is chosen
 // per row by the bound endpoints' actual first-hop degree (O(1) reads).
-func subqueryShapeFor(ctx *Ctx, outer map[string]int, outerRow []value.Value, pattern *ast.Pattern) *subqueryShape {
+func subqueryShapeFor(ctx *Ctx, outer map[string]int, outerRow []value.Value, pattern *ast.Pattern, allowSeedReverse bool) *subqueryShape {
 	if ctx.subqShapes == nil {
 		ctx.subqShapes = map[*ast.Pattern]*subqueryShape{}
 	}
 	s := ctx.subqShapes[pattern]
 	if s == nil || !s.validFor(outer, outerRow) {
-		s = buildSubqueryShape(outer, outerRow, pattern)
+		s = buildSubqueryShape(outer, outerRow, pattern, allowSeedReverse)
 		ctx.subqShapes[pattern] = s
 	}
 	if s.rev != nil {
@@ -125,9 +125,16 @@ func (s *subqueryShape) validFor(outer map[string]int, outerRow []value.Value) b
 // so expansion starts from the (few) bound node's neighbors rather than a
 // label scan. When BOTH endpoints are anchored, a reversed twin shape is
 // attached and subqueryShapeFor picks a side per row by actual degree.
-// Outer variables keep their slots; inner-only pattern variables extend
-// the row.
-func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *ast.Pattern) *subqueryShape {
+// When NEITHER endpoint is anchored, the walk seeds from the statically
+// stronger endpoint (property literal beats bare label beats unlabeled)
+// when the caller allows reversal -- an unlabeled written start would
+// otherwise seed the level-0 scan with the whole id space to reach a
+// seek-sized end. Reversal enumerates the same match set, so counting
+// callers are safe; a COLLECTING caller (pattern comprehension) must pass
+// allowSeedReverse=false, because reversing its walk reverses the list's
+// element order -- a visible output change. Outer variables keep their
+// slots; inner-only pattern variables extend the row.
+func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *ast.Pattern, allowSeedReverse bool) *subqueryShape {
 	isAnchored := func(n *ast.NodePat) bool {
 		if n.Var == "" {
 			return false
@@ -137,7 +144,12 @@ func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *a
 	}
 	startAnchored := isAnchored(&pattern.Start)
 	endAnchored := isAnchored(pattern.EndNode())
-	if !startAnchored && endAnchored {
+	switch {
+	case !startAnchored && endAnchored:
+		rev := pattern.Reversed()
+		pattern = &rev
+	case allowSeedReverse && !startAnchored && !endAnchored && len(pattern.Hops) > 0 &&
+		seedStrength(pattern.EndNode()) > seedStrength(&pattern.Start):
 		rev := pattern.Reversed()
 		pattern = &rev
 	}
@@ -147,6 +159,19 @@ func buildSubqueryShape(outer map[string]int, outerRow []value.Value, pattern *a
 		s.rev = buildOneSubqueryShape(outer, outerRow, &rev)
 	}
 	return s
+}
+
+// seedStrength ranks a node pattern's static selectivity as a level-0
+// seed: an inline property ({name: 'x'} or a param) beats a bare label
+// beats an unlabeled node.
+func seedStrength(n *ast.NodePat) int {
+	if len(n.Props) > 0 || len(n.PropExprs) > 0 {
+		return 2
+	}
+	if len(n.Labels) > 0 || n.LabelExpr != nil {
+		return 1
+	}
+	return 0
 }
 
 // buildOneSubqueryShape builds a single direction's shape.
@@ -194,7 +219,7 @@ func hasKey(m map[string]int, k string) bool {
 // to their bound value. stopAtFirst short-circuits for EXISTS. A single
 // fixed-length pattern (quantifiers are treated as one hop).
 func SubqueryCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []value.Value, outerSlots map[string]int, stopAtFirst bool) int {
-	s := subqueryShapeFor(ctx, outerSlots, outerRow, pattern)
+	s := subqueryShapeFor(ctx, outerSlots, outerRow, pattern, true)
 	total := 0
 	s.dfs(ctx, 0, func() bool {
 		ok := where == nil || Eval(ctx, where, s.row, s.slots).IsTruthy()
@@ -232,7 +257,7 @@ func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow
 			outer[k] = v
 		}
 	}
-	s := buildSubqueryShape(outer, outerRow, pattern)
+	s := buildSubqueryShape(outer, outerRow, pattern, true)
 	copy(s.row, outerRow)
 	for i := len(outerRow); i < len(s.row); i++ {
 		s.row[i] = value.Null()
@@ -256,7 +281,9 @@ func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow
 // evalPatternComp collects a projection over each correlated match of a
 // pattern: [ (pattern) [WHERE filter] | proj ].
 func evalPatternComp(ctx *Ctx, e *ast.PatternComp, row []value.Value, slots map[string]int) value.Value {
-	s := subqueryShapeFor(ctx, slots, row, e.Pattern)
+	// Collecting walk: list element order is enumeration order, so the
+	// unanchored seed reversal must not fire here.
+	s := subqueryShapeFor(ctx, slots, row, e.Pattern, false)
 	out := []value.Value{}
 	s.dfs(ctx, 0, func() bool {
 		if e.Where == nil || Eval(ctx, e.Where, s.row, s.slots).IsTruthy() {
