@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -200,6 +201,15 @@ type aggregator struct {
 	aggC   []RowEval // nil entry = count(*)
 	index  flatset.ByteMap
 	indexI flatset.U64Map
+	// keySlots holds each group key's row slot when EVERY key is a bare
+	// variable reference (and the tuple is short enough to pack), else
+	// nil. A bare variable's evaluation is exactly the row slot's value,
+	// so the update hit path packs entity ids straight off the row and
+	// probes -- skipping the per-row key evaluation and buffering that a
+	// group HIT (the dominant case) would only throw away. Any row whose
+	// slots don't pack, and every miss, falls through to the unchanged
+	// generic path, so claim/seed logic exists once.
+	keySlots []int
 
 	nGroups     int
 	keysChunks  [][]value.Value
@@ -233,6 +243,22 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 	a := &aggregator{}
 	for _, gi := range proj.GroupIdx {
 		a.groupC = append(a.groupC, compileEval(ctx, proj.Returns[gi].Expr, slots))
+	}
+	if n := len(proj.GroupIdx); n == 1 || n == 2 {
+		a.keySlots = make([]int, 0, n)
+		for _, gi := range proj.GroupIdx {
+			v, ok := proj.Returns[gi].Expr.(*ast.Var)
+			if !ok {
+				a.keySlots = nil
+				break
+			}
+			s, ok := slots[v.Name]
+			if !ok {
+				a.keySlots = nil
+				break
+			}
+			a.keySlots = append(a.keySlots, s)
+		}
 	}
 	for _, ac := range proj.Aggs {
 		if ac.Arg != nil {
@@ -333,27 +359,38 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 func packGroupKey(keys []value.Value) (uint64, bool) {
 	switch len(keys) {
 	case 1:
-		v := keys[0]
-		switch v.Kind() {
-		case value.KindInt:
-			i, _ := v.AsInt()
-			if i < -(1<<61) || i >= 1<<61 {
-				return 0, false
-			}
-			return 0<<62 | uint64(i)&(1<<62-1), true
-		case value.KindNode:
-			id, _ := v.AsNode()
-			return 1<<62 | uint64(uint32(id)), true
-		case value.KindRel:
-			pos, _ := v.AsRel()
-			return 2<<62 | uint64(uint32(pos)), true
-		}
+		return packGroupKey1(keys[0])
 	case 2:
-		e1, ok1 := packedEntity30(keys[0])
-		e2, ok2 := packedEntity30(keys[1])
-		if ok1 && ok2 {
-			return 3<<62 | e1<<31 | e2, true
+		return packGroupKey2(keys[0], keys[1])
+	}
+	return 0, false
+}
+
+// packGroupKey1 is packGroupKey's single-key form.
+func packGroupKey1(v value.Value) (uint64, bool) {
+	switch v.Kind() {
+	case value.KindInt:
+		i, _ := v.AsInt()
+		if i < -(1<<61) || i >= 1<<61 {
+			return 0, false
 		}
+		return 0<<62 | uint64(i)&(1<<62-1), true
+	case value.KindNode:
+		id, _ := v.AsNode()
+		return 1<<62 | uint64(uint32(id)), true
+	case value.KindRel:
+		pos, _ := v.AsRel()
+		return 2<<62 | uint64(uint32(pos)), true
+	}
+	return 0, false
+}
+
+// packGroupKey2 is packGroupKey's entity-pair form.
+func packGroupKey2(a, b value.Value) (uint64, bool) {
+	e1, ok1 := packedEntity30(a)
+	e2, ok2 := packedEntity30(b)
+	if ok1 && ok2 {
+		return 3<<62 | e1<<31 | e2, true
 	}
 	return 0, false
 }
@@ -393,13 +430,40 @@ func (a *aggregator) groupIdx(keys []value.Value) int {
 	return a.index.GetOrCreate(gk, func() int { return a.appendGroup(keys) })
 }
 
-// update routes one matched row into its group.
+// update routes one matched row into its group. Bare-variable key tuples
+// probe the packed index straight off the row slots; a hit skips the key
+// evaluation and buffering entirely, while a pack failure or miss takes
+// the generic path (whose evaluation yields the identical values).
 func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan, slots map[string]int) {
-	a.keyScratch = a.keyScratch[:0]
-	for _, c := range a.groupC {
-		a.keyScratch = append(a.keyScratch, c.Eval(ctx, m, slots))
+	idx := -1
+	if a.keySlots != nil {
+		var gk64 uint64
+		var packed bool
+		if len(a.keySlots) == 1 {
+			gk64, packed = packGroupKey1(m[a.keySlots[0]])
+		} else {
+			gk64, packed = packGroupKey2(m[a.keySlots[0]], m[a.keySlots[1]])
+		}
+		if packed {
+			// One probe covers both outcomes: a miss materializes the key
+			// values (identical to their evaluation -- bare slot reads) only
+			// to seed the new group.
+			idx = a.indexI.GetOrCreate(gk64, func() int {
+				a.keyScratch = a.keyScratch[:0]
+				for _, s := range a.keySlots {
+					a.keyScratch = append(a.keyScratch, m[s])
+				}
+				return a.appendGroup(a.keyScratch)
+			})
+		}
 	}
-	idx := a.groupIdx(a.keyScratch)
+	if idx < 0 {
+		a.keyScratch = a.keyScratch[:0]
+		for _, c := range a.groupC {
+			a.keyScratch = append(a.keyScratch, c.Eval(ctx, m, slots))
+		}
+		idx = a.groupIdx(a.keyScratch)
+	}
 	states := a.statesOf(idx)
 	var seen []distinctSet
 	if a.hasDistinct {
