@@ -156,8 +156,11 @@ func parseGolden(text string) map[string]string {
 
 // diffGolden compares the current canonical plans against the golden, returning
 // one drift line per query whose plan changed, is new, or went missing -- sorted
-// for a stable report. Empty means the plans are unchanged.
-func diffGolden(golden map[string]string, current []goldenEntry) []string {
+// for a stable report. Empty means the plans are unchanged. subset suppresses
+// the went-missing check: a run that deliberately selected a few queries says
+// nothing about the ones it never planned, and the absence lines would bury
+// the real drift.
+func diffGolden(golden map[string]string, current []goldenEntry, subset bool) []string {
 	var drift []string
 	seen := map[string]bool{}
 	for _, e := range current {
@@ -171,9 +174,11 @@ func diffGolden(golden map[string]string, current []goldenEntry) []string {
 			drift = append(drift, e.id+": plan shape changed")
 		}
 	}
-	for id := range golden {
-		if !seen[id] {
-			drift = append(drift, id+": in golden but absent from this run")
+	if !subset {
+		for id := range golden {
+			if !seen[id] {
+				drift = append(drift, id+": in golden but absent from this run")
+			}
 		}
 	}
 	sort.Strings(drift)
@@ -306,6 +311,21 @@ func run() error {
 			fmt.Printf("%-16s SKIP  %v\n", id, err)
 			continue
 		}
+		// Plan-shape golden: snapshot the canonical plan for the corpus. Guards
+		// plan QUALITY, which the row-level parity below cannot see -- a planner
+		// regression that stays correct is invisible to it. Collected BEFORE the
+		// parity verdict: a DIFFing query's plan drift is usually the review
+		// prompt that explains the DIFF, and skipping it reported the query as
+		// absent from the run instead of naming its plan change. Written or
+		// diffed after the loop.
+		if *plansGolden != "" {
+			canon, cerr := gql.ExplainCanonical(g, row.GQL)
+			if cerr != nil {
+				return fmt.Errorf("%s (plans-golden): %w", id, cerr)
+			}
+			golden = append(golden, goldenEntry{id: id, plan: canon})
+		}
+
 		match, detail, err := ldbc.VerifyCellV(row, cells)
 		if err != nil {
 			return fmt.Errorf("%s: %w", id, err)
@@ -352,18 +372,6 @@ func run() error {
 				fmt.Printf("%-16s CDIFF %s\n", id, cdiff)
 				continue
 			}
-		}
-
-		// Plan-shape golden: snapshot the canonical plan for the corpus. Guards
-		// plan QUALITY, which the row-level parity above cannot see -- a planner
-		// regression that stays correct is invisible to it. Collected here for a
-		// MATCHed query; written or diffed after the loop.
-		if *plansGolden != "" {
-			canon, cerr := gql.ExplainCanonical(g, row.GQL)
-			if cerr != nil {
-				return fmt.Errorf("%s (plans-golden): %w", id, cerr)
-			}
-			golden = append(golden, goldenEntry{id: id, plan: canon})
 		}
 
 		// Plan-stability: a timing means nothing if the plan behind it varies
@@ -482,7 +490,7 @@ func run() error {
 			if rerr != nil {
 				return fmt.Errorf("reading plan-shape golden (capture it first with -plans-golden-capture): %w", rerr)
 			}
-			planDrift = diffGolden(parseGolden(string(data)), golden)
+			planDrift = diffGolden(parseGolden(string(data)), golden, *only != "")
 			if len(planDrift) > 0 {
 				fmt.Printf("%d plan-shape drift vs golden:\n  %s\n", len(planDrift), strings.Join(planDrift, "\n  "))
 			} else {

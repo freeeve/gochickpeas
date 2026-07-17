@@ -102,7 +102,7 @@ func TestDiffGoldenDetectsDrift(t *testing.T) {
 	}
 	golden := parseGolden(formatGolden(base))
 
-	if d := diffGolden(golden, base); len(d) != 0 {
+	if d := diffGolden(golden, base, false); len(d) != 0 {
 		t.Fatalf("identical plans reported drift: %v", d)
 	}
 
@@ -111,11 +111,23 @@ func TestDiffGoldenDetectsDrift(t *testing.T) {
 		// B missing entirely
 		{id: "C", plan: "NodeScan (c)\nProject [c]"}, // C is new
 	}
-	d := diffGolden(golden, changed)
+	d := diffGolden(golden, changed, false)
 	joined := fmt.Sprint(d)
 	for _, want := range []string{"A: plan shape changed", "C: new query", "B: in golden but absent"} {
 		if !contains(d, want) {
 			t.Fatalf("expected drift %q in %s", want, joined)
+		}
+	}
+
+	// A subset run (-only) says nothing about queries it never planned:
+	// the absence line disappears while real drift still reports.
+	ds := diffGolden(golden, changed, true)
+	if contains(ds, "B: in golden but absent") {
+		t.Fatalf("subset diff reported an absence line: %v", ds)
+	}
+	for _, want := range []string{"A: plan shape changed", "C: new query"} {
+		if !contains(ds, want) {
+			t.Fatalf("subset diff lost real drift %q in %v", want, ds)
 		}
 	}
 }
