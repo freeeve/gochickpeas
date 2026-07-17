@@ -13,6 +13,7 @@ import (
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/unorm"
 )
 
 // FuncOp is a resolved scalar function; the compiled path carries this
@@ -70,6 +71,8 @@ const (
 	FuncLast
 	FuncTail
 	FuncElementID
+	FuncNormalize
+	FuncIsNormalized
 )
 
 // ResolveFuncOp resolves a scalar-function name (case-insensitive); ok is
@@ -134,6 +137,10 @@ func ResolveFuncOp(name string) (FuncOp, bool) {
 		return FuncCardinality, true
 	case "trim":
 		return FuncTrim, true
+	case "normalize":
+		return FuncNormalize, true
+	case "is_normalized":
+		return FuncIsNormalized, true
 	case "ltrim":
 		return FuncLTrim, true
 	case "rtrim":
@@ -504,6 +511,31 @@ func ApplyFunc(op FuncOp, argv []value.Value) value.Value {
 			return value.Int(int64(len(m)))
 		}
 		return value.Null()
+	case FuncNormalize, FuncIsNormalized:
+		// NORMALIZE(s [, form]) / s IS [NOT] [form] NORMALIZED (the
+		// predicate lowers to is_normalized at parse time). Null
+		// propagates; an unknown form name is a null, not an error, per
+		// the engine's unknown-input convention.
+		s, ok := arg(argv, 0).AsStr()
+		if !ok {
+			return value.Null()
+		}
+		form := unorm.NFC
+		if len(argv) > 1 {
+			fs, ok := arg(argv, 1).AsStr()
+			if !ok {
+				return value.Null()
+			}
+			f, ok := unorm.ParseForm(fs)
+			if !ok {
+				return value.Null()
+			}
+			form = f
+		}
+		if op == FuncNormalize {
+			return value.Str(unorm.Normalize(s, form))
+		}
+		return value.Bool(unorm.IsNormalized(s, form))
 	case FuncTrim, FuncLTrim, FuncRTrim:
 		s, ok := arg(argv, 0).AsStr()
 		if !ok {

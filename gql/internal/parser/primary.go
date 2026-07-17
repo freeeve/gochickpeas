@@ -9,6 +9,8 @@
 package parser
 
 import (
+	"strings"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
@@ -455,5 +457,22 @@ func (p *parser) parseFuncCall() (ast.Expr, error) {
 	if _, err := p.expect(TokRParen, "')' closing the call"); err != nil {
 		return nil, err
 	}
+	// The ISO surface passes NORMALIZE's form as a bare keyword
+	// (NORMALIZE(s, NFC)); it parses as a variable reference, so lower it
+	// to the string literal the evaluator reads (a quoted form works too).
+	if (strings.EqualFold(name, "normalize") || strings.EqualFold(name, "is_normalized")) && len(f.Args) == 2 {
+		if v, ok := f.Args[1].(*ast.Var); ok && isNormForm(v.Name) {
+			f.Args[1] = &ast.Lit{Value: ast.StrLit(strings.ToUpper(v.Name))}
+		}
+	}
 	return f, nil
+}
+
+// isNormForm reports whether name is a Unicode normalization form keyword.
+func isNormForm(name string) bool {
+	switch strings.ToUpper(name) {
+	case "NFC", "NFD", "NFKC", "NFKD":
+		return true
+	}
+	return false
 }

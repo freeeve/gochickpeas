@@ -213,6 +213,20 @@ func (p *parser) parsePostfix(lhs ast.Expr) (ast.Expr, error) {
 				lhs = &ast.IsNull{Expr: lhs, Negated: negated}
 				continue
 			}
+			// IS [NOT] [form] NORMALIZED lowers to the is_normalized
+			// function (Func nodes flow through every generic pass --
+			// binder, fingerprint, autoparam, compile -- untouched).
+			if p.acceptKw("normalized") {
+				lhs = isNormalizedExpr(lhs, "NFC", negated)
+				continue
+			}
+			if form, ok := p.acceptNormFormKw(); ok {
+				if !p.acceptKw("normalized") {
+					return nil, errf(p.peek().Pos, "expected NORMALIZED after IS %s", form)
+				}
+				lhs = isNormalizedExpr(lhs, form, negated)
+				continue
+			}
 			if p.acceptKw("typed") {
 				kind, kerr := p.identName("a type name after IS TYPED")
 				if kerr != nil {
@@ -241,7 +255,7 @@ func (p *parser) parsePostfix(lhs ast.Expr) (ast.Expr, error) {
 				continue
 			}
 			if !p.acceptKw("null") {
-				return nil, errf(p.peek().Pos, "expected NULL, TRUE, FALSE, UNKNOWN, TYPED, or LABELED after IS")
+				return nil, errf(p.peek().Pos, "expected NULL, TRUE, FALSE, UNKNOWN, TYPED, LABELED, or [form] NORMALIZED after IS")
 			}
 			lhs = &ast.IsNull{Expr: lhs, Negated: negated}
 		case t.Kind == TokLBracket:
@@ -315,4 +329,25 @@ func (p *parser) finishSlice(base ast.Expr, from ast.Expr) (ast.Expr, error) {
 		return nil, err
 	}
 	return &ast.Slice{Base: base, From: from, To: to}, nil
+}
+
+// acceptNormFormKw accepts a Unicode normalization form keyword (NFC,
+// NFD, NFKC, NFKD), returning its canonical name.
+func (p *parser) acceptNormFormKw() (string, bool) {
+	for _, form := range [...]string{"nfc", "nfd", "nfkc", "nfkd"} {
+		if p.acceptKw(form) {
+			return strings.ToUpper(form), true
+		}
+	}
+	return "", false
+}
+
+// isNormalizedExpr lowers x IS [NOT] [form] NORMALIZED to the
+// is_normalized function (negation as a plain NOT wrapper).
+func isNormalizedExpr(x ast.Expr, form string, negated bool) ast.Expr {
+	var e ast.Expr = &ast.Func{Name: "is_normalized", Args: []ast.Expr{x, &ast.Lit{Value: ast.StrLit(form)}}}
+	if negated {
+		e = &ast.Unary{Op: ast.Not, Expr: e}
+	}
+	return e
 }
