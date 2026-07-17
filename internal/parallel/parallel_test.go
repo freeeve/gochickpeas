@@ -116,3 +116,52 @@ func TestJoin(t *testing.T) {
 		t.Fatal("single-closure join did not run")
 	}
 }
+
+func TestFoldIntoInOrderAndReusable(t *testing.T) {
+	// Same in-order contract as Fold, driven twice through the SAME
+	// accumulators to pin the reuse story (reset between calls).
+	n := 10_000
+	accs := make([][]int, parallel.Workers())
+	for round := 0; round < 2; round++ {
+		for i := range accs {
+			accs[i] = accs[i][:0]
+		}
+		got := parallel.FoldInto(accs, n,
+			func(acc []int, i int) []int { return append(acc, i) },
+			func(a, b []int) []int { return append(a, b...) })
+		for i, v := range got {
+			if v != i {
+				t.Fatalf("round %d: position %d holds %d", round, i, v)
+			}
+		}
+	}
+}
+
+func TestFoldIntoWarmAllocs(t *testing.T) {
+	// A warm call with map accumulators must not allocate for accumulator
+	// state: buckets persist through clear().
+	n := 50_000
+	accs := make([]map[int]int64, parallel.Workers())
+	for i := range accs {
+		accs[i] = map[int]int64{}
+	}
+	run := func() {
+		for _, m := range accs {
+			clear(m)
+		}
+		parallel.FoldInto(accs, n,
+			func(acc map[int]int64, i int) map[int]int64 { acc[i%512]++; return acc },
+			func(a, b map[int]int64) map[int]int64 {
+				for k, v := range b {
+					a[k] += v
+				}
+				return a
+			})
+	}
+	run() // reach high-water
+	allocs := testing.AllocsPerRun(3, run)
+	// Goroutine machinery only; the maps themselves must be silent.
+	if allocs > 64 {
+		t.Fatalf("warm FoldInto allocated %.0f objects (want goroutine machinery only)", allocs)
+	}
+}

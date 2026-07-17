@@ -133,6 +133,56 @@ func Fold[T any](n int, identity func() T, fold func(acc T, i int) T, reduce fun
 	return out
 }
 
+// FoldInto is Fold with caller-owned worker accumulators: accs supplies
+// one pre-seeded accumulator per worker (len(accs) caps the parallelism,
+// further capped by n), each worker folds its contiguous in-order index
+// range into its slot, and reduce merges in ascending worker order --
+// the same in-order contract as Fold. The returned value aliases accs[0]
+// for reference-typed T, and workers write accs[w] = fold(...), so the
+// caller must reset EVERY accumulator before the next call. Reuse across
+// calls is the point: a map keeps its buckets through clear(), a slab
+// keeps its backing, so a warm call allocates nothing for accumulator
+// state.
+func FoldInto[T any](accs []T, n int, fold func(acc T, i int) T, reduce func(a, b T) T) T {
+	if n <= 0 || len(accs) == 0 {
+		var zero T
+		if len(accs) > 0 {
+			return accs[0]
+		}
+		return zero
+	}
+	workers := min(n, len(accs))
+	if workers <= 1 {
+		acc := accs[0]
+		for i := 0; i < n; i++ {
+			acc = fold(acc, i)
+		}
+		accs[0] = acc
+		return acc
+	}
+	size := (n + workers - 1) / workers
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := range workers {
+		lo, hi := w*size, min((w+1)*size, n)
+		go func() {
+			defer wg.Done()
+			acc := accs[w]
+			for i := lo; i < hi; i++ {
+				acc = fold(acc, i)
+			}
+			accs[w] = acc
+		}()
+	}
+	wg.Wait()
+	out := accs[0]
+	for _, acc := range accs[1:workers] {
+		out = reduce(out, acc)
+	}
+	accs[0] = out
+	return out
+}
+
 // Join runs the given closures concurrently and blocks until all complete --
 // the finalize-style N-way join.
 func Join(fns ...func()) {

@@ -26,7 +26,7 @@ func init() {
 	registerNativeV("BI", "Q8", simpleKernelV(biQ8))
 	registerNativeV("BI", "Q9", simpleKernelV(biQ9))
 	registerNativeV("BI", "Q11", simpleKernelV(biQ11))
-	registerNativeV("BI", "Q12", simpleKernelV(biQ12))
+	registerNativeV("BI", "Q12", biQ12)
 }
 
 // biQ1 -- posting summary. Group messages before the cutoff (with
@@ -632,8 +632,11 @@ func biQ11(g *chickpeas.Snapshot) ([][]value.Value, error) {
 // biQ12 -- message-count histogram (len<20, after 2010-07-22, root
 // language ar/hu). Persons histogrammed by qualifying-message count
 // (zero bucket included); [messageCount, personCount], personCount desc
-// / messageCount desc.
-func biQ12(g *chickpeas.Snapshot) ([][]value.Value, error) {
+// / messageCount desc. Prepare-form kernel: the column handles, label id
+// slices, and the FoldInto worker accumulators live in the untimed
+// prepare and are cleared per run, so a warm run's fold allocates
+// nothing for accumulator state (borrowed-accumulator pattern).
+func biQ12(g *chickpeas.Snapshot) (func() ([][]value.Value, error), error) {
 	minDay := dayFromCivil(2010, 7, 22)
 	const lenThr = 20
 	dayCol, err := nodeI64Col(g, "day")
@@ -670,67 +673,79 @@ func biQ12(g *chickpeas.Snapshot) ([][]value.Value, error) {
 		}
 		return roots[n]
 	}
-
-	counts := map[chickpeas.NodeID]int64{}
+	var labelIDs [][]chickpeas.NodeID
 	for _, label := range []string{"Post", "Comment"} {
-		set, ok := g.NodesWithLabel(label)
-		if !ok {
-			continue
-		}
-		ids := set.ToSlice()
-		part := parallel.Fold(len(ids),
-			func() map[chickpeas.NodeID]int64 { return map[chickpeas.NodeID]int64{} },
-			func(acc map[chickpeas.NodeID]int64, i int) map[chickpeas.NodeID]int64 {
-				msg := ids[i]
-				if i64At(dayCol, msg) <= minDay {
-					return acc
-				}
-				if _, present := contentStr.ID(msg); !present {
-					return acc
-				}
-				if i64At(lenCol, msg) >= lenThr {
-					return acc
-				}
-				lid, ok := langStr.ID(rootOf(msg))
-				if !ok || !langIDs[lid] {
-					return acc
-				}
-				if creator, ok := creatorOf(g, msg); ok {
-					acc[creator]++
-				}
-				return acc
-			},
-			func(a, b map[chickpeas.NodeID]int64) map[chickpeas.NodeID]int64 {
-				for k, v := range b {
-					a[k] += v
-				}
-				return a
-			})
-		for k, v := range part {
-			counts[k] += v
+		if set, ok := g.NodesWithLabel(label); ok {
+			labelIDs = append(labelIDs, set.ToSlice())
 		}
 	}
 	totalPersons := int64(0)
 	if ps, ok := g.NodesWithLabel("Person"); ok {
 		totalPersons = int64(ps.Len())
 	}
+	accs := make([]map[chickpeas.NodeID]int64, parallel.Workers())
+	for i := range accs {
+		accs[i] = map[chickpeas.NodeID]int64{}
+	}
+	counts := map[chickpeas.NodeID]int64{}
 	hist := map[int64]int64{}
-	for _, c := range counts {
-		hist[c]++
-	}
-	hist[0] = totalPersons - int64(len(counts))
-	rows := make([][]value.Value, 0, len(hist))
-	for mc, pc := range hist {
-		rows = append(rows, []value.Value{value.Int(mc), value.Int(pc)})
-	}
-	return sortTruncate(rows, 0, func(a, b []value.Value) bool {
-		a1, _ := a[1].AsInt()
-		b1, _ := b[1].AsInt()
-		a0, _ := a[0].AsInt()
-		b0, _ := b[0].AsInt()
-		return cmpChain(
-			cmpI64Desc(a1, b1),
-			cmpI64Desc(a0, b0),
-		)
-	}), nil
+	return func() ([][]value.Value, error) {
+		clear(counts)
+		for _, ids := range labelIDs {
+			for _, m := range accs {
+				clear(m)
+			}
+			part := parallel.FoldInto(accs, len(ids),
+				func(acc map[chickpeas.NodeID]int64, i int) map[chickpeas.NodeID]int64 {
+					msg := ids[i]
+					if i64At(dayCol, msg) <= minDay {
+						return acc
+					}
+					if _, present := contentStr.ID(msg); !present {
+						return acc
+					}
+					if i64At(lenCol, msg) >= lenThr {
+						return acc
+					}
+					lid, ok := langStr.ID(rootOf(msg))
+					if !ok || !langIDs[lid] {
+						return acc
+					}
+					if creator, ok := creatorOf(g, msg); ok {
+						acc[creator]++
+					}
+					return acc
+				},
+				func(a, b map[chickpeas.NodeID]int64) map[chickpeas.NodeID]int64 {
+					for k, v := range b {
+						a[k] += v
+					}
+					return a
+				})
+			for k, v := range part {
+				counts[k] += v
+			}
+		}
+		clear(hist)
+		for _, c := range counts {
+			hist[c]++
+		}
+		hist[0] = totalPersons - int64(len(counts))
+		type hrow struct{ mc, pc int64 }
+		ranked := make([]hrow, 0, len(hist))
+		for mc, pc := range hist {
+			ranked = append(ranked, hrow{mc, pc})
+		}
+		sortByLess(ranked, func(a, b hrow) bool {
+			return cmpChain(cmpI64Desc(a.pc, b.pc), cmpI64Desc(a.mc, b.mc))
+		})
+		cells := make([]value.Value, len(ranked)*2)
+		rows := make([][]value.Value, len(ranked))
+		for i, r := range ranked {
+			cells[i*2] = value.Int(r.mc)
+			cells[i*2+1] = value.Int(r.pc)
+			rows[i] = cells[i*2 : i*2+2 : i*2+2]
+		}
+		return rows, nil
+	}, nil
 }
