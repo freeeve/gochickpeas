@@ -7,6 +7,7 @@ package parallel
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // Workers is the parallelism ceiling: GOMAXPROCS.
@@ -31,17 +32,21 @@ func chunkPlan(n int) (count, size int) {
 	return (n + size - 1) / size, size
 }
 
-// Chunks reports how many contiguous chunks For/ForWorker/Fold split [0, n)
-// into -- i.e. the exclusive upper bound of the worker index ForWorker hands
-// out. Kernels that keep per-worker scratch persistent across repeated passes
-// size their scratch slice by this so every worker index has a slot.
+// Chunks reports how many contiguous chunks For/ForWorker split [0, n)
+// into (the load-balancing granularity). NOTE: ForWorker worker indexes
+// are POOL worker ids bounded by Workers(), not by this -- size
+// per-worker scratch with Workers().
 func Chunks(n int) int {
 	count, _ := chunkPlan(n)
 	return count
 }
 
-// For runs body over [0, n) split into contiguous chunks on parallel
-// goroutines and blocks until all complete.
+// For runs body over [0, n) split into contiguous chunks, pulled from a
+// shared counter by a pool of at most Workers() goroutines. The 4x chunk
+// oversplit keeps dynamic load balancing (chunks are independent, so
+// pull order is free), while the goroutine count stays at the worker
+// count -- spawning one goroutine per chunk cost iterative algorithms
+// two allocations per chunk on every pass.
 func For(n int, body func(lo, hi int)) {
 	count, size := chunkPlan(n)
 	if count <= 1 {
@@ -50,23 +55,32 @@ func For(n int, body func(lo, hi int)) {
 		}
 		return
 	}
+	workers := min(count, max(Workers(), 1))
+	var next atomic.Int64
 	var wg sync.WaitGroup
-	wg.Add(count)
-	for k := range count {
-		lo, hi := k*size, min((k+1)*size, n)
+	wg.Add(workers)
+	for range workers {
 		go func() {
 			defer wg.Done()
-			body(lo, hi)
+			for {
+				k := int(next.Add(1)) - 1
+				if k >= count {
+					return
+				}
+				body(k*size, min((k+1)*size, n))
+			}
 		}()
 	}
 	wg.Wait()
 }
 
-// ForWorker is For with a worker identity: body additionally receives a
-// stable index in [0, Chunks(n)) so kernels can keep per-worker scratch (the
-// Go stand-in for thread-locals) in a pre-sized slice. Distinct chunks never
-// share an index within a call, and a given index is used at most once per
-// call, so scratch[worker] is safe to reuse across successive calls.
+// ForWorker is For with a worker identity: body additionally receives the
+// POOL WORKER's stable index in [0, min(Workers(), Chunks(n))) so kernels
+// can keep per-worker scratch (the Go stand-in for thread-locals) in a
+// pre-sized slice -- size it by Workers(). Within a call, one index is
+// owned by exactly one goroutine, which invokes body sequentially for
+// each chunk it pulls, so scratch[worker] is safe to reuse both across a
+// call's chunks and across successive calls.
 func ForWorker(n int, body func(worker, lo, hi int)) {
 	count, size := chunkPlan(n)
 	if count <= 1 {
@@ -75,13 +89,20 @@ func ForWorker(n int, body func(worker, lo, hi int)) {
 		}
 		return
 	}
+	workers := min(count, max(Workers(), 1))
+	var next atomic.Int64
 	var wg sync.WaitGroup
-	wg.Add(count)
-	for k := range count {
-		worker, lo, hi := k, k*size, min((k+1)*size, n)
+	wg.Add(workers)
+	for w := range workers {
 		go func() {
 			defer wg.Done()
-			body(worker, lo, hi)
+			for {
+				k := int(next.Add(1)) - 1
+				if k >= count {
+					return
+				}
+				body(w, k*size, min((k+1)*size, n))
+			}
 		}()
 	}
 	wg.Wait()

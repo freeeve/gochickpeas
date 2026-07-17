@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -121,7 +123,13 @@ func run() error {
 	profilesOut := flag.String("profiles-out", "bench-out/profiles_gochickpeas.jsonl", "append-only alloc-profile JSONL output")
 	runs := flag.Int("runs", 3, "timed runs per validated algorithm (median emitted)")
 	verifyOnly := flag.Bool("verify-only", false, "validate only; no timings, no emission")
+	memProfile := flag.String("memprofile", "", "write an allocs profile at exit (alloc-site attribution)")
 	flag.Parse()
+	if *memProfile != "" {
+		// Object-count attribution needs every allocation sampled, not the
+		// 512KB-spaced default; set before any kernel allocates.
+		runtime.MemProfileRate = 1
+	}
 	if *data == "" {
 		return fmt.Errorf("no data dir: pass -data or set GOCHICKPEAS_GA_DATA")
 	}
@@ -240,6 +248,16 @@ func run() error {
 		}
 	}
 	fmt.Printf("\n%d timing+profile pairs, %d source records emitted at %s\n", emitted, codeEmitted, stamp.Commit)
+	if *memProfile != "" {
+		f, err := os.Create(*memProfile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
+			return err
+		}
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d algorithms failed validation", failed)
 	}

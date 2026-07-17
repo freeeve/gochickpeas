@@ -191,7 +191,7 @@ func GACDLPSeeded(g *chickpeas.Snapshot, directed bool, iterations int, init []u
 	// iteration -- that per-pass regrowth dominated CDLP's allocations.
 	// ForWorker's stable index keys the scratch, and a given index is used at
 	// most once per pass (passes run sequentially), so the reuse is race-free.
-	scratch := make([][]chickpeas.NodeID, parallel.Chunks(n))
+	scratch := make([][]chickpeas.NodeID, parallel.Workers())
 	all := chickpeas.MatchAll()
 	for range iterations {
 		parallel.ForWorker(n, func(worker, lo, hi int) {

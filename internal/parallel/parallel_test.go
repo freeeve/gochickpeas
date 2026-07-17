@@ -78,9 +78,15 @@ func TestFoldReducesInChunkOrder(t *testing.T) {
 // equal the exclusive upper bound of the worker index ForWorker hands out,
 // so scratch[worker] is always in range. An off-by-one here would panic a
 // pooling kernel (e.g. CDLP) with an index-out-of-range on the last chunk.
-func TestChunksMatchesForWorkerIndexRange(t *testing.T) {
+func TestForWorkerPoolContract(t *testing.T) {
+	// Worker indexes are pool-worker ids bounded by min(Workers, Chunks),
+	// and the chunks cover [0, n) exactly once.
 	for _, n := range []int{0, 1, 2, 7, 63, 100, 13_003, 100_000, 832_247} {
-		want := parallel.Chunks(n)
+		bound := parallel.Workers()
+		if c := parallel.Chunks(n); c < bound {
+			bound = c
+		}
+		covered := make([]int32, n)
 		maxWorker := -1
 		var mu sync.Mutex
 		parallel.ForWorker(n, func(worker, lo, hi int) {
@@ -89,13 +95,23 @@ func TestChunksMatchesForWorkerIndexRange(t *testing.T) {
 				maxWorker = worker
 			}
 			mu.Unlock()
+			for i := lo; i < hi; i++ {
+				atomic.AddInt32(&covered[i], 1)
+			}
 		})
-		got := maxWorker + 1
 		if n == 0 {
-			got = 0 // body never runs; Chunks(0) is 0
+			if maxWorker != -1 {
+				t.Fatalf("n=0: body ran")
+			}
+			continue
 		}
-		if got != want {
-			t.Fatalf("n=%d: Chunks=%d but ForWorker used indices [0,%d)", n, want, got)
+		if maxWorker >= bound {
+			t.Fatalf("n=%d: worker index %d >= bound %d", n, maxWorker, bound)
+		}
+		for i, c := range covered {
+			if c != 1 {
+				t.Fatalf("n=%d: index %d covered %d times", n, i, c)
+			}
 		}
 	}
 }
