@@ -38,6 +38,18 @@ gql MATCH, 89/89 native; the manifest grows as the ldbc session authors
 queries) -- the gate is what proves a fast path never diverges from the
 general path.
 
+## Allocation work: consult and extend the strategy catalogue
+
+`docs/zero_alloc_target.md` is the running catalogue of generalized Go
+allocation-reduction strategies (flat probe tables, hoist+reset scratch,
+per-worker accumulators, batch seams over iterator closures, typed rows,
+constant memoization, ...), each with the repo commit that proved it.
+Before an allocation pass, read it; when a NEW technique lands (or an
+existing one is refined by a surprising measurement), add or update the
+entry with the proving commit. The measurement discipline at its top
+(MemProfileRate=1 profile first, warm-run counts, stepwise A/B,
+result-identity gate) is mandatory for any alloc change.
+
 ## Share insights with rustychickpeas when applicable
 
 When an optimization or technique lands here that plausibly ports to the
