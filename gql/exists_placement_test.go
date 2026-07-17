@@ -65,10 +65,12 @@ func q18Fixture(t *testing.T) *chickpeas.Snapshot {
 // row REACHING THE LAST LEVEL: 20 evals, the post-shrink row count.
 // 40 would mean it ran at the pair's binding level.
 //
-// Case 2 -- a two-hop NOT EXISTS is memoized and correlates on the same
-// pair, so it pushes to the pair's binding level -- where it would walk
-// once per distinct pre-semijoin pair (22). The walk-aware slide moves it
-// past the shrinking rebind: 2 walks, one per surviving distinct pair.
+// Case 2 -- a two-hop NOT EXISTS on a bound pair decorrelates: the inner
+// pattern is enumerated ONCE per distinct anchor as a grouped side table
+// and every row answers with a map read, so the per-row walk count is
+// ZERO (before decorrelation the memo bounded it at one walk per
+// surviving distinct pair; a nonzero count now means decor stopped
+// firing and the memo path resumed).
 func TestExistsConjunctPlacement(t *testing.T) {
 	g := q18Fixture(t)
 	run := func(q string) int {
@@ -91,7 +93,7 @@ func TestExistsConjunctPlacement(t *testing.T) {
 	if w := run(base + "NOT EXISTS { (p1)-[:KNOWS]-(p2) } RETURN p1.name AS n1, p2.name AS n2"); w != 20 {
 		t.Fatalf("cheap-probe NOT EXISTS evaluated %d times, want 20 (once per post-shrink row; 40 means pre-semijoin placement)", w)
 	}
-	if w := run(base + "NOT EXISTS { (p1)-[:FRIEND]->(:W)-[:FRIEND]->(p2) } RETURN p1.name AS n1, p2.name AS n2"); w != 2 {
-		t.Fatalf("memoized 2-hop NOT EXISTS walked %d times, want 2 (one per surviving distinct pair; 22 means it ran pre-semijoin)", w)
+	if w := run(base + "NOT EXISTS { (p1)-[:FRIEND]->(:W)-[:FRIEND]->(p2) } RETURN p1.name AS n1, p2.name AS n2"); w != 0 {
+		t.Fatalf("decorrelated 2-hop NOT EXISTS walked %d times, want 0 (the anchor side table answers every row)", w)
 	}
 }

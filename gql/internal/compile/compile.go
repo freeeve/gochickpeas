@@ -252,10 +252,19 @@ func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot
 		// saves: the memo map for a large outer row set dwarfs every
 		// other execution allocation while each hit barely beats the
 		// probe it caches.
-		if ok && cheapExistsProbe(n.Pattern, n.Where, slots) {
+		cheap := cheapExistsProbe(n.Pattern, n.Where, slots)
+		if ok && cheap {
 			ok = false
 		}
-		return &cSubquery{pattern: n.Pattern, where: n.Where, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
+		cs := &cSubquery{pattern: n.Pattern, where: n.Where, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}
+		// EXISTS decorrelates exactly like COUNT (the table answers >0):
+		// an existential filter over a (bound, bound) multi-hop pattern
+		// otherwise walks the inner pattern once per candidate row. The
+		// near-constant bound-pair probe keeps its direct path.
+		if !cheap {
+			setupDecor(cs, n.Pattern, n.Where, slots)
+		}
+		return cs
 	case *ast.CountSub:
 		ms, ok := correlatedSlots(n.Pattern, n.Where, slots)
 		cs := &cSubquery{pattern: n.Pattern, where: n.Where, isCount: true, memoSlots: ms, hasMemo: ok, memo: map[string]int{}}

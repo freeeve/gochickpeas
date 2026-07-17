@@ -102,7 +102,10 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 	case *cSubquery:
 		if n.decorOK && !n.decorOff {
 			if c, ok := decorCount(ctx, n, row, slots); ok {
-				return value.Int(int64(c))
+				if n.isCount {
+					return value.Int(int64(c))
+				}
+				return value.Bool(c > 0)
 			}
 		}
 		var count int
