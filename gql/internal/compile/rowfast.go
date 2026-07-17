@@ -118,6 +118,21 @@ func (t *i64Term) read(row []value.Value) (int64, uint8) {
 // deriveRowFast specializes a compiled tree whose root is a comparison
 // over two supported terms; nil keeps the tree evaluation.
 func deriveRowFast(c cnode, g *chickpeas.Snapshot) rowFast {
+	// A bare property read or slot reference -- the dominant projection-item
+	// shapes, evaluated once per output column per row -- skips the tree
+	// dispatch entirely: cevalProp/the slot read are self-contained, and the
+	// closure binds the node directly (ceval's cases do nothing more).
+	if p, ok := c.(*cProp); ok {
+		return func(_ *eval.Ctx, row []value.Value, _ map[string]int) value.Value {
+			return cevalProp(p, row)
+		}
+	}
+	if sn, ok := c.(*cSlot); ok {
+		s := sn.s
+		return func(_ *eval.Ctx, row []value.Value, _ map[string]int) value.Value {
+			return slotVal(row, s)
+		}
+	}
 	// A bare prop-vs-const comparison is already fused to cCmpPropConst; derive
 	// the monomorphic i64 compare from it so the common filter shape skips
 	// value.Compare's type switch too (rev marks the const on the left).
