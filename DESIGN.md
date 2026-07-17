@@ -1,4 +1,4 @@
-# gochickpeas — design
+# gochickpeas--design
 
 Go implementation of [RustyChickpeas](https://github.com/freeeve/rustychickpeas):
 a high-performance in-memory graph database. Reads and writes RCPG files

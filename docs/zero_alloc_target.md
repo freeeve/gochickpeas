@@ -1,7 +1,7 @@
 # Zero-alloc target: a catalog of Go allocation-reduction strategies
 
 General techniques for driving a Go hot path's allocations/op toward
-zero. Nothing here is specific to graph engines — each entry is a
+zero. Nothing here is specific to graph engines--each entry is a
 language-level pattern, stated generally, with this repo's proof case
 attached as a worked example (the campaign that produced this file took a
 benchmark battery from ~158k allocations to under 8k). Add new entries as
@@ -12,12 +12,12 @@ techniques land; cite the commit that proved the win.
 1. **Profile before theorizing.** Set `runtime.MemProfileRate = 1` and
    write an allocs profile; `go tool pprof -alloc_objects -list <func>`
    attributes to the line. Code-reading theories are wrong often enough
-   to be expensive — in one pass here, two theories were wrong and the
+   to be expensive--in one pass here, two theories were wrong and the
    first "fix" *regressed* allocations 35% (1b861e0's commit message
    records the stepwise correction).
 2. **Measure the steady state.** Count Mallocs over one *warm* run
    (`runtime.MemStats` delta) so one-time lazy initialization doesn't
-   masquerade as per-op cost. A raw profile window mixes cold and warm —
+   masquerade as per-op cost. A raw profile window mixes cold and warm --
    sanity-check attributions against the warm number.
 3. **A/B each step independently.** Allocation counts are deterministic
    even on a noisy machine (wall time is not). A two-part fix can hide a
@@ -31,7 +31,7 @@ techniques land; cite the commit that proved the win.
 ### 1. Built-in maps in hot loops
 
 `map[K]V` allocates a bucket array per doubling plus overflow buckets as
-it fills — and `m[string(b)] = v` on a `[]byte` scratch forces a fresh
+it fills--and `m[string(b)] = v` on a `[]byte` scratch forces a fresh
 immutable string per **insert** (the compiler elides the copy only for
 lookups). Cures, roughly in order of effort:
 
@@ -41,7 +41,7 @@ lookups). Cures, roughly in order of effort:
 - **Flat open-addressing tables** (this repo: `internal/flatset`): one
   backing slice, one allocation per doubling, no overflow buckets, no
   per-insert boxing. Byte keys intern into a shared arena probed by
-  (offset, length) — N distinct keys cost O(log N) allocations, not N
+  (offset, length)--N distinct keys cost O(log N) allocations, not N
   strings. Here: DISTINCT/GROUP BY structures fell 99%+ (6f40b16,
   0975879, ff0ba38, 5ec635f).
 - **Map-of-maps → packed pair keys**: `m[a][b]bool` allocates an inner
@@ -69,10 +69,10 @@ lookups). Cures, roughly in order of effort:
   `[1]T` field on the (single-owner, non-concurrent) struct and pass
   `buf[:]` (76f64a2).
 - **Per-node scratch on compiled trees**: a tree evaluated sequentially
-  and never shared across goroutines can carry its own argument buffer —
+  and never shared across goroutines can carry its own argument buffer --
   but only after auditing that no callee *retains* the slice (20fb310).
   When the structure IS shared (cached plans, shared ASTs), put the
-  scratch on the per-execution context instead — as a stack of frames if
+  scratch on the per-execution context instead--as a stack of frames if
   calls nest (387cd8a).
 - **`sync.Pool` for state reached from many call paths**: a
   point-to-point search rebuilt two maps and two heaps per call; pooling
@@ -96,11 +96,11 @@ lookups). Cures, roughly in order of effort:
 
 ### 4. Iterator closures (`iter.Seq`) on hot seams
 
-A returned iterator closure allocates per call — fine at API granularity,
+A returned iterator closure allocates per call--fine at API granularity,
 death by a thousand cuts per-element inside a search loop. Provide (and
 prefer) **append-into-caller-buffer batch variants** for the hot seams
 (4875a0a, 8790c13). Caveat: a batch pays the full sweep where an
-early-exit iterator pays half on average — if the loop usually breaks
+early-exit iterator pays half on average--if the loop usually breaks
 early on a large input, measure both (the 1b861e0 stepwise record shows
 batching alone regressing until the chunk granularity was fixed with it).
 
@@ -113,12 +113,12 @@ batching alone regressing until the chunk granularity was fixed with it).
 - **Flat backing for row-of-slices output**: one `n*width` backing with
   full-capacity subslices (`cells[i*w : i*w+w : i*w+w]`) turns n row
   allocations into two.
-- **Presize appends** when the length (or an upper bound) is known —
+- **Presize appends** when the length (or an upper bound) is known --
   append growth is O(log n) reallocations you don't need to pay.
 
 ### 6. Recomputing constants per element
 
-- **Memoize deterministic constant-argument calls per execution** —
+- **Memoize deterministic constant-argument calls per execution** --
   keyed on the call site, stored on per-execution state (never on shared
   structures). A constant timestamp parse ran once per visited row until
   memoized: −97% (3039f6b).
@@ -135,7 +135,7 @@ construct once (the `nodeset.Of` fix inside 1b861e0: −63% on its caller).
 
 ## Anti-patterns and honest labels
 
-- **Don't move cost — label it.** Reusing scratch across calls is a real
+- **Don't move cost--label it.** Reusing scratch across calls is a real
   reduction; moving *computation* into an untimed setup phase changes
   what the number means. If a change relocates work, the commit must say
   so.
@@ -143,7 +143,7 @@ construct once (the `nodeset.Of` fix inside 1b861e0: −63% on its caller).
   campaign fell when re-challenged with a fresh profile (the
   "membership-probe floors" fell 85-99% the same day they were
   questioned). Declare a floor only alongside the profile line proving
-  the residual is structural — and expect to be wrong.
+  the residual is structural--and expect to be wrong.
 - **No workload recognizers.** A change that helps only because the code
   knows *which* input is running is overfitting. The test: would an
   unseen input of the same shape benefit?
