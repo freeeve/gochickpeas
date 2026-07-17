@@ -38,9 +38,9 @@ gql MATCH, 89/89 native; the manifest grows as the ldbc session authors
 queries) -- the gate is what proves a fast path never diverges from the
 general path.
 
-## Allocation work: consult and extend the strategy catalogue
+## Allocation work: consult and extend the strategy catalog
 
-`docs/zero_alloc_target.md` is the running catalogue of generalized Go
+`docs/zero_alloc_target.md` is the running catalog of generalized Go
 allocation-reduction strategies (flat probe tables, hoist+reset scratch,
 per-worker accumulators, batch seams over iterator closures, typed rows,
 constant memoization, ...), each with the repo commit that proved it.

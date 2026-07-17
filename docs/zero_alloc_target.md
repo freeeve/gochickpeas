@@ -1,4 +1,4 @@
-# Zero-alloc target: a catalogue of Go allocation-reduction strategies
+# Zero-alloc target: a catalog of Go allocation-reduction strategies
 
 General techniques for driving a Go hot path's allocations/op toward
 zero. Nothing here is specific to graph engines — each entry is a
