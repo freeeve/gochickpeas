@@ -142,3 +142,45 @@ ordering), not executor protocol.
 - **Two protocols to maintain**: bounded by the single-bridge rule and by
   the parity gate running every query through whichever path the gate
   assigns it -- the fast path can never silently diverge.
+
+## Phase-0 verdict (2026-07-17): FAIL-OUT for Q4 -- bandwidth-bound walk
+
+Built (research/columnar-spike): the walk-aggregate fusion (colwalk.go,
+418e40d) and the record-form typed sort (project.go, 1a865ff). Both are
+CORRECT and GENERAL -- parity 89/89 plain AND cached, plan goldens
+unchanged, differential tests (fused==general) across every key/filter/
+count/decline shape.
+
+The fused pass FIRES on Q4 (2,897,726 rows -> 1,069,404 groups, MATCH).
+An isolated macOS CPU profile suggested the seg-0 walk collapsed ~780ms
+-> ~180ms -- but the end-to-end interleaved A/B (fused vs general, three
+rounds, GQL_DISABLE_COLWALK toggle) shows NO clean win: the sign flips
+round to round (general faster, tie, fused faster), so the true effect
+is smaller than the ~15-20% within-round noise. Interleaving cancels
+common-mode load, so this is a robust go/no-go signal even though the
+box was too loaded to publish absolute numbers. Ratio ~1.0x -- deep in
+the pre-registered fail-out band (<1.5x), not the >=2.5x success band.
+
+Cause, as the design's Risks section anticipated: the columnar walk
+performs the SAME CSR neighbor reads as the row walk -- it removes
+interface dispatch, value.Value boxing, and arena copies, but on a
+walk that is memory-bandwidth-bound those costs were already hidden
+behind memory stalls, so removing them does not move the wall. The
+profile's apparent walk collapse is the documented macOS-Go-profile
+mislocation artifact (precedent: research/proj-slot-gather, and repo
+CLAUDE.md's measurement discipline). rcp-411 independently found the
+analogous terminal-aggregation shape bandwidth-bound.
+
+Per the fail-out plan: numbers recorded, branch preserved
+(research/columnar-spike), executor-protocol columnar STOPPED for this
+class. The remaining lever for the flow-bound class is representation
+work in CORE -- CSR layout, prefetch-friendly neighbor ordering,
+narrower id-column reads -- attacking the memory traffic itself, not
+the interpretation overhead around it. That is a distinct, separately-
+scoped direction (a 205 decision), not a continuation of this spike.
+
+Revisit condition for THIS branch: if a future change makes Q4's walk
+compute-bound rather than bandwidth-bound (e.g. a heavier per-hop
+predicate), the dispatch/boxing removal here would then pay -- re-run
+the same A/B on a genuinely quiet box or under the ldbc sweep (the
+timing measurement of record) at this branch's tip.
