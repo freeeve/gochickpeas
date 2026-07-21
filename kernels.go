@@ -7,7 +7,7 @@
 package chickpeas
 
 import (
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // RootsVia is a built forest-root array: index it by node id for the

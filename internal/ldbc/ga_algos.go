@@ -11,7 +11,7 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // gaFwd is the forward rel direction: outgoing for a directed graph,

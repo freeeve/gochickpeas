@@ -8,8 +8,8 @@ import (
 	"iter"
 	"slices"
 
-	"github.com/freeeve/gochickpeas/internal/parallel"
 	"github.com/freeeve/gochickpeas/nodeset"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // RelRef is one relationship incident to a queried node, as yielded by

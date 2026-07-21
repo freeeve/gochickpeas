@@ -10,12 +10,12 @@ package exec
 import (
 	"slices"
 
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
-	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // hjPair is one captured relationship-uniqueness pair of a payload row:

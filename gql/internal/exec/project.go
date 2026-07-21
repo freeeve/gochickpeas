@@ -11,11 +11,11 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
-	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // projSink is the non-aggregated terminal sink.

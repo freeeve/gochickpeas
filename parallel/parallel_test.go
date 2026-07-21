@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 func TestForCoversEveryIndexOnce(t *testing.T) {

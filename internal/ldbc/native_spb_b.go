@@ -10,8 +10,8 @@ package ldbc
 
 import (
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/value"
-	"github.com/freeeve/gochickpeas/internal/flatset"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 

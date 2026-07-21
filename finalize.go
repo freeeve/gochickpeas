@@ -15,8 +15,8 @@ import (
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/freeeve/gochickpeas/internal/bitset"
-	"github.com/freeeve/gochickpeas/internal/parallel"
 	"github.com/freeeve/gochickpeas/nodeset"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // rankSelectMinLen is the minimum column span before a moderately-sparse

@@ -12,7 +12,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 func fwd(directed bool) Direction {

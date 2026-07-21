@@ -10,8 +10,8 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
-	"github.com/freeeve/gochickpeas/internal/flatset"
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/flatset"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // weightMap is a flat undirected-pair -> float64 accumulator: a probe

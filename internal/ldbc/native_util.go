@@ -13,7 +13,7 @@ import (
 	"slices"
 
 	chickpeas "github.com/freeeve/gochickpeas"
-	"github.com/freeeve/gochickpeas/internal/flatset"
+	"github.com/freeeve/gochickpeas/flatset"
 )
 
 // inf is the sentinel weight for "no usable edge" in the derived-weight

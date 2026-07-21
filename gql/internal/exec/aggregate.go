@@ -9,11 +9,11 @@ package exec
 import (
 	"math"
 
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
-	"github.com/freeeve/gochickpeas/internal/flatset"
 )
 
 // aggState is one aggregate accumulator, allocated once per group per

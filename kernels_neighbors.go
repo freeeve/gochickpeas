@@ -9,8 +9,8 @@ import (
 	"sync"
 
 	"github.com/RoaringBitmap/roaring/v2"
-	"github.com/freeeve/gochickpeas/internal/parallel"
 	"github.com/freeeve/gochickpeas/nodeset"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // NeighborCounts is the histogram of neighbor nodes reached from sources

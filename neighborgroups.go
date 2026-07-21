@@ -10,7 +10,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // NeighborGroups is built by Snapshot.NeighborGroups; chain Project, then

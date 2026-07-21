@@ -1,7 +1,7 @@
 package nodeset
 
 import (
-	"github.com/freeeve/gochickpeas/internal/parallel"
+	"github.com/freeeve/gochickpeas/parallel"
 )
 
 // ParFold folds the set's ids in parallel, then merges the per-chunk
