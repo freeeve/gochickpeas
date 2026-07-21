@@ -5,6 +5,7 @@
 package ldbc
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -64,7 +65,12 @@ type Stamp struct {
 }
 
 // HeadStamp reads the current repo HEAD (7-hex commit, ISO date and
-// datetime, subject) for record stamping.
+// datetime, subject) for record stamping. A dirty working tree marks the
+// commit `<sha>-dirty`: an emitted artifact then carries source that does
+// not equal the committed SHA, and the mark keeps it from being mistaken
+// for -- or deduped against -- the clean commit's canonical run. This is
+// the local-emit half of the stale-source trap (task 209); the remote
+// sweep pins its SHA on a clean checkout, so it never marks dirty.
 func HeadStamp() (Stamp, error) {
 	out, err := exec.Command("git", "log", "-1", "--format=%H%x00%cs%x00%cI%x00%s").Output()
 	if err != nil {
@@ -74,7 +80,27 @@ func HeadStamp() (Stamp, error) {
 	if len(parts) != 4 {
 		return Stamp{}, fmt.Errorf("git log returned %d fields, want 4", len(parts))
 	}
-	return Stamp{Commit: parts[0][:7], Date: parts[1], DateTime: parts[2], Subject: parts[3]}, nil
+	return newStamp(parts[0][:7], parts[1], parts[2], parts[3], treeDirty()), nil
+}
+
+// newStamp formats a stamp, appending the dirty marker to the commit when
+// the working tree carries uncommitted changes. Pure (no git) so the
+// marking contract is unit-testable.
+func newStamp(commit, date, dateTime, subject string, dirty bool) Stamp {
+	if dirty {
+		commit += "-dirty"
+	}
+	return Stamp{Commit: commit, Date: date, DateTime: dateTime, Subject: subject}
+}
+
+// treeDirty reports whether the working tree has staged, unstaged, or
+// untracked changes -- any of which can alter what a build actually runs
+// (Go compiles untracked .go files too), so all count as source drift
+// from HEAD. A git failure reports not-dirty: the stamp then degrades to
+// the plain commit rather than blocking a run on a git hiccup.
+func treeDirty() bool {
+	out, err := exec.Command("git", "status", "--porcelain").Output()
+	return err == nil && len(bytes.TrimSpace(out)) > 0
 }
 
 // Percentile linearly interpolates over an ascending-sorted sample.
