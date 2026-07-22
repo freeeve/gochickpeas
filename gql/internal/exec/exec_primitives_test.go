@@ -40,11 +40,12 @@ func TestAcc128(t *testing.T) {
 	if v, ok := neg.int64(); v != -5 || !ok {
 		t.Fatalf("neg int64 = %d,%v", v, ok)
 	}
-	// NOTE: float64() is intentionally not asserted for small negatives here
-	// -- its hi*2^64 + lo form catastrophically cancels a small negative
-	// total to ~0 (see the acc128-float64-negative finding). float64() is
-	// exercised below only on totals where it is accurate (non-negative and
-	// genuinely-wide).
+	// A small negative total converts exactly (regression for task 214: the
+	// unguarded hi*2^64 + lo form cancelled this to 0, silently dropping the
+	// int subtotal of a mixed int/float SUM).
+	if f := neg.float64(); f != -5 {
+		t.Fatalf("neg float64 = %v, want -5", f)
+	}
 
 	// Two MaxInt64 adds overflow int64 but stay exact in the accumulator;
 	// float64 reads the wide total (~2^64).
