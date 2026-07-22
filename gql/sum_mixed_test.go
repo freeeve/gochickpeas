@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 // TestMixedIntFloatSumNegative is the end-to-end regression for task 214: a
@@ -27,6 +28,12 @@ func TestMixedIntFloatSumNegative(t *testing.T) {
 			t.Fatalf("%s: no row", src)
 		}
 		v, _ := r.GetAt(0)
+		// A mixed int/float SUM is always a Float, even for an integer-valued
+		// total -- returning an Int would be a cross-engine result-type
+		// divergence with rustychickpeas (task 216).
+		if v.Kind() != value.KindFloat {
+			t.Fatalf("%s kind = %v, want Float", src, v.Kind())
+		}
 		got, ok := v.AsFloat()
 		if !ok || got != want {
 			t.Fatalf("%s = %v (%+v), want %v", src, got, v, want)
@@ -56,6 +63,10 @@ func TestMixedIntFloatSumNegative(t *testing.T) {
 	// A positive int subtotal was already correct; lock it against a
 	// regression of the fix.
 	floatCase("FOR x IN [5, 2.5] RETURN sum(x) AS s", 7.5)
-	// Pure-int SUM stays on the exact int64 path.
+	// An integer-VALUED mixed total still returns Float, not Int (the
+	// cross-engine result-type check from task 216); floatCase asserts the
+	// Float kind.
+	floatCase("FOR x IN [-5, 2.5, 2.5] RETURN sum(x) AS s", 0.0)
+	// Pure-int SUM stays on the exact int64 path (and Int type).
 	intCase("FOR x IN [-5, -3] RETURN sum(x) AS s", -8)
 }
