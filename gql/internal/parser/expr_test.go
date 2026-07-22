@@ -397,3 +397,39 @@ func TestReservedWordsRejectedAsIdents(t *testing.T) {
 	mustErr(t, "MATCH (a) RETURN a AS order", "reserved word")
 	mustErr(t, "MATCH (a)-[filter:R]->(b) RETURN a", "reserved word")
 }
+
+// TestNotPrecedence locks boolean NOT at its own precedence level, looser
+// than comparisons/predicates but tighter than AND (task 222, a cross-engine
+// check). It is invisible to a "does it parse?" check -- only an AST-shape
+// assertion catches NOT binding to the wrong operand.
+func TestNotPrecedence(t *testing.T) {
+	// unaryNot asserts src's WHERE is NOT(inner) and returns inner.
+	unaryNot := func(src string) ast.Expr {
+		w := whereOf(t, src)
+		u, ok := w.(*ast.Unary)
+		if !ok || u.Op != ast.Not {
+			t.Fatalf("%s: top = %T, want Unary(NOT)", src, w)
+		}
+		return u.Expr
+	}
+	// NOT a = b -> NOT(a = b), not (NOT a) = b.
+	if b, ok := unaryNot("MATCH (n:N) WHERE NOT n.a = n.b RETURN n").(*ast.Binary); !ok || b.Op != ast.OpEq {
+		t.Fatal("NOT a = b must parse as NOT(a = b)")
+	}
+	// NOT a > 5 -> NOT(a > 5), never NOT applied to a number.
+	if b, ok := unaryNot("MATCH (n:N) WHERE NOT n.a > 5 RETURN n").(*ast.Binary); !ok || b.Op != ast.OpGt {
+		t.Fatal("NOT a > 5 must parse as NOT(a > 5)")
+	}
+	// NOT x IS NULL -> NOT(x IS NULL), the opposite of (NOT x) IS NULL.
+	if _, ok := unaryNot("MATCH (n:N) WHERE NOT n.a IS NULL RETURN n").(*ast.IsNull); !ok {
+		t.Fatal("NOT x IS NULL must parse as NOT(x IS NULL)")
+	}
+	// NOT a AND b -> AND(NOT(a), b): NOT still binds tighter than AND.
+	top, ok := whereOf(t, "MATCH (n:N) WHERE NOT n.a AND n.b RETURN n").(*ast.Binary)
+	if !ok || top.Op != ast.OpAnd {
+		t.Fatalf("NOT a AND b top = %T, want Binary(AND)", whereOf(t, "MATCH (n:N) WHERE NOT n.a AND n.b RETURN n"))
+	}
+	if u, ok := top.LHS.(*ast.Unary); !ok || u.Op != ast.Not {
+		t.Fatalf("NOT a AND b LHS = %T, want Unary(NOT)", top.LHS)
+	}
+}
