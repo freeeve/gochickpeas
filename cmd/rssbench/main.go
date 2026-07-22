@@ -74,16 +74,27 @@ func main() {
 		f.Close()
 	}
 
+	// The real footprint the runtime knows: everything it holds from the OS
+	// minus what it has released. On macOS `ps rss` overcounts because
+	// FreeOSMemory's MADV_FREE pages stay resident until reclaimed under
+	// pressure -- Sys-HeapReleased excludes them, matching what Linux RSS
+	// (and macOS phys_footprint) report. Portable, no OS tools needed.
+	realFootprint := int64(m.Sys) - int64(m.HeapReleased)
+	physFootprint := processPhysFootprint() // macOS kernel metric; 0 elsewhere
+
 	mb := func(b int64) float64 { return float64(b) / (1 << 20) }
 	umb := func(b uint64) float64 { return float64(b) / (1 << 20) }
 	fmt.Printf("graph:            %s\n", *graph)
 	fmt.Printf("on-disk:          %.1f MB\n", mb(onDisk))
+	fmt.Printf("real footprint:   %.1f MB  (%.2fx on-disk; Sys - HeapReleased, macOS-accurate)\n",
+		mb(realFootprint), float64(realFootprint)/float64(onDisk))
+	if physFootprint > 0 {
+		fmt.Printf("phys_footprint:   %.1f MB  (%.2fx on-disk; macOS kernel metric via vmmap)\n",
+			mb(physFootprint), float64(physFootprint)/float64(onDisk))
+	}
 	if rssBefore > 0 && rssAfter > 0 {
-		fmt.Printf("RSS (loaded):     %.1f MB  (+%.1f MB over the empty process's %.1f MB)\n",
-			mb(rssAfter), mb(rssAfter-rssBefore), mb(rssBefore))
-		fmt.Printf("overhead:         %.2fx on-disk (RSS / file size)\n", float64(rssAfter)/float64(onDisk))
-	} else {
-		fmt.Printf("RSS:              unavailable (ps failed)\n")
+		fmt.Printf("ps rss:           %.1f MB  (%.2fx; INFLATED on macOS -- counts MADV_FREE'd pages)\n",
+			mb(rssAfter), float64(rssAfter)/float64(onDisk))
 	}
 	fmt.Printf("go HeapInuse:     %.1f MB\n", umb(m.HeapInuse))
 	fmt.Printf("go HeapSys:       %.1f MB  (HeapIdle %.1f MB, released %.1f MB)\n",
@@ -106,4 +117,51 @@ func processRSS() int64 {
 		return 0
 	}
 	return kb * 1024
+}
+
+// processPhysFootprint returns the macOS kernel's phys_footprint for this
+// process in bytes, parsed from `vmmap --summary`. This is the metric the
+// kernel uses for memory pressure/jetsam and Activity Monitor's "Memory"
+// column: it excludes MADV_FREE'd (reclaimable) pages that ps rss still
+// counts, so it is the honest resident number on macOS. Returns 0 on
+// non-Darwin or when vmmap is unavailable.
+func processPhysFootprint() int64 {
+	if runtime.GOOS != "darwin" {
+		return 0
+	}
+	out, err := exec.Command("vmmap", "--summary", strconv.Itoa(os.Getpid())).Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "Physical footprint:") {
+			continue
+		}
+		field := strings.TrimSpace(line[strings.IndexByte(line, ':')+1:])
+		return parseHumanBytes(field)
+	}
+	return 0
+}
+
+// parseHumanBytes converts a vmmap size token like "742.3M", "1.9G", or
+// "512K" to bytes, or 0 if it cannot be parsed.
+func parseHumanBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	mult := float64(1)
+	switch s[len(s)-1] {
+	case 'K':
+		mult, s = 1<<10, s[:len(s)-1]
+	case 'M':
+		mult, s = 1<<20, s[:len(s)-1]
+	case 'G':
+		mult, s = 1<<30, s[:len(s)-1]
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return int64(v * mult)
 }
