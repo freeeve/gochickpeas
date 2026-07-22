@@ -54,6 +54,27 @@ func (posKeyEval) Eval(_ *eval.Ctx, row []value.Value, _ map[string]int) value.V
 	return value.Int(int64(pos))
 }
 
+// posEvenEval is a hop-filter RowEval that accepts an even rel position.
+type posEvenEval struct{}
+
+func (posEvenEval) Eval(_ *eval.Ctx, row []value.Value, _ map[string]int) value.Value {
+	pos, _ := row[0].AsRel()
+	return value.Bool(pos%2 == 0)
+}
+
+// TestHopFilterKeep covers the per-hop predicate: keep evaluates the filter
+// against the candidate relationship and returns its truthiness.
+func TestHopFilterKeep(t *testing.T) {
+	var ctx *eval.Ctx // posEvenEval ignores ctx
+	h := &hopFilter{eval: posEvenEval{}}
+	if !h.keep(ctx, 4) {
+		t.Fatal("an even rel position must pass the filter")
+	}
+	if h.keep(ctx, 3) {
+		t.Fatal("an odd rel position must fail the filter")
+	}
+}
+
 // TestHopCarryStep covers the stateful per-hop constraint: the first hop
 // always steps and seeds the state, an ascending gate admits a strictly
 // larger key and rejects a smaller one (leaving the prior state), and a
