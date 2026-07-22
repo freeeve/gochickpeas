@@ -10,6 +10,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -187,3 +189,26 @@ func TestColumnarAggOptionalMatchesGeneral(t *testing.T) {
 }
 
 var _ = value.Null
+
+// TestFlipCmp covers mirroring a comparison across swapped operands, with
+// symmetric operators left unchanged and the flip an involution.
+func TestFlipCmp(t *testing.T) {
+	for in, want := range map[ast.BinOp]ast.BinOp{
+		ast.OpLt:  ast.OpGt,
+		ast.OpGt:  ast.OpLt,
+		ast.OpLte: ast.OpGte,
+		ast.OpGte: ast.OpLte,
+		ast.OpEq:  ast.OpEq,  // symmetric: unchanged
+		ast.OpNeq: ast.OpNeq, // symmetric: unchanged
+	} {
+		if got := flipCmp(in); got != want {
+			t.Fatalf("flipCmp(%v) = %v, want %v", in, got, want)
+		}
+	}
+	// Flipping an ordering comparison twice is the identity.
+	for _, op := range []ast.BinOp{ast.OpLt, ast.OpGte, ast.OpGt, ast.OpLte} {
+		if flipCmp(flipCmp(op)) != op {
+			t.Fatalf("flipCmp not an involution at %v", op)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"slices"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -149,5 +150,42 @@ func TestCondFanout(t *testing.T) {
 	// No types to sum -> ok=false as well.
 	if _, ok := condFanout("Message", nil, graph.Outgoing, g); ok {
 		t.Fatal("no types must report ok=false")
+	}
+}
+
+// TestExprVars covers the read-variable collector: bare refs and property
+// bases, duplicates preserved.
+func TestExprVars(t *testing.T) {
+	e := &ast.Binary{Op: ast.OpEq, LHS: &ast.Prop{Var: "x", Key: "foo"}, RHS: &ast.Var{Name: "y"}}
+	got := exprVars(e)
+	if !slices.Contains(got, "x") || !slices.Contains(got, "y") {
+		t.Fatalf("exprVars = %v, want x and y", got)
+	}
+	// Duplicates are kept (callers dedup).
+	dup := &ast.Binary{Op: ast.OpEq, LHS: &ast.Var{Name: "x"}, RHS: &ast.Var{Name: "x"}}
+	if got := exprVars(dup); len(got) != 2 {
+		t.Fatalf("exprVars kept-duplicates = %v, want two", got)
+	}
+	if got := exprVars(&ast.Lit{Value: ast.IntLit(1)}); len(got) != 0 {
+		t.Fatalf("literal reads no vars: %v", got)
+	}
+}
+
+// TestPatternVars covers the pattern-variable lister: appearance order,
+// anonymous slots skipped.
+func TestPatternVars(t *testing.T) {
+	p := &ast.Pattern{
+		Start: ast.NodePat{Var: "a"},
+		Hops: []ast.PatternHop{
+			{Rel: ast.RelPat{Var: "r"}, Node: ast.NodePat{Var: "b"}},
+			{Rel: ast.RelPat{Var: ""}, Node: ast.NodePat{Var: "c"}}, // anon rel skipped
+		},
+	}
+	if got := patternVars(p); !slices.Equal(got, []string{"a", "r", "b", "c"}) {
+		t.Fatalf("patternVars = %v, want [a r b c]", got)
+	}
+	// A fully anonymous pattern lists nothing.
+	if got := patternVars(&ast.Pattern{Start: ast.NodePat{Var: ""}}); len(got) != 0 {
+		t.Fatalf("anonymous pattern vars = %v", got)
 	}
 }

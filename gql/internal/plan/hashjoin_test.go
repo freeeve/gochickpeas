@@ -3,6 +3,8 @@ package plan
 import (
 	"slices"
 	"testing"
+
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
 )
 
 // TestFreshBind covers the slot a BindOp newly binds: a scan binds its slot
@@ -53,4 +55,52 @@ func TestOpReads(t *testing.T) {
 
 	// out is appended to, not overwritten.
 	eq("appends", opReads(&BindOp{Kind: OpExpand, From: 4}, []int{0}), []int{0, 4})
+}
+
+// TestAndWith covers conjoining onto a possibly-nil base.
+func TestAndWith(t *testing.T) {
+	extra := &ast.Var{Name: "e"}
+	if got := andWith(nil, extra); got != ast.Expr(extra) {
+		t.Fatal("nil base should return extra unchanged")
+	}
+	base := &ast.Var{Name: "b"}
+	got, ok := andWith(base, extra).(*ast.Binary)
+	if !ok || got.Op != ast.OpAnd || got.LHS != ast.Expr(base) || got.RHS != ast.Expr(extra) {
+		t.Fatalf("andWith(base, extra) = %#v", got)
+	}
+}
+
+// TestAndJoin covers folding a conjunct list into a left-leaning AND tree.
+func TestAndJoin(t *testing.T) {
+	if andJoin(nil) != nil {
+		t.Fatal("empty conjuncts fold to nil")
+	}
+	a := &ast.Var{Name: "a"}
+	if got := andJoin([]ast.Expr{a}); got != ast.Expr(a) {
+		t.Fatal("single conjunct folds to itself")
+	}
+	b, c := &ast.Var{Name: "b"}, &ast.Var{Name: "c"}
+	// Left-folded: ((a AND b) AND c).
+	top, ok := andJoin([]ast.Expr{a, b, c}).(*ast.Binary)
+	if !ok || top.Op != ast.OpAnd || top.RHS != ast.Expr(c) {
+		t.Fatalf("andJoin top = %#v", top)
+	}
+	inner, ok := top.LHS.(*ast.Binary)
+	if !ok || inner.LHS != ast.Expr(a) || inner.RHS != ast.Expr(b) {
+		t.Fatalf("andJoin inner = %#v", inner)
+	}
+}
+
+// TestConjSlotRefs covers resolving a conjunct's referenced segment slots,
+// sorted, with names absent from the slot map ignored.
+func TestConjSlotRefs(t *testing.T) {
+	slots := map[string]int{"x": 5, "y": 2}
+	e := &ast.Binary{Op: ast.OpEq, LHS: &ast.Prop{Var: "x", Key: "k"}, RHS: &ast.Var{Name: "y"}}
+	if got := conjSlotRefs(e, slots); !slices.Equal(got, []int{2, 5}) {
+		t.Fatalf("conjSlotRefs = %v, want [2 5]", got)
+	}
+	// A variable not in the slot map (e.g. a subquery local) is ignored.
+	if got := conjSlotRefs(&ast.Var{Name: "unknown"}, slots); len(got) != 0 {
+		t.Fatalf("unknown var slots = %v", got)
+	}
 }

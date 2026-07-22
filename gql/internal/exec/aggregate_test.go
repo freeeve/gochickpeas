@@ -67,3 +67,41 @@ func TestDistinctSetOtherKinds(t *testing.T) {
 		t.Fatal("int 4, str b, bool true are each newly seen")
 	}
 }
+
+// TestPackedEntityAndGroupKey2 covers the entity group-key packers: the
+// single-entity 31-bit pack (kind bit + id, out-of-range declines) and the
+// order-sensitive pair form.
+func TestPackedEntityAndGroupKey2(t *testing.T) {
+	if e, ok := packedEntity30(value.Node(chickpeas.NodeID(5))); !ok || e != 5 {
+		t.Fatalf("packedEntity30(node 5) = %d,%v, want 5", e, ok)
+	}
+	if e, ok := packedEntity30(value.Rel(7)); !ok || e != 1<<30|7 {
+		t.Fatalf("packedEntity30(rel 7) = %d,%v", e, ok)
+	}
+	// Non-entity values and ids at/above 2^30 do not pack.
+	if _, ok := packedEntity30(value.Int(3)); ok {
+		t.Fatal("int must not pack as an entity")
+	}
+	if _, ok := packedEntity30(value.Node(chickpeas.NodeID(1 << 30))); ok {
+		t.Fatal("id >= 2^30 must not pack")
+	}
+
+	// The pair form packs iff both sides pack, deterministically, and is
+	// order-sensitive (node,rel differs from rel,node).
+	k1, ok := packGroupKey2(value.Node(chickpeas.NodeID(5)), value.Rel(7))
+	if !ok {
+		t.Fatal("node,rel pair must pack")
+	}
+	if k2, _ := packGroupKey2(value.Node(chickpeas.NodeID(5)), value.Rel(7)); k2 != k1 {
+		t.Fatal("pair packing must be deterministic")
+	}
+	if kSwap, _ := packGroupKey2(value.Rel(7), value.Node(chickpeas.NodeID(5))); kSwap == k1 {
+		t.Fatal("pair packing must be order-sensitive")
+	}
+	if _, ok := packGroupKey2(value.Node(chickpeas.NodeID(5)), value.Int(3)); ok {
+		t.Fatal("a non-entity second operand must not pack")
+	}
+	if _, ok := packGroupKey2(value.Int(1), value.Node(chickpeas.NodeID(2))); ok {
+		t.Fatal("a non-entity first operand must not pack")
+	}
+}

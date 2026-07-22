@@ -484,3 +484,32 @@ func TestMapLiteralAndProjection(t *testing.T) {
 		t.Fatalf(".* = %v", am)
 	}
 }
+
+// TestConcatOperator covers the || operator: string and list concatenation
+// only, Null for every other operand pairing (unlike +, it never adds
+// numbers).
+func TestConcatOperator(t *testing.T) {
+	if got := Concat(value.Str("ab"), value.Str("cd")); !value.Equal(got, value.Str("abcd")) {
+		t.Fatalf("string || string = %v, want abcd", got)
+	}
+	if got := Concat(value.Str(""), value.Str("x")); !value.Equal(got, value.Str("x")) {
+		t.Fatalf("empty || x = %v, want x", got)
+	}
+	// list || list appends.
+	l := value.List([]value.Value{value.Int(1)})
+	r := value.List([]value.Value{value.Int(2), value.Int(3)})
+	got, ok := Concat(l, r).AsList()
+	if !ok || len(got) != 3 || !value.Equal(got[0], value.Int(1)) || !value.Equal(got[2], value.Int(3)) {
+		t.Fatalf("list || list = %v,%v", got, ok)
+	}
+	// Mismatched or non-concatenable pairings are Null.
+	if got := Concat(value.Str("a"), value.Int(1)); !got.IsNull() {
+		t.Fatalf("string || int = %v, want null", got)
+	}
+	if got := Concat(value.List(nil), value.Str("a")); !got.IsNull() {
+		t.Fatalf("list || string = %v, want null", got)
+	}
+	if got := Concat(value.Int(1), value.Int(2)); !got.IsNull() {
+		t.Fatalf("int || int = %v, want null (|| never adds numbers)", got)
+	}
+}
