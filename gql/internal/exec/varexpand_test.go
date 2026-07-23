@@ -168,3 +168,53 @@ func TestVarReach(t *testing.T) {
 		t.Fatalf("{2,3} = %v, want {2,3}", got)
 	}
 }
+
+// TestVarExpandCandidates covers the var-length entry dispatcher over a
+// functional chain 0-R->1-R->2-R->3: a zero-minimum unbounded quantifier
+// routes through the deduped reach (the functional-chain fast path), a
+// bounded quantifier through per-path enumeration; both yield the reachable
+// set on a chain.
+func TestVarExpandCandidates(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	for range 4 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bld.AddRel(graph.NodeID(i), graph.NodeID(i+1), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sg := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: sg}
+	rm := sg.CompileRelMatcher([]string{"R"})
+	m := sg.CompileNodeMatcher(nil, nil)
+
+	run := func(op *plan.BindOp) map[graph.NodeID]bool {
+		row := make([]value.Value, 2)
+		row[op.From] = value.Node(graph.NodeID(0))
+		var cand []graph.NodeID
+		var relData []uint32
+		var relRanges [][2]int
+		var pairData [][2]graph.NodeID
+		var pairRanges [][2]int
+		var scr genScratch
+		varExpandCandidates(ctx, op, m, rm, hopGate{}, row, &uniqEnv{}, &cand, &relData, &relRanges, &pairData, &pairRanges, &scr)
+		got := map[graph.NodeID]bool{}
+		for _, n := range cand {
+			got[n] = true
+		}
+		return got
+	}
+	u := func(x uint64) *uint64 { return &x }
+
+	// Bounded {1,2}: one or two hops from 0 -> {1,2}.
+	if got := run(&plan.BindOp{Kind: plan.OpVarExpand, From: 0, To: 1, Dir: graph.Outgoing, Types: []string{"R"}, Min: 1, Max: u(2)}); len(got) != 2 || !got[1] || !got[2] {
+		t.Fatalf("{1,2} candidates = %v, want {1,2}", got)
+	}
+	// Zero-minimum unbounded {0,}: the whole reachable set incl. the start.
+	if got := run(&plan.BindOp{Kind: plan.OpVarExpand, From: 0, To: 1, Dir: graph.Outgoing, Types: []string{"R"}, Min: 0, Max: nil}); len(got) != 4 || !got[0] || !got[3] {
+		t.Fatalf("{0,} candidates = %v, want {0,1,2,3}", got)
+	}
+}
