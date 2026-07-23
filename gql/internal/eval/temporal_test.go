@@ -232,3 +232,51 @@ func TestParseISOAbsurdYearDeclines(t *testing.T) {
 		t.Fatal("an ordinary date must still parse")
 	}
 }
+
+// TestParseISODurationBranches exercises the duration grammar beyond the
+// basic form: weeks expand to days, the seconds field carries a
+// right-padded millisecond fraction, a leading sign negates every
+// component, and 'M' means months in the date part but minutes after 'T'.
+func TestParseISODurationBranches(t *testing.T) {
+	cases := []struct {
+		in               string
+		months, days, ms int64
+	}{
+		{"P2W", 0, 14, 0},                      // weeks -> days
+		{"P1W3D", 0, 10, 0},                    // weeks and days combine
+		{"PT1.5S", 0, 0, 1500},                 // fractional seconds, right-padded
+		{"PT0.25S", 0, 0, 250},                 // sub-second only
+		{"PT1.9999S", 0, 0, 1999},              // fraction truncates to millis
+		{"P1MT1M", 1, 0, 60_000},               // M is months before T, minutes after
+		{"-P1Y2DT3H", -12, -2, -3 * 3_600_000}, // leading '-' negates all parts
+		{"+P5D", 0, 5, 0},                      // leading '+' is a no-op sign
+		{"p1dt2h", 0, 1, 2 * 3_600_000},        // lower-case designators accepted
+	}
+	for _, c := range cases {
+		mo, d, ms, ok := ParseISODuration(c.in)
+		if !ok || mo != c.months || d != c.days || ms != c.ms {
+			t.Fatalf("ParseISODuration(%q) = (%d,%d,%d,%v), want (%d,%d,%d,true)",
+				c.in, mo, d, ms, ok, c.months, c.days, c.ms)
+		}
+	}
+
+	// Malformed shapes never yield a partial parse.
+	for _, bad := range []string{
+		"",       // empty
+		"P",      // designator only, no component
+		"PT",     // time designator only
+		"1D",     // missing leading P
+		"P1",     // trailing bare number
+		"PT.5S",  // a fraction with no whole-seconds digit before it
+		"P1.5D",  // a fraction outside the time part is invalid
+		"PT1.5H", // a fraction on a non-seconds field is invalid
+		"PT1TH",  // a second 'T'
+		"P-1D",   // an interior sign
+		"PT1.S",  // a fraction with no digits
+		"PxD",    // an unknown designator
+	} {
+		if _, _, _, ok := ParseISODuration(bad); ok {
+			t.Fatalf("ParseISODuration(%q) should decline", bad)
+		}
+	}
+}

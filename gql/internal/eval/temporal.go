@@ -203,8 +203,9 @@ func ISOString(millis int64, kind value.TemporalKind) string {
 
 // ParseISODuration parses an ISO-8601 duration string (PnYnMnWnD[TnHnMnS],
 // e.g. 'P100D', 'PT12H', 'P1Y2M3DT4H5M6S') into calendar components:
-// months, days, and sub-day milliseconds. Fractional fields and a leading
-// sign are not supported; ok is false on a malformed string.
+// months, days, and sub-day milliseconds. A leading '-'/'+' sign negates the
+// whole duration, and the seconds field accepts a millisecond fraction
+// ('PT1.5S'); ok is false on a malformed string or a component that overflows.
 func ParseISODuration(s string) (months, days, ms int64, ok bool) {
 	s = strings.TrimSpace(s)
 	// A leading sign negates the whole duration ('-P1D').
