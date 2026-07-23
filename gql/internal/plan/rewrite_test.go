@@ -188,3 +188,57 @@ func TestSubstExprCompoundArms(t *testing.T) {
 		t.Fatal("Exists (a scoped subquery) must decline")
 	}
 }
+
+// TestInlineProjection covers the aggregating-boundary rewrite: it inlines the
+// substitution into every projection item (naming an unaliased item by its
+// derived name), its ORDER BY keys, and its WHERE, and it declines whenever
+// any of those contains a construct the substitution cannot rewrite.
+func TestInlineProjection(t *testing.T) {
+	// The alias `a` was a pure projection of `n.x`.
+	subst := map[string]ast.Expr{"a": &ast.Prop{Var: "n", Key: "x"}}
+
+	// A projection whose items, ORDER BY key, and WHERE all reference the
+	// inlined alias substitutes cleanly into a With.
+	proj := &ast.Projection{
+		Items: []ast.ReturnItem{
+			{Expr: &ast.Func{Name: "count", Star: true}, Alias: "c"},
+			{Expr: &ast.Var{Name: "a"}}, // unaliased: named by DerivedName
+		},
+		OrderBy: []ast.SortItem{{Expr: &ast.Var{Name: "a"}, Desc: true}},
+	}
+	where := &ast.Binary{Op: ast.OpGt, LHS: &ast.Var{Name: "a"}, RHS: &ast.Lit{Value: ast.IntLit(0)}}
+	w, ok := inlineProjection(proj, where, subst)
+	if !ok {
+		t.Fatal("a fully substitutable projection must inline")
+	}
+	// The unaliased item keeps its derived name and is rewritten to n.x.
+	if w.Proj.Items[1].Alias != "a" {
+		t.Fatalf("unaliased item name = %q, want the derived name a", w.Proj.Items[1].Alias)
+	}
+	if _, isProp := w.Proj.Items[1].Expr.(*ast.Prop); !isProp {
+		t.Fatalf("item not substituted: %#v", w.Proj.Items[1].Expr)
+	}
+	// The ORDER BY key and WHERE were substituted too.
+	if _, isProp := w.Proj.OrderBy[0].Expr.(*ast.Prop); !isProp {
+		t.Fatalf("order key not substituted: %#v", w.Proj.OrderBy[0].Expr)
+	}
+	if wb, _ := w.Where.(*ast.Binary); wb == nil {
+		t.Fatal("WHERE not preserved")
+	} else if _, isProp := wb.LHS.(*ast.Prop); !isProp {
+		t.Fatalf("WHERE operand not substituted: %#v", wb.LHS)
+	}
+
+	// A projection item, an ORDER BY key, or a WHERE the substitution cannot
+	// rewrite (a scoped subquery) aborts the inline.
+	item := func(e ast.Expr) []ast.ReturnItem { return []ast.ReturnItem{{Expr: e, Alias: "x"}} }
+	if _, ok := inlineProjection(&ast.Projection{Items: item(&ast.Exists{})}, nil, subst); ok {
+		t.Fatal("an unsubstitutable item must decline")
+	}
+	badOrder := &ast.Projection{Items: item(&ast.Var{Name: "a"}), OrderBy: []ast.SortItem{{Expr: &ast.Exists{}}}}
+	if _, ok := inlineProjection(badOrder, nil, subst); ok {
+		t.Fatal("an unsubstitutable ORDER BY key must decline")
+	}
+	if _, ok := inlineProjection(&ast.Projection{Items: item(&ast.Var{Name: "a"})}, &ast.Exists{}, subst); ok {
+		t.Fatal("an unsubstitutable WHERE must decline")
+	}
+}
