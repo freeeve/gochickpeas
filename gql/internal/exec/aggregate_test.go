@@ -1,9 +1,11 @@
 package exec
 
 import (
+	"math"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -104,4 +106,99 @@ func TestPackedEntityAndGroupKey2(t *testing.T) {
 	if _, ok := packGroupKey2(value.Int(1), value.Node(chickpeas.NodeID(2))); ok {
 		t.Fatal("a non-entity first operand must not pack")
 	}
+}
+
+// TestAggStateCountSumAvg pins the per-group accumulator arithmetic for the
+// scalar kinds: count(*) counts nulls while count(expr) skips them, sum
+// promotes to float on a mixed column and reports an int64-overflowing total
+// as Null (the engine's no-error overflow policy), and avg is Null over an
+// empty group.
+func TestAggStateCountSumAvg(t *testing.T) {
+	// count(*) folds every row, present=false, including nulls.
+	star := &aggState{kind: plan.AggCount}
+	star.update(value.Null(), false)
+	star.update(value.Int(1), false)
+	if c, _ := star.finalize().AsInt(); c != 2 {
+		t.Fatalf("count(*) = %v, want 2", star.finalize())
+	}
+	// count(expr) skips null arguments, counts the rest.
+	cnt := &aggState{kind: plan.AggCount}
+	cnt.update(value.Null(), true)
+	cnt.update(value.Int(7), true)
+	cnt.update(value.Str("x"), true)
+	if c, _ := cnt.finalize().AsInt(); c != 2 {
+		t.Fatalf("count(expr) = %v, want 2 (null skipped)", cnt.finalize())
+	}
+
+	// An empty sum is Int(0), not Null.
+	empty := &aggState{kind: plan.AggSum}
+	if v, ok := empty.finalize().AsInt(); !ok || v != 0 {
+		t.Fatalf("empty sum = %v, want Int(0)", empty.finalize())
+	}
+	// An all-int sum stays Int.
+	si := &aggState{kind: plan.AggSum}
+	for _, x := range []int64{2, 3, 5} {
+		si.update(value.Int(x), true)
+	}
+	if v, ok := si.finalize().AsInt(); !ok || v != 10 {
+		t.Fatalf("int sum = %v, want Int(10)", si.finalize())
+	}
+	// A mixed int+float column promotes the total to Float.
+	mix := &aggState{kind: plan.AggSum}
+	mix.update(value.Int(4), true)
+	mix.update(value.Float(0.5), true)
+	if f, ok := mix.finalize().AsFloat(); !ok || math.Abs(f-4.5) > 1e-12 {
+		t.Fatalf("mixed sum = %v, want Float(4.5)", mix.finalize())
+	}
+	// A total outside int64 range is Null (no per-row overflow error).
+	ov := &aggState{kind: plan.AggSum}
+	ov.update(value.Int(math.MaxInt64), true)
+	ov.update(value.Int(math.MaxInt64), true)
+	if !ov.finalize().IsNull() {
+		t.Fatalf("overflowing sum = %v, want Null", ov.finalize())
+	}
+
+	// avg is Null over an empty group, else the arithmetic mean.
+	ea := &aggState{kind: plan.AggAvg}
+	if !ea.finalize().IsNull() {
+		t.Fatalf("empty avg = %v, want Null", ea.finalize())
+	}
+	av := &aggState{kind: plan.AggAvg}
+	for _, x := range []int64{2, 4, 9} {
+		av.update(value.Int(x), true)
+	}
+	if f, ok := av.finalize().AsFloat(); !ok || math.Abs(f-5.0) > 1e-12 {
+		t.Fatalf("avg = %v, want Float(5)", av.finalize())
+	}
+}
+
+// TestAggStateStddevWelford pins the single-pass Welford stddev: sample
+// stddev is 0 for fewer than two values (Neo4j semantics) and the unbiased
+// sample deviation otherwise, while population stddev is 0 on empty and the
+// biased deviation otherwise. Fixture {2,4,4,4,5,5,7,9}: mean 5, squared
+// deviations sum 32, so pop var 4 (stddev 2) and sample var 32/7.
+func TestAggStateStddevWelford(t *testing.T) {
+	feed := func(k plan.AggKind, xs ...float64) *aggState {
+		s := &aggState{kind: k}
+		for _, x := range xs {
+			s.update(value.Float(x), true)
+		}
+		return s
+	}
+	approx := func(name string, got value.Value, want float64) {
+		t.Helper()
+		f, ok := got.AsFloat()
+		if !ok || math.Abs(f-want) > 1e-9 {
+			t.Fatalf("%s = %v, want %v", name, got, want)
+		}
+	}
+
+	set := []float64{2, 4, 4, 4, 5, 5, 7, 9}
+	// Sample stddev needs at least two values; below that it is 0.
+	approx("stddevSamp empty", feed(plan.AggStddevSamp).finalize(), 0)
+	approx("stddevSamp single", feed(plan.AggStddevSamp, 3).finalize(), 0)
+	approx("stddevSamp set", feed(plan.AggStddevSamp, set...).finalize(), math.Sqrt(32.0/7.0))
+	// Population stddev is 0 on empty and the biased deviation otherwise.
+	approx("stddevPop empty", feed(plan.AggStddevPop).finalize(), 0)
+	approx("stddevPop set", feed(plan.AggStddevPop, set...).finalize(), 2)
 }
