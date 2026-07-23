@@ -394,3 +394,37 @@ func TestUnitWeightDijkstraDifferential(t *testing.T) {
 		t.Fatal("the weighted engine never ran -- the differential is not testing Dijkstra")
 	}
 }
+
+// TestFilteredNeighbors covers the all-shortest enumeration's neighbor
+// iterator: with no hop filter every matched neighbor is visited, and a hop
+// filter narrows the set to a proper subset.
+func TestFilteredNeighbors(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	a, _ := b.AddNode("N")
+	for i := 0; i < 3; i++ {
+		x, _ := b.AddNode("N")
+		if _, err := b.AddRel(a, x, "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := &eval.Ctx{G: graph.New(b.Finalize())}
+	rm := ctx.G.CompileRelMatcher([]string{"R"})
+
+	// No hop filter: every matched outgoing neighbor is visited.
+	var all []graph.NodeID
+	filteredNeighbors(ctx, graph.NodeID(a), graph.Outgoing, rm, nil, func(nb graph.NodeID) {
+		all = append(all, nb)
+	})
+	if len(all) != 3 {
+		t.Fatalf("nil-hop neighbors = %v, want 3", all)
+	}
+
+	// A hop filter (accept even rel positions) narrows to a proper subset.
+	var kept []graph.NodeID
+	filteredNeighbors(ctx, graph.NodeID(a), graph.Outgoing, rm, &hopFilter{eval: posEvenEval{}}, func(nb graph.NodeID) {
+		kept = append(kept, nb)
+	})
+	if len(kept) == 0 || len(kept) >= len(all) {
+		t.Fatalf("hop-filtered neighbors = %v, want a non-empty proper subset of %v", kept, all)
+	}
+}
