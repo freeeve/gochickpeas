@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -201,4 +204,51 @@ func TestAggStateStddevWelford(t *testing.T) {
 	// Population stddev is 0 on empty and the biased deviation otherwise.
 	approx("stddevPop empty", feed(plan.AggStddevPop).finalize(), 0)
 	approx("stddevPop set", feed(plan.AggStddevPop, set...).finalize(), 2)
+}
+
+// TestAggregatorSlabKinds drives the aggregator's off-struct slab kinds
+// through a global aggregation: min/max read the extremum slab (mmOf),
+// count(DISTINCT) the dedup slab (seenOf), and collect the item slab
+// (itemsOf) -- paths the scalar-accumulator tests never touch.
+func TestAggregatorSlabKinds(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 0)
+	for _, p := range []struct{ v, g int64 }{{10, 1}, {20, 1}, {30, 2}} {
+		n, err := bld.AddNode("A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = bld.SetProp(n, "v", p.v)
+		_ = bld.SetProp(n, "g", p.g)
+	}
+	g := graph.New(bld.Finalize("v", "g"))
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("MATCH (a:A) RETURN min(a.v) AS mn, max(a.v) AS mx, count(DISTINCT a.g) AS cd, collect(a.v) AS c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("global aggregate rows = %d, want 1", len(rows))
+	}
+	r := rows[0]
+	if mn, _ := r[0].AsInt(); mn != 10 {
+		t.Fatalf("min(v) = %v, want 10", r[0])
+	}
+	if mx, _ := r[1].AsInt(); mx != 30 {
+		t.Fatalf("max(v) = %v, want 30", r[1])
+	}
+	if cd, _ := r[2].AsInt(); cd != 2 {
+		t.Fatalf("count(DISTINCT g) = %v, want 2", r[2])
+	}
+	if xs, ok := r[3].AsList(); !ok || len(xs) != 3 {
+		t.Fatalf("collect(v) = %v, want a 3-element list", r[3])
+	}
 }
