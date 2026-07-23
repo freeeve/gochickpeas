@@ -428,3 +428,30 @@ func TestFilteredNeighbors(t *testing.T) {
 		t.Fatalf("hop-filtered neighbors = %v, want a non-empty proper subset of %v", kept, all)
 	}
 }
+
+// TestPathFromParents covers the parent-pointer path reconstruction: a==b is
+// the single-node path, a walk back through parent[] reassembles the full
+// node sequence (including a direct one-hop edge), and an endpoint with no
+// parent entry yields no path.
+func TestPathFromParents(t *testing.T) {
+	scr := newSPScratch()
+	a, m, b := graph.NodeID(1), graph.NodeID(2), graph.NodeID(3)
+
+	// a -> m -> b: parent[b]=m, parent[m]=a rebuilds [a, m, b].
+	got := pathFromParents(scr, map[graph.NodeID]graph.NodeID{b: m, m: a}, a, b)
+	if len(got) != 3 || got[0] != a || got[1] != m || got[2] != b {
+		t.Fatalf("two-hop path = %v, want [%d %d %d]", got, a, m, b)
+	}
+	// a == b is the single-node path.
+	if got := pathFromParents(scr, nil, a, a); len(got) != 1 || got[0] != a {
+		t.Fatalf("a==b path = %v, want [%d]", got, a)
+	}
+	// A direct edge a -> b: parent[b]=a rebuilds [a, b].
+	if got := pathFromParents(scr, map[graph.NodeID]graph.NodeID{b: a}, a, b); len(got) != 2 || got[0] != a || got[1] != b {
+		t.Fatalf("direct path = %v, want [%d %d]", got, a, b)
+	}
+	// No parent entry for b: unreachable, no path.
+	if got := pathFromParents(scr, map[graph.NodeID]graph.NodeID{}, a, b); got != nil {
+		t.Fatalf("unreachable b = %v, want nil", got)
+	}
+}
