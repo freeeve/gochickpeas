@@ -109,3 +109,54 @@ func TestExecuteProfiled(t *testing.T) {
 		t.Fatalf("MATCH scan: segs=%d projRows=%d, want 1/3", len(prof.Segs), prof.Segs[0].ProjRows)
 	}
 }
+
+// TestExecuteForceInterp pins the interpreter fallback to the compiled path:
+// running a filter+projection query with ForceInterp (which routes every
+// expression through interpExpr instead of the columnar compiled form) must
+// yield exactly the same rows as the default compiled execution.
+func TestExecuteForceInterp(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 0)
+	a0, _ := bld.AddNode("A")
+	_ = bld.SetProp(a0, "v", int64(10))
+	a1, _ := bld.AddNode("A")
+	_ = bld.SetProp(a1, "v", int64(20))
+	g := graph.New(bld.Finalize("v"))
+
+	q, err := parser.Parse("MATCH (a:A) WHERE a.v > 5 RETURN a.v + 1 AS w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(force bool) map[int64]bool {
+		t.Helper()
+		rows, err := Execute(&eval.Ctx{G: g, ForceInterp: force}, p)
+		if err != nil {
+			t.Fatalf("execute (force=%v): %v", force, err)
+		}
+		out := map[int64]bool{}
+		for _, r := range rows {
+			w, _ := r[0].AsInt()
+			out[w] = true
+		}
+		return out
+	}
+
+	compiled := run(false)
+	interp := run(true)
+	// The interpreter path yields the expected v+1 values for v > 5...
+	if len(compiled) != 2 || !compiled[11] || !compiled[21] {
+		t.Fatalf("compiled results = %v, want {11, 21}", compiled)
+	}
+	// ...and it agrees exactly with the compiled path.
+	if len(interp) != len(compiled) {
+		t.Fatalf("interp %v != compiled %v", interp, compiled)
+	}
+	for k := range compiled {
+		if !interp[k] {
+			t.Fatalf("interp path missing %d (compiled = %v, interp = %v)", k, compiled, interp)
+		}
+	}
+}
