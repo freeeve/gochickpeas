@@ -40,6 +40,34 @@ func TestGjOuterBreadth(t *testing.T) {
 	}
 }
 
+// TestGjOuterBreadthExpand covers the group-join breadth over expand hops: a
+// one-hop expand prices the anchor's resolved first-hop degree (the i==1
+// branch), a two-hop expand prices the later hop by its label-conditional
+// fan-out (the labeled-source branch), and a stage WHERE applies the
+// selectivity multiplier.
+func TestGjOuterBreadthExpand(t *testing.T) {
+	g := buildFixture(t)
+	scan := func() BindOp {
+		return BindOp{Kind: OpScan, Slot: 0, Source: ScanSource{Kind: ScanLabel, Label: "Person"}, Labels: []string{"Person"}}
+	}
+	hop := func(from, to int) BindOp {
+		return BindOp{Kind: OpExpand, From: from, To: to, Dir: graph.Outgoing, Types: []string{"KNOWS"}, Labels: []string{"Person"}}
+	}
+
+	oneHop := []Stage{&MatchStage{Ops: []BindOp{scan(), hop(0, 1)}}}
+	if b := gjOuterBreadth(oneHop, g); b <= 0 {
+		t.Fatalf("one-hop breadth = %v, want positive", b)
+	}
+
+	twoHop := []Stage{&MatchStage{
+		Ops:   []BindOp{scan(), hop(0, 1), hop(1, 2)},
+		Where: &ast.Binary{Op: ast.OpGt, LHS: &ast.Var{Name: "x"}, RHS: &ast.Lit{Value: ast.IntLit(0)}},
+	}}
+	if b := gjOuterBreadth(twoHop, g); b <= 0 {
+		t.Fatalf("two-hop breadth = %v, want positive", b)
+	}
+}
+
 // gjBigGraph has L=1100 nodes (clears the 1024 outer-rows floor) and
 // Big=2500 nodes, so a scan of L yields a breadth that covers L's own
 // population but not Big's.
