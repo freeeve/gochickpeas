@@ -6,6 +6,7 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -327,5 +328,57 @@ func TestVarExpandCandidatesRebindAndPairs(t *testing.T) {
 	}
 	if pairs == 0 {
 		t.Fatal("a Contribute op must expose trail pairs")
+	}
+}
+
+// TestVarExpandExec drives a bounded variable-length expansion end-to-end so
+// the trail enumeration (varExpandCandidates and its per-hop gates) runs over
+// a real chain a0-R->a1-R->a2: every reachable (start, end) pair within 1..2
+// hops appears exactly once.
+func TestVarExpandExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	var ids []graph.NodeID
+	for range 3 {
+		n, err := bld.AddNode("A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, n)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := bld.AddRel(ids[i], ids[i+1], "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("MATCH (a:A)-[:R]->{1,2}(b:A) RETURN a, b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pairs := map[[2]graph.NodeID]bool{}
+	for _, r := range rows {
+		av, _ := r[0].AsNode()
+		bv, _ := r[1].AsNode()
+		pairs[[2]graph.NodeID{av, bv}] = true
+	}
+	// a0 -> a1 (1 hop), a0 -> a2 (2 hops), a1 -> a2 (1 hop).
+	for _, w := range [][2]graph.NodeID{{ids[0], ids[1]}, {ids[0], ids[2]}, {ids[1], ids[2]}} {
+		if !pairs[w] {
+			t.Fatalf("missing var-length pair %v; got %v", w, pairs)
+		}
+	}
+	if len(pairs) != 3 {
+		t.Fatalf("var-length pairs = %v, want exactly 3", pairs)
 	}
 }
