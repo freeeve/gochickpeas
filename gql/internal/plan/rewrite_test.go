@@ -242,3 +242,39 @@ func TestInlineProjection(t *testing.T) {
 		t.Fatal("an unsubstitutable WHERE must decline")
 	}
 }
+
+// TestInlineProjectionPreservesPostfixOrderKey locks the ORDER BY variant of
+// the postfix-IS rewrite bug (cross-project ask 223): a postfix predicate in
+// an ORDER BY key over an inlined alias must keep its own kind through the
+// fusion substitution, not collapse to IS NULL.
+func TestInlineProjectionPreservesPostfixOrderKey(t *testing.T) {
+	// Alias `a` was a pure projection of the bare variable `n`.
+	subst := map[string]ast.Expr{"a": &ast.Var{Name: "n"}}
+	proj := &ast.Projection{
+		Items: []ast.ReturnItem{{Expr: &ast.Func{Name: "count", Star: true}, Alias: "c"}},
+		OrderBy: []ast.SortItem{
+			{Expr: &ast.IsTyped{Expr: &ast.Var{Name: "a"}, Kind: "integer", Negated: true}},
+			{Expr: &ast.IsTruth{Expr: &ast.Var{Name: "a"}, Want: false}},
+			{Expr: &ast.IsNull{Expr: &ast.Var{Name: "a"}, Negated: true}},
+		},
+	}
+	w, ok := inlineProjection(proj, nil, subst)
+	if !ok {
+		t.Fatal("postfix ORDER BY keys over an inlined alias must inline")
+	}
+	// IS [NOT] TYPED stays IS TYPED, carrying its Kind and operand rewrite.
+	ty, ok := w.Proj.OrderBy[0].Expr.(*ast.IsTyped)
+	if !ok || ty.Kind != "integer" || !ty.Negated {
+		t.Fatalf("order key 0 = %#v, want *ast.IsTyped{integer, negated}", w.Proj.OrderBy[0].Expr)
+	}
+	if v, isVar := ty.Expr.(*ast.Var); !isVar || v.Name != "n" {
+		t.Fatalf("order key operand = %#v, want Var(n)", ty.Expr)
+	}
+	// IS [NOT] TRUE stays IS TRUE, and IS [NOT] NULL stays IS NULL.
+	if _, ok := w.Proj.OrderBy[1].Expr.(*ast.IsTruth); !ok {
+		t.Fatalf("order key 1 = %#v, want *ast.IsTruth", w.Proj.OrderBy[1].Expr)
+	}
+	if _, ok := w.Proj.OrderBy[2].Expr.(*ast.IsNull); !ok {
+		t.Fatalf("order key 2 = %#v, want *ast.IsNull", w.Proj.OrderBy[2].Expr)
+	}
+}
