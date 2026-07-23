@@ -160,3 +160,84 @@ func TestExecuteForceInterp(t *testing.T) {
 		}
 	}
 }
+
+// nonNativeGraph wraps a Graph but hides the Native (Snapshot) capability --
+// graph.Graph does not include Snapshot(), so the embedded method set omits
+// it -- forcing executor fast paths that special-case *SnapshotGraph onto
+// their portable per-candidate fallback.
+type nonNativeGraph struct{ graph.Graph }
+
+// TestExecNonNativeGraph pins the portable (non-native) executor path to the
+// native one: representative queries run against a graph that does not expose
+// the Native capability must yield the same rows as the SnapshotGraph.
+func TestExecNonNativeGraph(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	a0, _ := bld.AddNode("A")
+	_ = bld.SetProp(a0, "v", int64(10))
+	b0, _ := bld.AddNode("B")
+	if _, err := bld.AddRel(a0, b0, "R"); err != nil {
+		t.Fatal(err)
+	}
+	a1, _ := bld.AddNode("A") // no outgoing R
+	_ = bld.SetProp(a1, "v", int64(20))
+	native := graph.New(bld.Finalize("v"))
+	nn := nonNativeGraph{native}
+
+	// The wrapper must genuinely hide the native capability.
+	if _, ok := interface{}(nn).(graph.Native); ok {
+		t.Fatal("nonNativeGraph must not satisfy graph.Native")
+	}
+
+	// Structural equality that treats two nulls as equal (value.Equal follows
+	// SQL three-valued logic where null != null).
+	eq := func(x, y value.Value) bool {
+		if x.IsNull() || y.IsNull() {
+			return x.IsNull() && y.IsNull()
+		}
+		return value.Equal(x, y)
+	}
+	rowsEq := func(a, b [][]value.Value) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if len(a[i]) != len(b[i]) {
+				return false
+			}
+			for j := range a[i] {
+				if !eq(a[i][j], b[i][j]) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	for _, src := range []string{
+		"MATCH (a:A) WHERE a.v > 5 RETURN a.v + 1 AS w",
+		"MATCH (a:A)-[:R]->(b:B) RETURN a, b",
+		"MATCH (a:A)-[r:R]->(b:B) RETURN r",
+		"MATCH (n) RETURN n",
+		"MATCH (a:A) OPTIONAL MATCH (a)-[:R]->(b:B) RETURN a, b",
+	} {
+		q, err := parser.Parse(src)
+		if err != nil {
+			t.Fatalf("parse %q: %v", src, err)
+		}
+		p, err := plan.Build(q, native)
+		if err != nil {
+			t.Fatalf("plan %q: %v", src, err)
+		}
+		nativeRows, err := Execute(&eval.Ctx{G: native}, p)
+		if err != nil {
+			t.Fatalf("native exec %q: %v", src, err)
+		}
+		nnRows, err := Execute(&eval.Ctx{G: nn}, p)
+		if err != nil {
+			t.Fatalf("non-native exec %q: %v", src, err)
+		}
+		if !rowsEq(nativeRows, nnRows) {
+			t.Fatalf("%q: non-native rows %v != native rows %v", src, nnRows, nativeRows)
+		}
+	}
+}
