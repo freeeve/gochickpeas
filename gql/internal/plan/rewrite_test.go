@@ -106,3 +106,85 @@ func TestFuseProjectionKeepsPostfixPredicate(t *testing.T) {
 		t.Fatalf("inlined operand = %+v, want Prop(n.flag)", tr.Expr)
 	}
 }
+
+// TestSubstExprCompoundArms exercises the recursive arms: every compound node
+// rewrites its children and keeps its own kind, a child that declines aborts
+// the whole node, and a construct the pass does not rewrite (a subquery)
+// declines outright.
+func TestSubstExprCompoundArms(t *testing.T) {
+	toN := map[string]ast.Expr{"m": &ast.Var{Name: "n"}}
+	// isN reports whether e is the substituted Var(n).
+	isN := func(e ast.Expr) bool {
+		v, ok := e.(*ast.Var)
+		return ok && v.Name == "n"
+	}
+	m := func() ast.Expr { return &ast.Var{Name: "m"} }
+
+	// Each compound node recurses into its children and preserves its kind.
+	unary, ok := substExpr(&ast.Unary{Op: ast.UnOp(0), Expr: m()}, toN)
+	if u, isU := unary.(*ast.Unary); !ok || !isU || !isN(u.Expr) {
+		t.Fatalf("Unary arm = %+v (ok=%v)", unary, ok)
+	}
+	bin, ok := substExpr(&ast.Binary{Op: ast.BinOp(0), LHS: m(), RHS: m()}, toN)
+	if b, isB := bin.(*ast.Binary); !ok || !isB || !isN(b.LHS) || !isN(b.RHS) {
+		t.Fatalf("Binary arm = %+v (ok=%v)", bin, ok)
+	}
+	in, ok := substExpr(&ast.In{Expr: m(), List: &ast.ListExpr{Elems: []ast.Expr{m()}}}, toN)
+	if i, isI := in.(*ast.In); !ok || !isI || !isN(i.Expr) {
+		t.Fatalf("In arm = %+v (ok=%v)", in, ok)
+	}
+	fn, ok := substExpr(&ast.Func{Name: "abs", Args: []ast.Expr{m()}}, toN)
+	if f, isF := fn.(*ast.Func); !ok || !isF || f.Name != "abs" || !isN(f.Args[0]) {
+		t.Fatalf("Func arm = %+v (ok=%v)", fn, ok)
+	}
+	list, ok := substExpr(&ast.ListExpr{Elems: []ast.Expr{m(), &ast.Lit{}}}, toN)
+	if l, isL := list.(*ast.ListExpr); !ok || !isL || !isN(l.Elems[0]) {
+		t.Fatalf("ListExpr arm = %+v (ok=%v)", list, ok)
+	}
+	cs, ok := substExpr(&ast.Case{
+		Operand: m(),
+		Whens:   []ast.CaseWhen{{Cond: m(), Result: m()}},
+		Else:    m(),
+	}, toN)
+	if c, isC := cs.(*ast.Case); !ok || !isC ||
+		!isN(c.Operand) || !isN(c.Whens[0].Cond) || !isN(c.Whens[0].Result) || !isN(c.Else) {
+		t.Fatalf("Case arm = %+v (ok=%v)", cs, ok)
+	}
+
+	// count(*) has no argument to rewrite and passes through unchanged.
+	star := &ast.Func{Name: "count", Star: true}
+	if got, ok := substExpr(star, toN); !ok || got != ast.Expr(star) {
+		t.Fatalf("star Func should pass through unchanged, got %+v (ok=%v)", got, ok)
+	}
+	// A literal is returned as-is.
+	litIn := &ast.Lit{}
+	if got, ok := substExpr(litIn, toN); !ok || got != ast.Expr(litIn) {
+		t.Fatal("Lit should pass through unchanged")
+	}
+
+	// HasLabelExpr rewrites when the alias maps to a bare variable...
+	if got, ok := substExpr(&ast.HasLabelExpr{Var: "m"}, toN); !ok {
+		t.Fatalf("HasLabelExpr over a var alias should rewrite, ok=%v", ok)
+	} else if h, isH := got.(*ast.HasLabelExpr); !isH || h.Var != "n" {
+		t.Fatalf("HasLabelExpr arm = %+v", got)
+	}
+
+	// ...but a property or label test on an alias mapped to a NON-variable
+	// (here a property) cannot be rewritten, so the whole node declines --
+	// and that decline propagates out through any enclosing compound.
+	toProp := map[string]ast.Expr{"m": &ast.Prop{Var: "x", Key: "y"}}
+	if _, ok := substExpr(&ast.Prop{Var: "m", Key: "k"}, toProp); ok {
+		t.Fatal("Prop on a non-var alias must decline")
+	}
+	if _, ok := substExpr(&ast.HasLabelExpr{Var: "m"}, toProp); ok {
+		t.Fatal("HasLabelExpr on a non-var alias must decline")
+	}
+	if _, ok := substExpr(&ast.Binary{LHS: &ast.Prop{Var: "m", Key: "k"}, RHS: &ast.Lit{}}, toProp); ok {
+		t.Fatal("a declining child must abort the enclosing Binary")
+	}
+
+	// A subquery is a scoped construct the pass never rewrites.
+	if _, ok := substExpr(&ast.Exists{}, toN); ok {
+		t.Fatal("Exists (a scoped subquery) must decline")
+	}
+}
