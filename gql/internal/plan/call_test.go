@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -141,5 +142,93 @@ func TestBuildCallProcErrors(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s(%v): err = %v, want contains %q", c.proc, c.args, err, c.want)
 		}
+	}
+}
+
+// TestProcKindOf covers the case-insensitive procedure-name resolution for
+// every known procedure and the unknown-name decline.
+func TestProcKindOf(t *testing.T) {
+	known := map[string]ProcKind{
+		"wcc":              ProcWcc,
+		"fts.search":       ProcFtsSearch,
+		"geo.withinradius": ProcGeoWithinRadius,
+		"geo.withinbbox":   ProcGeoWithinBBox,
+		"algo.bfs":         ProcBfs,
+		"algo.pagerank":    ProcPageRank,
+		"algo.wcc":         ProcWccAll,
+		"algo.cdlp":        ProcCdlp,
+		"algo.lcc":         ProcLcc,
+		"algo.sssp":        ProcSssp,
+		"algo.propagate":   ProcPropagate,
+	}
+	for name, want := range known {
+		if got, ok := procKindOf(name); !ok || got != want {
+			t.Fatalf("procKindOf(%q) = %v,%v, want %v", name, got, ok, want)
+		}
+		// Resolution is case-insensitive.
+		if got, ok := procKindOf(strings.ToUpper(name)); !ok || got != want {
+			t.Fatalf("procKindOf(%q) not case-insensitive: %v,%v", strings.ToUpper(name), got, ok)
+		}
+	}
+	for _, bad := range []string{"", "nope", "algo.unknown", "fts"} {
+		if _, ok := procKindOf(bad); ok {
+			t.Fatalf("procKindOf(%q) should decline", bad)
+		}
+	}
+}
+
+// TestConstArgFolding covers constant argument folding: a literal, a negated
+// numeric literal (int and float), and a nested list of constants fold; a
+// parameter, a bare variable, a non-negation unary, and a list carrying a
+// non-constant all decline (they need row context or are not constants).
+func TestConstArgFolding(t *testing.T) {
+	litI := func(i int64) ast.Expr { return &ast.Lit{Value: ast.IntLit(i)} }
+
+	// A plain literal folds.
+	if v, ok := constArg(litI(7)); !ok {
+		t.Fatal("literal must fold")
+	} else if i, _ := v.AsInt(); i != 7 {
+		t.Fatalf("literal fold = %v, want 7", v)
+	}
+	// -5 folds to Int(-5); -2.5 folds to Float(-2.5).
+	if v, ok := constArg(&ast.Unary{Op: ast.Neg, Expr: litI(5)}); !ok {
+		t.Fatal("negated int literal must fold")
+	} else if i, _ := v.AsInt(); i != -5 {
+		t.Fatalf("negated int = %v, want -5", v)
+	}
+	if v, ok := constArg(&ast.Unary{Op: ast.Neg, Expr: &ast.Lit{Value: ast.FloatLit(2.5)}}); !ok {
+		t.Fatal("negated float literal must fold")
+	} else if f, _ := v.AsFloat(); f != -2.5 {
+		t.Fatalf("negated float = %v, want -2.5", v)
+	}
+	// A list of constants (with a nested list) folds element-wise.
+	list := &ast.ListExpr{Elems: []ast.Expr{litI(1), &ast.ListExpr{Elems: []ast.Expr{litI(2), litI(3)}}}}
+	if v, ok := constArg(list); !ok {
+		t.Fatal("list of constants must fold")
+	} else if xs, _ := v.AsList(); len(xs) != 2 {
+		t.Fatalf("list fold len = %d, want 2", len(xs))
+	}
+
+	// The declines: a parameter, a named parameter, a variable, a non-Neg
+	// unary, and a list carrying a non-constant.
+	declines := map[string]ast.Expr{
+		"param":       &ast.Lit{Value: ast.Literal{Kind: ast.LitParam, P: 0}},
+		"named-param": &ast.Lit{Value: ast.Literal{Kind: ast.LitNamedParam, S: "p"}},
+		"variable":    &ast.Var{Name: "x"},
+		"not-unary":   &ast.Unary{Op: ast.Not, Expr: litI(1)},
+		"list-w-var":  &ast.ListExpr{Elems: []ast.Expr{litI(1), &ast.Var{Name: "x"}}},
+	}
+	for name, e := range declines {
+		if _, ok := constArg(e); ok {
+			t.Fatalf("constArg(%s) should decline", name)
+		}
+	}
+
+	// constArgs folds a whole slice, and declines the slice if any arg does.
+	if vs, ok := constArgs([]ast.Expr{litI(1), litI(2)}); !ok || len(vs) != 2 {
+		t.Fatalf("constArgs of two literals = %v,%v", vs, ok)
+	}
+	if _, ok := constArgs([]ast.Expr{litI(1), &ast.Var{Name: "x"}}); ok {
+		t.Fatal("constArgs must decline when any argument is non-constant")
 	}
 }
