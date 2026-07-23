@@ -90,3 +90,17 @@ func TestBaseScanKind(t *testing.T) {
 		t.Fatalf("unlabeled = %v, want ScanAll", got)
 	}
 }
+
+// TestRelSlotOf covers the relationship-slot accessor: a single-hop expand
+// reports its rel slot, while every other op kind (including a var-expand,
+// whose per-trail rel list is not a single bound slot) reports NoSlot.
+func TestRelSlotOf(t *testing.T) {
+	if got := relSlotOf(&plan.BindOp{Kind: plan.OpExpand, RelSlot: 4}); got != 4 {
+		t.Fatalf("relSlotOf(expand) = %d, want 4", got)
+	}
+	for _, k := range []plan.OpKind{plan.OpScan, plan.OpVarExpand} {
+		if got := relSlotOf(&plan.BindOp{Kind: k, RelSlot: 4}); got != plan.NoSlot {
+			t.Fatalf("relSlotOf(kind %v) = %d, want NoSlot", k, got)
+		}
+	}
+}
