@@ -6,6 +6,7 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -92,5 +93,51 @@ func TestExistsSeedCandidates(t *testing.T) {
 	}
 	if len(got) != 3 || !got[1] || !got[2] || !got[3] {
 		t.Fatalf("seed candidates = %v, want {1,2,3}", cand)
+	}
+}
+
+// TestFreshScanKinds drives the scan-source variants end-to-end: an inline
+// property anchors on the value index (ScanProperty), an unlabeled pattern
+// scans every node (ScanAll), id(n) = k seeks a single node (ScanNodeID), and
+// a substring predicate anchors via the text path (ScanTextMatch).
+func TestFreshScanKinds(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 0)
+	a0, _ := bld.AddNode("A")
+	_ = bld.SetProp(a0, "v", int64(10))
+	_ = bld.SetProp(a0, "name", "alice")
+	a1, _ := bld.AddNode("A")
+	_ = bld.SetProp(a1, "v", int64(20))
+	_ = bld.SetProp(a1, "name", "bob")
+	g := graph.New(bld.Finalize("v", "name"))
+	ctx := &eval.Ctx{G: g}
+
+	run := func(src string) [][]value.Value {
+		t.Helper()
+		q, err := parser.Parse(src)
+		if err != nil {
+			t.Fatalf("parse %q: %v", src, err)
+		}
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatalf("plan %q: %v", src, err)
+		}
+		rows, err := Execute(ctx, p)
+		if err != nil {
+			t.Fatalf("exec %q: %v", src, err)
+		}
+		return rows
+	}
+
+	if rows := run("MATCH (a:A {v: 20}) RETURN a"); len(rows) != 1 {
+		t.Fatalf("property scan rows = %d, want 1", len(rows))
+	}
+	if rows := run("MATCH (n) RETURN n"); len(rows) != 2 {
+		t.Fatalf("all scan rows = %d, want 2", len(rows))
+	}
+	if rows := run("MATCH (n) WHERE id(n) = 0 RETURN n"); len(rows) != 1 {
+		t.Fatalf("id-seek rows = %d, want 1", len(rows))
+	}
+	if rows := run("MATCH (a:A) WHERE a.name CONTAINS 'li' RETURN a"); len(rows) != 1 {
+		t.Fatalf("text-match rows = %d, want 1 (alice)", len(rows))
 	}
 }
