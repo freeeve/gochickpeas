@@ -212,3 +212,49 @@ func TestFlipCmp(t *testing.T) {
 		}
 	}
 }
+
+// TestColAggPropValue covers the boxed typed column reader for aggregate
+// arguments: an i64 column reads Int (Null for an absent value), an f64
+// column reads Float, a non-numeric column is not aggregatable (nil, false),
+// and an unindexed key folds every id to Null.
+func TestColAggPropValue(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 0)
+	n0, _ := b.AddNode("N")
+	_ = b.SetProp(n0, "age", int64(30))
+	_ = b.SetProp(n0, "score", 2.5)
+	_ = b.SetProp(n0, "name", "alice")
+	n1, _ := b.AddNode("N") // no properties set
+	g := b.Finalize("age", "score", "name")
+
+	// An i64 column reads Int for a set value and Null for an absent one.
+	rInt, ok := colAggPropValue(g, "age")
+	if !ok {
+		t.Fatal("an i64 column should resolve")
+	}
+	if v, _ := rInt(uint32(n0)).AsInt(); v != 30 {
+		t.Fatalf("age(n0) = %v, want 30", rInt(uint32(n0)))
+	}
+	if !rInt(uint32(n1)).IsNull() {
+		t.Fatalf("age(n1) = %v, want Null (absent)", rInt(uint32(n1)))
+	}
+
+	// An f64 column reads Float.
+	rF, ok := colAggPropValue(g, "score")
+	if !ok {
+		t.Fatal("an f64 column should resolve")
+	}
+	if v, _ := rF(uint32(n0)).AsFloat(); v != 2.5 {
+		t.Fatalf("score(n0) = %v, want 2.5", rF(uint32(n0)))
+	}
+
+	// A non-numeric (string) column is not an aggregatable numeric read.
+	if r, ok := colAggPropValue(g, "name"); ok || r != nil {
+		t.Fatalf("string column: r-nil=%v ok=%v, want (nil, false)", r == nil, ok)
+	}
+
+	// An unindexed key resolves to a reader that folds every id to Null.
+	rMiss, ok := colAggPropValue(g, "missing")
+	if !ok || rMiss == nil || !rMiss(uint32(n0)).IsNull() {
+		t.Fatalf("unindexed key ok=%v, want a non-nil Null-folding reader", ok)
+	}
+}
