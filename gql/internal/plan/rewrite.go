@@ -112,13 +112,13 @@ func substExpr(e ast.Expr, subst map[string]ast.Expr) (ast.Expr, bool) {
 		if !ok {
 			return nil, false
 		}
-		return &ast.IsNull{Expr: x, Negated: n.Negated}, true
+		return &ast.IsTruth{Expr: x, Want: n.Want, Negated: n.Negated}, true
 	case *ast.IsTyped:
 		x, ok := substExpr(n.Expr, subst)
 		if !ok {
 			return nil, false
 		}
-		return &ast.IsNull{Expr: x, Negated: n.Negated}, true
+		return &ast.IsTyped{Expr: x, Kind: n.Kind, Negated: n.Negated}, true
 	case *ast.Binary:
 		l, ok := substExpr(n.LHS, subst)
 		if !ok {
