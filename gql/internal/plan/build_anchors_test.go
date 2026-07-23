@@ -65,3 +65,51 @@ func TestSeedChainOf(t *testing.T) {
 		t.Fatal("sv at neither end must decline")
 	}
 }
+
+// TestSeedDisjuncts covers the disjunction layer over seedChainOf: a single
+// qualifying EXISTS seeds, an OR tree seeds only when every leaf qualifies
+// (one non-qualifying leaf voids the whole OR, since its rows would be
+// missed), and a non-OR binary or a bare leaf never seeds.
+func TestSeedDisjuncts(t *testing.T) {
+	slots := map[string]int{"b": 3, "d": 4}
+	bound := map[int]bool{3: true, 4: true}
+	node := func(v string) ast.NodePat { return ast.NodePat{Var: v} }
+	// exists(anchor, end) is an EXISTS over (anchor)-[:R]->(end).
+	exists := func(anchor, end string) *ast.Exists {
+		return &ast.Exists{Pattern: &ast.Pattern{
+			Start: node(anchor),
+			Hops:  []ast.PatternHop{{Rel: ast.RelPat{Dir: ast.DirOut, Types: []string{"R"}}, Node: node(end)}},
+		}}
+	}
+	// A qualifying EXISTS puts the scan var "a" at the end with a bound anchor.
+	qual := func(anchor string) *ast.Exists { return exists(anchor, "a") }
+	nonqual := exists("b", "c") // "a" at neither end -> does not qualify
+
+	// A single qualifying EXISTS yields its one chain.
+	if ch := seedDisjuncts(qual("b"), "a", slots, bound); len(ch) != 1 || ch[0].AnchorSlot != 3 {
+		t.Fatalf("single EXISTS = %+v", ch)
+	}
+	// A single non-qualifying EXISTS yields nothing.
+	if ch := seedDisjuncts(nonqual, "a", slots, bound); ch != nil {
+		t.Fatalf("non-qualifying EXISTS = %+v, want nil", ch)
+	}
+	// An OR of two qualifying EXISTS collects both chains, in order.
+	or := &ast.Binary{Op: ast.OpOr, LHS: qual("b"), RHS: qual("d")}
+	if ch := seedDisjuncts(or, "a", slots, bound); len(ch) != 2 || ch[0].AnchorSlot != 3 || ch[1].AnchorSlot != 4 {
+		t.Fatalf("OR of two EXISTS = %+v", ch)
+	}
+	// A non-qualifying leaf voids the whole disjunction, on either side.
+	if ch := seedDisjuncts(&ast.Binary{Op: ast.OpOr, LHS: qual("b"), RHS: nonqual}, "a", slots, bound); ch != nil {
+		t.Fatal("a non-qualifying right leaf must void the OR")
+	}
+	if ch := seedDisjuncts(&ast.Binary{Op: ast.OpOr, LHS: nonqual, RHS: qual("b")}, "a", slots, bound); ch != nil {
+		t.Fatal("a non-qualifying left leaf must void the OR")
+	}
+	// A non-OR binary (AND) and a bare leaf never seed.
+	if ch := seedDisjuncts(&ast.Binary{Op: ast.OpAnd, LHS: qual("b"), RHS: qual("d")}, "a", slots, bound); ch != nil {
+		t.Fatal("AND must not seed")
+	}
+	if ch := seedDisjuncts(&ast.Var{Name: "a"}, "a", slots, bound); ch != nil {
+		t.Fatal("a bare variable must not seed")
+	}
+}
