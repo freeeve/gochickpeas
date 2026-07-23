@@ -6,6 +6,7 @@ import (
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -48,5 +49,48 @@ func TestNodeIDSeekValue(t *testing.T) {
 		if _, ok := nodeIDSeekValue(ctx, v); ok {
 			t.Fatalf("%+v should not resolve to an id seek", v)
 		}
+	}
+}
+
+// TestExistsSeedCandidates covers the EXISTS-seed backward candidate walk:
+// from the bound anchor it enumerates the nodes reachable over each seed
+// chain's hops, filtered by the per-level and final matchers, and reports
+// success. Fixture: anchor 0 with outgoing R edges to 1, 2, 3.
+func TestExistsSeedCandidates(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	for range 4 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []int{1, 2, 3} {
+		if _, err := bld.AddRel(graph.NodeID(0), graph.NodeID(d), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sg := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: sg}
+	rmR := sg.CompileRelMatcher([]string{"R"})
+	mAll := sg.CompileNodeMatcher(nil, nil)
+
+	op := &plan.BindOp{Source: plan.ScanSource{
+		Kind:  plan.ScanExistsSeed,
+		Seeds: []plan.SeedChain{{AnchorSlot: 0, Hops: []plan.SeedHop{{Dir: graph.Outgoing}}}},
+	}}
+	seedRel := [][]*graph.RelMatcher{{rmR}}
+	seedNode := [][]*graph.NodeMatcher{{mAll}}
+	row := []value.Value{value.Node(graph.NodeID(0))}
+
+	var cand []graph.NodeID
+	var scr genScratch
+	if ok := existsSeedCandidates(ctx, op, mAll, seedRel, seedNode, row, &cand, &scr); !ok {
+		t.Fatal("existsSeedCandidates should succeed under the fan-out cap")
+	}
+	got := map[graph.NodeID]bool{}
+	for _, n := range cand {
+		got[n] = true
+	}
+	if len(got) != 3 || !got[1] || !got[2] || !got[3] {
+		t.Fatalf("seed candidates = %v, want {1,2,3}", cand)
 	}
 }
