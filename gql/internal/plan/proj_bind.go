@@ -284,13 +284,13 @@ func extractNestedAggs(expr ast.Expr, nCols int, hidden *int, aggs *[]AggCol) (a
 		if err != nil {
 			return nil, err
 		}
-		return &ast.IsNull{Expr: e, Negated: n.Negated}, nil
+		return &ast.IsTruth{Expr: e, Want: n.Want, Negated: n.Negated}, nil
 	case *ast.IsTyped:
 		e, err := extractNestedAggs(n.Expr, nCols, hidden, aggs)
 		if err != nil {
 			return nil, err
 		}
-		return &ast.IsNull{Expr: e, Negated: n.Negated}, nil
+		return &ast.IsTyped{Expr: e, Kind: n.Kind, Negated: n.Negated}, nil
 	case *ast.Reduce:
 		init, err := extractNestedAggs(n.Init, nCols, hidden, aggs)
 		if err != nil {
