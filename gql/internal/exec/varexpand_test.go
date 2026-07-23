@@ -3,7 +3,10 @@ package exec
 import (
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -112,5 +115,56 @@ func TestHopCarryStep(t *testing.T) {
 	}
 	if _, ok := desc.step(ctx, 12, sd); ok {
 		t.Fatal("descending rejects 9 -> 12")
+	}
+}
+
+// TestVarReach covers the variable-length reachability walk (no hop gate,
+// no rel-uniqueness): from a start node it collects nodes reachable over the
+// rel type within [Min,Max] hops, includes the start when Min is 0, and
+// excludes nodes below Min. Fixture: a directed chain 0 -R-> 1 -R-> 2 -R-> 3.
+func TestVarReach(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	for range 4 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bld.AddRel(graph.NodeID(i), graph.NodeID(i+1), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sg := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: sg}
+	rm := sg.CompileRelMatcher([]string{"R"})
+	m := sg.CompileNodeMatcher(nil, nil)
+
+	u := func(x uint64) *uint64 { return &x }
+	reach := func(min uint64, max *uint64) map[graph.NodeID]bool {
+		op := &plan.BindOp{Kind: plan.OpVarExpand, Dir: graph.Outgoing, Types: []string{"R"}, Min: min, Max: max}
+		var out []graph.NodeID
+		var rs reachScratch
+		varReach(ctx, 0, op, m, rm, hopGate{}, 0, false, &uniqEnv{}, &out, &rs)
+		got := map[graph.NodeID]bool{}
+		for _, n := range out {
+			got[n] = true
+		}
+		return got
+	}
+	// {1,1}: exactly one hop from 0.
+	if got := reach(1, u(1)); len(got) != 1 || !got[1] {
+		t.Fatalf("{1,1} = %v, want {1}", got)
+	}
+	// {1,2}: one or two hops.
+	if got := reach(1, u(2)); len(got) != 2 || !got[1] || !got[2] {
+		t.Fatalf("{1,2} = %v, want {1,2}", got)
+	}
+	// {0,2}: Min 0 includes the start node.
+	if got := reach(0, u(2)); len(got) != 3 || !got[0] || !got[1] || !got[2] {
+		t.Fatalf("{0,2} = %v, want {0,1,2}", got)
+	}
+	// {2,3}: at least two hops excludes node 1.
+	if got := reach(2, u(3)); len(got) != 2 || !got[2] || !got[3] {
+		t.Fatalf("{2,3} = %v, want {2,3}", got)
 	}
 }
