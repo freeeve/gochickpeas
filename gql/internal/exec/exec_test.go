@@ -3,7 +3,12 @@ package exec
 import (
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -64,5 +69,43 @@ func TestCombineUnion(t *testing.T) {
 	combineUnion(&acc, [][]value.Value{urow(2), urow(3), urow(4)}, ast.UnionIntersect)
 	if !rowsEqual(acc, [][]value.Value{urow(2), urow(3)}) {
 		t.Fatalf("INTERSECT = %v", acc)
+	}
+}
+
+// TestExecuteProfiled covers the PROFILE execution entry: it walks each
+// branch's segments recording per-segment projected-row cardinalities.
+func TestExecuteProfiled(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 0)
+	for range 3 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+	build := func(src string) *plan.Plan {
+		t.Helper()
+		q, err := parser.Parse(src)
+		if err != nil {
+			t.Fatalf("parse %q: %v", src, err)
+		}
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatalf("plan %q: %v", src, err)
+		}
+		return p
+	}
+
+	// A single projection: one segment, one projected row.
+	if prof := ExecuteProfiled(ctx, build("RETURN 1 AS x")); len(prof.Segs) != 1 || prof.Segs[0].ProjRows != 1 {
+		t.Fatalf("RETURN 1: segs=%d projRows=%d, want 1/1", len(prof.Segs), prof.Segs[0].ProjRows)
+	}
+	// A NEXT chain profiles two segments.
+	if prof := ExecuteProfiled(ctx, build("RETURN 1 AS x NEXT RETURN x AS y")); len(prof.Segs) != 2 {
+		t.Fatalf("NEXT chain segs = %d, want 2", len(prof.Segs))
+	}
+	// A scan over the three N nodes projects three rows.
+	if prof := ExecuteProfiled(ctx, build("MATCH (n:N) RETURN n")); len(prof.Segs) != 1 || prof.Segs[0].ProjRows != 3 {
+		t.Fatalf("MATCH scan: segs=%d projRows=%d, want 1/3", len(prof.Segs), prof.Segs[0].ProjRows)
 	}
 }
