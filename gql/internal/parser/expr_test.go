@@ -433,3 +433,46 @@ func TestNotPrecedence(t *testing.T) {
 		t.Fatalf("NOT a AND b LHS = %T, want Unary(NOT)", top.LHS)
 	}
 }
+
+// TestIsNormalizedPostfix covers the IS [NOT] [form] NORMALIZED postfix,
+// which lowers to the is_normalized(x, form) function: a bare NORMALIZED
+// defaults to NFC, each explicit form carries through, NOT wraps the lowered
+// call, and a form keyword without NORMALIZED is a parse error.
+func TestIsNormalizedPostfix(t *testing.T) {
+	// isNormForm reads the second argument as the form string.
+	formOf := func(f *ast.Func) string {
+		t.Helper()
+		if f.Name != "is_normalized" || len(f.Args) != 2 {
+			t.Fatalf("not an is_normalized(x, form) call: %#v", f)
+		}
+		lit, ok := f.Args[1].(*ast.Lit)
+		if !ok {
+			t.Fatalf("form arg = %T, want *ast.Lit", f.Args[1])
+		}
+		return lit.Value.S
+	}
+
+	// Bare NORMALIZED defaults to NFC.
+	if f, ok := retExpr(t, "RETURN s IS NORMALIZED").(*ast.Func); !ok || formOf(f) != "NFC" {
+		t.Fatalf("IS NORMALIZED did not default to NFC: %#v", retExpr(t, "RETURN s IS NORMALIZED"))
+	}
+	// Each explicit form carries through.
+	for _, form := range []string{"NFC", "NFD", "NFKC", "NFKD"} {
+		f, ok := retExpr(t, "RETURN s IS "+form+" NORMALIZED").(*ast.Func)
+		if !ok || formOf(f) != form {
+			t.Fatalf("IS %s NORMALIZED form mismatch: %#v", form, retExpr(t, "RETURN s IS "+form+" NORMALIZED"))
+		}
+	}
+	// NOT wraps the lowered call.
+	u, ok := retExpr(t, "RETURN s IS NOT NORMALIZED").(*ast.Unary)
+	if !ok || u.Op != ast.Not {
+		t.Fatalf("IS NOT NORMALIZED -> %#v", retExpr(t, "RETURN s IS NOT NORMALIZED"))
+	}
+	if inner, ok := u.Expr.(*ast.Func); !ok || formOf(inner) != "NFC" {
+		t.Fatalf("IS NOT NORMALIZED inner = %#v", u.Expr)
+	}
+	// A form keyword without NORMALIZED is an error.
+	if _, err := Parse("RETURN s IS NFC"); err == nil {
+		t.Fatal("IS NFC without NORMALIZED must be a parse error")
+	}
+}
