@@ -266,3 +266,66 @@ func TestVarReachGatedAndBound(t *testing.T) {
 		t.Fatalf("bound reach = %v, want {2}", bnd)
 	}
 }
+
+// TestVarExpandCandidatesRebindAndPairs covers two more dispatch branches
+// over the chain 0-R->1-R->2-R->3: a rebind op (the target endpoint is
+// already bound, so only paths ending there survive) and a Contribute op
+// (rel-uniqueness participation forces per-trail enumeration that exposes
+// each candidate's trail pairs).
+func TestVarExpandCandidatesRebindAndPairs(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	for range 4 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bld.AddRel(graph.NodeID(i), graph.NodeID(i+1), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sg := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: sg}
+	rm := sg.CompileRelMatcher([]string{"R"})
+	m := sg.CompileNodeMatcher(nil, nil)
+	u := func(x uint64) *uint64 { return &x }
+	run := func(op *plan.BindOp, target graph.NodeID, rebind bool) ([]graph.NodeID, int) {
+		row := make([]value.Value, 2)
+		row[op.From] = value.Node(graph.NodeID(0))
+		if rebind {
+			row[op.To] = value.Node(target)
+		}
+		var cand []graph.NodeID
+		var relData []uint32
+		var relRanges [][2]int
+		var pairData [][2]graph.NodeID
+		var pairRanges [][2]int
+		var scr genScratch
+		varExpandCandidates(ctx, op, m, rm, hopGate{}, row, &uniqEnv{}, &cand, &relData, &relRanges, &pairData, &pairRanges, &scr)
+		return cand, len(pairData)
+	}
+
+	// Rebind to a reachable endpoint keeps only that node.
+	rb := &plan.BindOp{Kind: plan.OpVarExpand, From: 0, To: 1, Dir: graph.Outgoing, Types: []string{"R"}, Min: 1, Max: u(3), Rebind: true}
+	if cand, _ := run(rb, 2, true); len(cand) != 1 || cand[0] != 2 {
+		t.Fatalf("rebind to 2 = %v, want [2]", cand)
+	}
+	// Rebind to an endpoint unreachable within range yields nothing.
+	if cand, _ := run(rb, 0, true); len(cand) != 0 {
+		t.Fatalf("rebind to unreachable 0 = %v, want empty", cand)
+	}
+
+	// A Contribute op enumerates per trail and exposes the trail pairs.
+	con := &plan.BindOp{Kind: plan.OpVarExpand, From: 0, To: 1, Dir: graph.Outgoing, Types: []string{"R"}, Min: 1, Max: u(2), Uniq: &plan.RelUniq{Contribute: true}}
+	cand, pairs := run(con, 0, false)
+	set := map[graph.NodeID]bool{}
+	for _, n := range cand {
+		set[n] = true
+	}
+	if len(set) != 2 || !set[1] || !set[2] {
+		t.Fatalf("contribute candidates = %v, want {1,2}", cand)
+	}
+	if pairs == 0 {
+		t.Fatal("a Contribute op must expose trail pairs")
+	}
+}
