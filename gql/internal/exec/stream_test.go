@@ -106,3 +106,45 @@ func TestCallSubqueryExec(t *testing.T) {
 		}
 	}
 }
+
+// TestNamedPathExec drives a named-path binding end-to-end so the match sink
+// assembles the path value (stream.forward's PathBind branch): MATCH p =
+// (a)-[:R]->(b) yields one path whose node and relationship sequences match
+// the traversed edge.
+func TestNamedPathExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 4)
+	a0, _ := bld.AddNode("A")
+	a1, _ := bld.AddNode("A")
+	if _, err := bld.AddRel(a0, a1, "R"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("MATCH p = (a:A)-[:R]->(b:A) RETURN p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("named-path rows = %d, want 1", len(rows))
+	}
+
+	nodes, rels, ok := rows[0][0].AsPath()
+	if !ok {
+		t.Fatalf("RETURN p = %v, want a path value", rows[0][0])
+	}
+	if len(nodes) != 2 || uint32(nodes[0]) != uint32(a0) || uint32(nodes[1]) != uint32(a1) {
+		t.Fatalf("path nodes = %v, want [a0 a1]", nodes)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("path rels = %v, want exactly 1", rels)
+	}
+}
