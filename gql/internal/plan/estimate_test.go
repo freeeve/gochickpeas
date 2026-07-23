@@ -4,7 +4,9 @@ import (
 	"math"
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 )
 
 // TestPropSel covers the property-selectivity estimate: selectivity is 0.1
@@ -57,5 +59,60 @@ func TestIsConcrete(t *testing.T) {
 		if isConcrete(l) {
 			t.Fatalf("%+v should not be concrete", l)
 		}
+	}
+}
+
+// TestNodeCardAndResolveByProps covers the leaf-cardinality and property-seek
+// estimators against a fixture: without labels nodeCard is the total node
+// count, a label alone gives its cardinality, and a concrete property narrows
+// to the seek count (a parameter falls back to the label count); resolveByProps
+// returns the seek ids only for a label plus a concrete property.
+func TestNodeCardAndResolveByProps(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 0)
+	us, err := b.AddNode("Person")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetProp(us, "country", "US"); err != nil {
+		t.Fatal(err)
+	}
+	ca, _ := b.AddNode("Person")
+	if err := b.SetProp(ca, "country", "CA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.AddNode("City"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(b.Finalize("country"))
+
+	usProp := []ast.PropEntry{{Key: "country", Val: ast.StrLit("US")}}
+	paramProp := []ast.PropEntry{{Key: "country", Val: ast.Literal{Kind: ast.LitParam, P: 0}}}
+
+	// nodeCard: no labels -> all nodes; a label alone -> its cardinality; a
+	// concrete property -> the seek count; a parameter -> back to the label.
+	if got := nodeCard(nil, nil, g); got != 3 {
+		t.Fatalf("nodeCard(no labels) = %d, want 3", got)
+	}
+	if got := nodeCard([]string{"Person"}, nil, g); got != 2 {
+		t.Fatalf("nodeCard(Person) = %d, want 2", got)
+	}
+	if got := nodeCard([]string{"Person"}, usProp, g); got != 1 {
+		t.Fatalf("nodeCard(Person {country:US}) = %d, want 1", got)
+	}
+	if got := nodeCard([]string{"Person"}, paramProp, g); got != 2 {
+		t.Fatalf("nodeCard(Person {country:$p}) = %d, want 2", got)
+	}
+
+	// resolveByProps: no labels or only a parameter declines; a concrete
+	// property returns exactly the seek ids.
+	if _, ok := resolveByProps(nil, usProp, g); ok {
+		t.Fatal("resolveByProps with no labels must decline")
+	}
+	if _, ok := resolveByProps([]string{"Person"}, paramProp, g); ok {
+		t.Fatal("resolveByProps with only a parameter prop must decline")
+	}
+	ids, ok := resolveByProps([]string{"Person"}, usProp, g)
+	if !ok || len(ids) != 1 || uint32(ids[0]) != uint32(us) {
+		t.Fatalf("resolveByProps(Person {country:US}) = %v,%v, want [us],true", ids, ok)
 	}
 }
