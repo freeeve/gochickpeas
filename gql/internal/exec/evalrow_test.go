@@ -4,7 +4,10 @@ import (
 	"slices"
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 )
 
 // TestAstPushdown covers the interpreted path's conservative slot analysis:
@@ -75,5 +78,24 @@ func TestAstPushdown(t *testing.T) {
 	}
 	if _, slow := run(&ast.Func{Name: "abs", Args: []ast.Expr{&ast.Var{Name: "x"}}}); !slow {
 		t.Fatal("a function call must set hasSlow")
+	}
+}
+
+// TestInterpExprEval covers the interpreter-fallback RowEval: interpExpr.Eval
+// runs the AST through the interpreter, which exec's own native-graph tests
+// otherwise route around via the compiled form.
+func TestInterpExprEval(t *testing.T) {
+	g := graph.New(chickpeas.NewBuilder(1, 0).Finalize())
+	ctx := &eval.Ctx{G: g}
+
+	// A constant arithmetic expression evaluates through the interpreter.
+	sum := interpExpr{e: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Lit{Value: ast.IntLit(2)}, RHS: &ast.Lit{Value: ast.IntLit(3)}}}
+	if v, _ := sum.Eval(ctx, nil, nil).AsInt(); v != 5 {
+		t.Fatalf("interpExpr.Eval(2 + 3) = %v, want 5", sum.Eval(ctx, nil, nil))
+	}
+	// A row slot read resolves against the passed row and slot map.
+	slotRead := interpExpr{e: &ast.Var{Name: "x"}}
+	if v, _ := slotRead.Eval(ctx, urow(7), map[string]int{"x": 0}).AsInt(); v != 7 {
+		t.Fatalf("interpExpr.Eval(x) over row[0]=7 = %v, want 7", slotRead.Eval(ctx, urow(7), map[string]int{"x": 0}))
 	}
 }
