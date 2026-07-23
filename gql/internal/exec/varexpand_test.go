@@ -218,3 +218,51 @@ func TestVarExpandCandidates(t *testing.T) {
 		t.Fatalf("{0,} candidates = %v, want {0,1,2,3}", got)
 	}
 }
+
+// TestVarReachGatedAndBound covers varReach's per-hop-gate and bound-target
+// branches over the chain 0-R->1-R->2-R->3 (edge positions 0,1,2): a hop gate
+// that rejects odd rel positions stops the walk after the first (even) edge,
+// and a bound target emits only that node.
+func TestVarReachGatedAndBound(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	for range 4 {
+		if _, err := bld.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bld.AddRel(graph.NodeID(i), graph.NodeID(i+1), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sg := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: sg}
+	rm := sg.CompileRelMatcher([]string{"R"})
+	m := sg.CompileNodeMatcher(nil, nil)
+	u := func(x uint64) *uint64 { return &x }
+	collect := func(op *plan.BindOp, gate hopGate, bound graph.NodeID, haveBound bool) map[graph.NodeID]bool {
+		var out []graph.NodeID
+		var rs reachScratch
+		varReach(ctx, 0, op, m, rm, gate, bound, haveBound, &uniqEnv{}, &out, &rs)
+		got := map[graph.NodeID]bool{}
+		for _, n := range out {
+			got[n] = true
+		}
+		return got
+	}
+
+	// A hop gate accepting only even rel positions: edge 0->1 (pos 0) passes,
+	// 1->2 (pos 1) is rejected, so the walk reaches only node 1.
+	gated := collect(&plan.BindOp{Kind: plan.OpVarExpand, Dir: graph.Outgoing, Types: []string{"R"}, Min: 1, Max: nil},
+		hopGate{pred: &hopFilter{eval: posEvenEval{}}}, 0, false)
+	if len(gated) != 1 || !gated[1] {
+		t.Fatalf("gated reach = %v, want {1}", gated)
+	}
+
+	// A bound target emits only that node even though 1, 2, 3 are all reached.
+	bnd := collect(&plan.BindOp{Kind: plan.OpVarExpand, Dir: graph.Outgoing, Types: []string{"R"}, Min: 1, Max: u(3)},
+		hopGate{}, 2, true)
+	if len(bnd) != 1 || !bnd[2] {
+		t.Fatalf("bound reach = %v, want {2}", bnd)
+	}
+}
