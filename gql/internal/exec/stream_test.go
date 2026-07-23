@@ -3,6 +3,11 @@ package exec
 import (
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -40,5 +45,64 @@ func TestRowArena(t *testing.T) {
 	}
 	if v, _ := r2[0].AsInt(); v != 7 {
 		t.Fatal("rollback must free the slot for the next alloc to reuse")
+	}
+}
+
+// TestCallSubqueryExec drives the CALL {} lateral-join sinks: a correlated
+// subquery joins each outer row with its own inner match, and an
+// uncorrelated one crosses every outer row with a shared inner result.
+func TestCallSubqueryExec(t *testing.T) {
+	// a0(A)-R->x0, a1(A)-R->x1 (ids 0,1,2,3).
+	bld := chickpeas.NewBuilder(8, 8)
+	a0, _ := bld.AddNode("A")
+	x0, _ := bld.AddNode("X")
+	if _, err := bld.AddRel(a0, x0, "R"); err != nil {
+		t.Fatal(err)
+	}
+	a1, _ := bld.AddNode("A")
+	x1, _ := bld.AddNode("X")
+	if _, err := bld.AddRel(a1, x1, "R"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+	run := func(src string) [][]value.Value {
+		t.Helper()
+		q, err := parser.Parse(src)
+		if err != nil {
+			t.Fatalf("parse %q: %v", src, err)
+		}
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatalf("plan %q: %v", src, err)
+		}
+		rows, err := Execute(ctx, p)
+		if err != nil {
+			t.Fatalf("exec %q: %v", src, err)
+		}
+		return rows
+	}
+
+	// Correlated: each A joins to its own R-neighbor -> (a0,x0), (a1,x1).
+	rows := run("MATCH (a:A) CALL (a) { MATCH (a)-[:R]->(x) RETURN x AS n } RETURN a, n")
+	pairs := map[[2]graph.NodeID]bool{}
+	for _, r := range rows {
+		av, _ := r[0].AsNode()
+		nv, _ := r[1].AsNode()
+		pairs[[2]graph.NodeID{av, nv}] = true
+	}
+	if len(pairs) != 2 || !pairs[[2]graph.NodeID{a0, x0}] || !pairs[[2]graph.NodeID{a1, x1}] {
+		t.Fatalf("correlated CALL pairs = %v, want {(a0,x0),(a1,x1)}", pairs)
+	}
+
+	// Uncorrelated: every A is crossed with the shared count of X (=2).
+	rows = run("MATCH (a:A) CALL { MATCH (x:X) RETURN count(x) AS c } RETURN a, c")
+	if len(rows) != 2 {
+		t.Fatalf("uncorrelated CALL rows = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if c, _ := r[1].AsInt(); c != 2 {
+			t.Fatalf("uncorrelated count = %d, want 2", c)
+		}
 	}
 }
