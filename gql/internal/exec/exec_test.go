@@ -219,6 +219,11 @@ func TestExecNonNativeGraph(t *testing.T) {
 		"MATCH (a:A)-[r:R]->(b:B) RETURN r",
 		"MATCH (n) RETURN n",
 		"MATCH (a:A) OPTIONAL MATCH (a)-[:R]->(b:B) RETURN a, b",
+		// Aggregates: the columnar fast path requires the Native capability,
+		// so the non-native graph exercises the portable aggregation instead.
+		"MATCH (a:A) RETURN count(*) AS c",
+		"MATCH (a:A) RETURN min(a.v) AS mn, max(a.v) AS mx",
+		"MATCH (a:A) RETURN a.v AS v, count(*) AS c",
 	} {
 		q, err := parser.Parse(src)
 		if err != nil {
