@@ -51,4 +51,43 @@ func TestConversionFunctions(t *testing.T) {
 	wantBool(t, g, "toBoolean('false')", false)
 	wantNull(t, g, "toBoolean('nope')")
 	wantNull(t, g, "toInteger('abc')")
+	// toFloat promotes an int; toInteger truncates a negative float toward zero.
+	wantFloat(t, g, "toFloat(3)", 3.0)
+	wantInt(t, g, "toInteger(-3.9)", -3)
+}
+
+// TestListEndpointAndCountFunctions covers the collection builtins not already
+// pinned elsewhere: cardinality and char_length counts, and the head/last
+// endpoints (Null on an empty list).
+func TestListEndpointAndCountFunctions(t *testing.T) {
+	g := testGraph(t)
+	wantInt(t, g, "cardinality([1, 2, 3, 4])", 4)
+	wantInt(t, g, "char_length('hello')", 5)
+	wantInt(t, g, "character_length('abcd')", 4)
+	wantInt(t, g, "head([10, 20, 30])", 10)
+	wantInt(t, g, "last([10, 20, 30])", 30)
+	wantNull(t, g, "head([])")
+}
+
+// TestTrimAndCoalesceFunctions covers the whitespace trims and coalesce's
+// first-non-null selection.
+func TestTrimAndCoalesceFunctions(t *testing.T) {
+	g := testGraph(t)
+	wantStr(t, g, "trim('  hi  ')", "hi")
+	wantStr(t, g, "ltrim('  hi')", "hi")
+	wantStr(t, g, "rtrim('hi  ')", "hi")
+	wantInt(t, g, "coalesce(null, null, 7)", 7)
+	wantInt(t, g, "coalesce(3, 5)", 3)
+	wantNull(t, g, "coalesce(null, null)")
+}
+
+// TestNormalizeBuiltins covers the NORMALIZE/is_normalized functions: ASCII
+// text is already in every normalization form, and the one-argument NORMALIZE
+// defaults to NFC.
+func TestNormalizeBuiltins(t *testing.T) {
+	g := testGraph(t)
+	wantStr(t, g, "normalize('abc', NFC)", "abc")
+	wantStr(t, g, "normalize('abc')", "abc")
+	wantBool(t, g, "'abc' IS NORMALIZED", true)
+	wantBool(t, g, "'abc' IS NOT NORMALIZED", false)
 }
