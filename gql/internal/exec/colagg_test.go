@@ -258,3 +258,17 @@ func TestColAggPropValue(t *testing.T) {
 		t.Fatalf("unindexed key ok=%v, want a non-nil Null-folding reader", ok)
 	}
 }
+
+// TestIntLit covers the integer-literal unwrapper: an integer literal yields
+// its value, while a non-integer literal and a non-literal expression decline.
+func TestIntLit(t *testing.T) {
+	if v, ok := intLit(&ast.Lit{Value: ast.IntLit(42)}); !ok || v != 42 {
+		t.Fatalf("intLit(42) = (%d, %v), want (42, true)", v, ok)
+	}
+	if _, ok := intLit(&ast.Lit{Value: ast.StrLit("x")}); ok {
+		t.Fatal("a string literal must not unwrap as an int")
+	}
+	if _, ok := intLit(&ast.Var{Name: "n"}); ok {
+		t.Fatal("a non-literal must not unwrap as an int")
+	}
+}
