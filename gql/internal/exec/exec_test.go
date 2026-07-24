@@ -246,3 +246,46 @@ func TestExecNonNativeGraph(t *testing.T) {
 		}
 	}
 }
+
+// TestCallProcedureExec drives a global CALL procedure so buildStageSink
+// constructs the CallStage sink and the executor runs the native kernel:
+// PageRank over a 3-cycle yields one positive rank per node.
+func TestCallProcedureExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	var ns []graph.NodeID
+	for range 3 {
+		n, err := bld.AddNode("N")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ns = append(ns, n)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bld.AddRel(ns[i], ns[(i+1)%3], "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("CALL algo.pagerank(true, 0.85, 20) YIELD node, value RETURN node, value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("pagerank rows = %d, want 3 (one per node)", len(rows))
+	}
+	for _, r := range rows {
+		if v, _ := r[1].AsFloat(); v <= 0 {
+			t.Fatalf("pagerank value = %v, want a positive rank", r[1])
+		}
+	}
+}
