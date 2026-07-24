@@ -99,6 +99,172 @@ func TestFingerprintDistinguishesStructure(t *testing.T) {
 	}
 }
 
+// fpExpr wraps a single expression as a lone RETURN item and fingerprints the
+// query, so a table of nodes can be compared for collisions directly. Direct
+// construction reaches the engine-only expression nodes (Cost, Reduce,
+// ListComp, PatternComp, MapProj) that have no GQL surface syntax and so are
+// unreachable through the parser -- exactly where a missing fpExpr arm would be
+// an invisible plan-cache collision.
+func fpExpr(e ast.Expr) string {
+	q := &ast.Query{Parts: []ast.QueryPart{{
+		Ret: ast.Projection{Items: []ast.ReturnItem{{Expr: e}}},
+	}}}
+	return ast.Fingerprint(q)
+}
+
+// fpClause wraps a single clause ahead of a `*` projection and fingerprints it.
+func fpClause(c ast.Clause) string {
+	q := &ast.Query{Parts: []ast.QueryPart{{
+		Clauses: []ast.Clause{c},
+		Ret:     ast.Projection{Star: true},
+	}}}
+	return ast.Fingerprint(q)
+}
+
+// minPattern is the smallest valid linear pattern: a single bound node.
+func minPattern() *ast.Pattern { return &ast.Pattern{Start: ast.NodePat{Var: "x"}} }
+
+// TestFingerprintCoversAllExprKinds constructs every Expr node kind -- including
+// the engine-only nodes the parser cannot produce -- and asserts they all
+// fingerprint distinctly. A collision here means two structurally different
+// expressions would share one cached template plan.
+func TestFingerprintCoversAllExprKinds(t *testing.T) {
+	lbl := &ast.LabelExpr{Kind: ast.LabelName, Name: "L"}
+	nodes := []ast.Expr{
+		nil, // the explicit "_" arm (e.g. an absent Case operand rendered inline)
+		&ast.Lit{Value: ast.IntLit(1)},
+		&ast.Var{Name: "v"},
+		&ast.Prop{Var: "v", Key: "k"},
+		&ast.Unary{Op: ast.Not, Expr: &ast.Var{Name: "v"}},
+		&ast.Binary{Op: ast.OpOr, LHS: &ast.Var{Name: "a"}, RHS: &ast.Var{Name: "b"}},
+		&ast.Func{Name: "count", Star: true},
+		&ast.Func{Name: "count", Distinct: true, Args: []ast.Expr{&ast.Var{Name: "v"}}},
+		&ast.ListExpr{Elems: []ast.Expr{&ast.Lit{Value: ast.IntLit(1)}}},
+		&ast.In{Expr: &ast.Var{Name: "v"}, List: &ast.ListExpr{}},
+		&ast.IsNull{Expr: &ast.Var{Name: "v"}},
+		&ast.IsNull{Expr: &ast.Var{Name: "v"}, Negated: true},
+		&ast.IsTruth{Expr: &ast.Var{Name: "v"}, Want: true},
+		&ast.IsTruth{Expr: &ast.Var{Name: "v"}, Want: false},
+		&ast.IsTruth{Expr: &ast.Var{Name: "v"}, Want: true, Negated: true},
+		&ast.IsTyped{Expr: &ast.Var{Name: "v"}, Kind: "integer"},
+		&ast.IsTyped{Expr: &ast.Var{Name: "v"}, Kind: "float"},
+		&ast.IsTyped{Expr: &ast.Var{Name: "v"}, Kind: "integer", Negated: true},
+		&ast.Case{
+			Operand: &ast.Var{Name: "v"},
+			Whens:   []ast.CaseWhen{{Cond: &ast.Lit{Value: ast.IntLit(1)}, Result: &ast.Lit{Value: ast.StrLit("x")}}},
+			Else:    &ast.Lit{Value: ast.StrLit("y")},
+		},
+		&ast.Cost{From: "a", To: "b", Dir: ast.DirOut, Types: []string{"KNOWS"}, Weight: ast.CostSpec{Kind: ast.CostProperty, Prop: "w"}},
+		&ast.Exists{Pattern: minPattern()},
+		&ast.Exists{Pattern: minPattern(), Where: &ast.Var{Name: "v"}},
+		&ast.CountSub{Pattern: minPattern()},
+		&ast.ListPred{Quant: ast.QuantAll, Var: "x", List: &ast.Var{Name: "xs"}, Pred: &ast.Var{Name: "x"}},
+		&ast.ListPred{Quant: ast.QuantAny, Var: "x", List: &ast.Var{Name: "xs"}, Pred: &ast.Var{Name: "x"}},
+		&ast.Reduce{Acc: "s", Init: &ast.Lit{Value: ast.IntLit(0)}, Var: "x", List: &ast.Var{Name: "xs"}, Body: &ast.Var{Name: "x"}},
+		&ast.ListComp{Var: "x", List: &ast.Var{Name: "xs"}, Filter: &ast.Var{Name: "x"}, Map: &ast.Var{Name: "x"}},
+		&ast.PatternComp{Pattern: minPattern(), Proj: &ast.Var{Name: "x"}},
+		&ast.Index{Base: &ast.Var{Name: "v"}, Idx: &ast.Lit{Value: ast.IntLit(0)}},
+		&ast.Slice{Base: &ast.Var{Name: "v"}, From: &ast.Lit{Value: ast.IntLit(0)}, To: &ast.Lit{Value: ast.IntLit(1)}},
+		&ast.Slice{Base: &ast.Var{Name: "v"}}, // both bounds nil -> the "_" arms
+		&ast.PropOf{Base: &ast.Var{Name: "v"}, Key: "k"},
+		&ast.MapProj{Var: "v", Entries: []ast.MapProjEntry{
+			{Kind: ast.MapProjProp, Key: "k"},
+			{Kind: ast.MapProjField, Key: "a", Expr: &ast.Var{Name: "x"}},
+			{Kind: ast.MapProjAll},
+		}},
+		&ast.MapLit{Fields: []ast.MapField{{Key: "a", Val: &ast.Lit{Value: ast.IntLit(1)}}}},
+		&ast.HasLabelExpr{Var: "v", Expr: lbl},
+	}
+	seen := map[string]int{}
+	for i, e := range nodes {
+		f := fpExpr(e)
+		if prev, dup := seen[f]; dup {
+			t.Fatalf("expr fingerprint collision: nodes[%d] and nodes[%d] both -> %q", prev, i, f)
+		}
+		seen[f] = i
+		if fpExpr(e) != f {
+			t.Fatalf("nodes[%d] fingerprint not stable", i)
+		}
+	}
+}
+
+// TestFingerprintCoversAllLiteralKinds asserts each Literal kind fingerprints
+// distinctly, including the param forms and both boolean values.
+func TestFingerprintCoversAllLiteralKinds(t *testing.T) {
+	lits := []ast.Literal{
+		ast.IntLit(7),
+		ast.FloatLit(1.5),
+		ast.StrLit("s"),
+		ast.BoolLit(true),
+		ast.BoolLit(false),
+		ast.NullLit(),
+		ast.ParamLit(3),
+		ast.NamedParamLit("who"),
+	}
+	seen := map[string]int{}
+	for i, l := range lits {
+		f := fpExpr(&ast.Lit{Value: l})
+		if prev, dup := seen[f]; dup {
+			t.Fatalf("literal fingerprint collision: lits[%d] and lits[%d] both -> %q", prev, i, f)
+		}
+		seen[f] = i
+	}
+}
+
+// TestFingerprintCoversEngineClauses fingerprints the clause kinds and the
+// weighted/optional variants, asserting each is distinct -- the fpClause arms a
+// parse-only test reaches unevenly.
+func TestFingerprintCoversEngineClauses(t *testing.T) {
+	clauses := []ast.Clause{
+		&ast.Match{Patterns: []ast.Pattern{*minPattern()}},
+		&ast.Match{Patterns: []ast.Pattern{*minPattern()}, Optional: true},
+		&ast.Match{Patterns: []ast.Pattern{*minPattern()}, Acyclic: true},
+		&ast.Match{Patterns: []ast.Pattern{*minPattern()}, Repeatable: true},
+		&ast.With{Proj: ast.Projection{Star: true}, Where: &ast.Var{Name: "v"}},
+		&ast.ShortestPath{PathVar: "p", Pattern: *minPattern()},
+		&ast.ShortestPath{PathVar: "p", Pattern: *minPattern(), All: true, Optional: true},
+		&ast.ShortestPath{PathVar: "p", Pattern: *minPattern(), Weight: &ast.CostSpec{Kind: ast.CostConstant, Const: 2}},
+		&ast.CallProc{Proc: "wcc", Args: []ast.Expr{&ast.Lit{Value: ast.StrLit("KNOWS")}}, Yields: []ast.YieldItem{{Field: "node", Alias: "n"}}},
+		&ast.PathBind{PathVar: "p", Pattern: *minPattern()},
+		&ast.PathBind{PathVar: "p", Pattern: *minPattern(), Acyclic: true, Optional: true},
+		&ast.Unwind{Var: "x", Expr: &ast.ListExpr{Elems: []ast.Expr{&ast.Lit{Value: ast.IntLit(1)}}}},
+		&ast.CallSubquery{Imports: []string{"p"}, Query: ast.Query{Parts: []ast.QueryPart{{Ret: ast.Projection{Star: true}}}}},
+	}
+	seen := map[string]int{}
+	for i, c := range clauses {
+		f := fpClause(c)
+		if prev, dup := seen[f]; dup {
+			t.Fatalf("clause fingerprint collision: clauses[%d] and clauses[%d] both -> %q", prev, i, f)
+		}
+		seen[f] = i
+	}
+}
+
+// TestFingerprintCoversRelPatternDetails exercises fpRelPat's property and
+// variable-length arms: literal props, expression props, and the three
+// partial-bound quantifier shapes must each shift the fingerprint.
+func TestFingerprintCoversRelPatternDetails(t *testing.T) {
+	two, three := uint64(2), uint64(3)
+	rels := []ast.RelPat{
+		{Var: "r", Dir: ast.DirOut, Types: []string{"KNOWS"}},
+		{Dir: ast.DirOut, Props: []ast.PropEntry{{Key: "since", Val: ast.IntLit(2020)}}},
+		{Dir: ast.DirOut, PropExprs: []ast.PropExprEntry{{Key: "w", Val: &ast.Var{Name: "x"}}}},
+		{Dir: ast.DirOut, Length: &ast.VarLength{Min: &two, Max: &three}},
+		{Dir: ast.DirOut, Length: &ast.VarLength{Min: &two}},   // {2,}
+		{Dir: ast.DirOut, Length: &ast.VarLength{Max: &three}}, // {,3}
+		{Dir: ast.DirOut, Length: &ast.VarLength{}},            // * (both nil)
+	}
+	seen := map[string]int{}
+	for i, r := range rels {
+		pat := ast.Pattern{Start: ast.NodePat{Var: "a"}, Hops: []ast.PatternHop{{Rel: r, Node: ast.NodePat{Var: "b"}}}}
+		f := fpClause(&ast.Match{Patterns: []ast.Pattern{pat}})
+		if prev, dup := seen[f]; dup {
+			t.Fatalf("rel-pattern fingerprint collision: rels[%d] and rels[%d] both -> %q", prev, i, f)
+		}
+		seen[f] = i
+	}
+}
+
 func TestFingerprintStableAcrossParses(t *testing.T) {
 	for _, q := range []string{
 		"MATCH (p:Person {name: 'Alice'})-[:KNOWS]->{1,2}(f) WHERE f.age > 30 RETURN DISTINCT f.name AS n ORDER BY n LIMIT 5",
