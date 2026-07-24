@@ -148,3 +148,45 @@ func TestNamedPathExec(t *testing.T) {
 		t.Fatalf("path rels = %v, want exactly 1", rels)
 	}
 }
+
+// TestNamedPathWhereExec drives a named-path binding with a WHERE: because the
+// path value is assembled only after the walk, its filter runs as a post-path
+// filter (the stage WHERE bucketing bails on a PathBind), so only the path
+// whose endpoint passes the guard survives.
+func TestNamedPathWhereExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	a0, _ := bld.AddNode("A")
+	a1, _ := bld.AddNode("A")
+	_ = bld.SetProp(a1, "v", int64(20))
+	a2, _ := bld.AddNode("A")
+	_ = bld.SetProp(a2, "v", int64(5))
+	if _, err := bld.AddRel(a0, a1, "R"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bld.AddRel(a0, a2, "R"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize("v"))
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("MATCH p = (a:A)-[:R]->(b:A) WHERE b.v > 15 RETURN p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only a0 -> a1 (b.v = 20 > 15) survives; a0 -> a2 (b.v = 5) is filtered.
+	if len(rows) != 1 {
+		t.Fatalf("named-path WHERE rows = %d, want 1", len(rows))
+	}
+	nodes, _, ok := rows[0][0].AsPath()
+	if !ok || len(nodes) != 2 || uint32(nodes[1]) != uint32(a1) {
+		t.Fatalf("surviving path = %v, want a0 -> a1", rows[0][0])
+	}
+}
