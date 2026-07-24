@@ -335,14 +335,15 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 	} else {
 		// The three build phases are independent pure reads of the staging
 		// state, so they run as a parallel join; results are deterministic.
-		var relToInCSR []uint32
 		parallel.Join(
 			func() {
 				g.outOffsets, g.outNbrs, g.outTypes, relToOutCSR =
 					buildCSRDirection(n, b.rels, b.relTypes, b.degOut, 0)
 			},
 			func() {
-				g.inOffsets, g.inNbrs, g.inTypes, relToInCSR =
+				// The in-direction rel->CSR map fed only the eager inToOut
+				// build, now lazy (getInToOut re-derives from the CSR).
+				g.inOffsets, g.inNbrs, g.inTypes, _ =
 					buildCSRDirection(n, b.rels, b.relTypes, b.degIn, 1)
 			},
 			func() {
@@ -350,12 +351,10 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 			},
 		)
 		buildTypeIndex(g)
-		if hasRelProps {
-			g.inToOut = make([]uint32, m)
-			for idx := range m {
-				g.inToOut[relToInCSR[idx]] = relToOutCSR[idx]
-			}
-		}
+		// inToOut is built lazily on the first rel-position read (getInToOut),
+		// not materialized here -- a loaded graph never queried for rel
+		// properties keeps its ~64MB (SF1). Record only whether it is needed.
+		g.hasRelProps = hasRelProps
 	}
 
 	finalizeNodeColumns(g, plan, b.nodeColI64, n, columnFromPairsI64)

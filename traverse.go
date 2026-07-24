@@ -361,6 +361,7 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					}
 				}
 			} else {
+				ito := g.getInToOut() // nil (no rel props) leaves raw positions
 				for k := lo; k < hi; k++ {
 					t := g.inTypes[k]
 					if !m.matches(t) {
@@ -368,8 +369,8 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					}
 					// Map the incoming position to where the property is stored.
 					pos := uint32(k)
-					if k < len(g.inToOut) {
-						pos = g.inToOut[k]
+					if k < len(ito) {
+						pos = ito[k]
 					}
 					if !yield(RelRef{Neighbor: g.inNbrs[k], Type: t, Direction: Incoming, Pos: pos}) {
 						return

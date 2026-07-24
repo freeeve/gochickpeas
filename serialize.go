@@ -303,13 +303,11 @@ func FromGraphSection(section *rcpg.GraphSection) *Snapshot {
 	g.version = section.Version
 	g.atoms = NewAtoms(section.Atoms)
 
-	// The format does not store the incoming -> outgoing position map;
-	// rebuild it so incoming rel-property reads are correct. Only needed
-	// when the snapshot has rel properties.
-	if len(g.relColumns) > 0 {
-		g.inToOut = computeInToOutFromCSR(
-			g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
-	}
+	// The format does not store the incoming -> outgoing position map; it is
+	// rebuilt lazily on the first incoming rel-property read (getInToOut), so
+	// a loaded-but-unqueried graph never pays its footprint. Record only
+	// whether rel columns exist, the authority for whether it is ever needed.
+	g.hasRelProps = len(g.relColumns) > 0
 	return g
 }
 

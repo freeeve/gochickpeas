@@ -101,6 +101,10 @@ func labelOf(t testing.TB, g *Snapshot, name string) Label {
 // assertCSRAliased checks both CSR directions (and inToOut) are shared.
 func assertCSRAliased(t *testing.T, got, src *Snapshot, want bool) {
 	t.Helper()
+	// inToOut is built lazily, so materialize both before comparing backings:
+	// an aliased CSR shares the source's map, a rebuilt one derives a fresh one.
+	got.getInToOut()
+	src.getInToOut()
 	checks := []struct {
 		name   string
 		shared bool

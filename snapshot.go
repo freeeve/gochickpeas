@@ -36,9 +36,16 @@ type Snapshot struct {
 
 	// inToOut maps an incoming CSR position to the outgoing CSR position of
 	// the same rel, so rel properties (stored by outgoing position) read
-	// correctly for incoming rels. Empty when the graph has no rel
-	// properties (the map would be unused).
-	inToOut []uint32
+	// correctly for incoming rels. Built lazily by getInToOut on the first
+	// rel-POSITION read -- a graph loaded but never queried for rel
+	// properties never pays its footprint (~64MB at SF1). hasRelProps is the
+	// authority for whether it is ever needed; inToOut stays nil until then.
+	inToOut     []uint32
+	inToOutOnce sync.Once
+	// hasRelProps records whether any relationship column exists -- whether a
+	// rel POSITION is ever read. Was proxied by len(inToOut)>0 back when
+	// inToOut was materialized eagerly at load.
+	hasRelProps bool
 
 	labelIndex map[Label]*nodeset.Set
 	typeIndex  map[RelType]*nodeset.Set
@@ -154,6 +161,23 @@ func (g *Snapshot) NodeCount() uint32 {
 // RelCount is the number of relationships in the graph.
 func (g *Snapshot) RelCount() uint64 {
 	return g.nRels
+}
+
+// getInToOut returns the incoming->outgoing CSR position map, building it once
+// on first use (from the retained CSR) so a graph never queried for rel
+// properties never materializes it. nil when the graph has no rel columns.
+// Synchronized like the typed-view caches: reads after the build see no lock.
+func (g *Snapshot) getInToOut() []uint32 {
+	if !g.hasRelProps {
+		return nil
+	}
+	g.inToOutOnce.Do(func() {
+		if g.inToOut == nil {
+			g.inToOut = computeInToOutFromCSR(
+				g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
+		}
+	})
+	return g.inToOut
 }
 
 // CSRIDSpace is the number of id slots in 0..=maxNodeID. Dense scratch

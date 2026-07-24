@@ -134,15 +134,15 @@ func (g *Snapshot) AppendRelsBetweenMatch(dst []uint32, u, v NodeID, dir Directi
 // appendDirPosMatch appends one direction's u->v matched relationship
 // positions, side-picked by run length. out reports whether u is the source
 // (the forward frame); the reverse run of v lists the same relationships.
-// The reverse (v-side) scan is taken only when inToOut is populated -- that
-// is the only state in which an incoming position maps to its outgoing
-// (stored) frame, so it is the only state in which a relationship position
-// is ever read (endpoints, type, properties all index the outgoing frame).
-// With no rel properties inToOut is empty, positions are unread, and the
-// forward scan keeps the frame identical to the enumerate path.
+// The reverse (v-side) scan is taken only when the graph has rel properties
+// -- the only state in which a relationship position is ever read (endpoints,
+// type, properties all index the outgoing frame), and thus the only state in
+// which the incoming->outgoing position map is consulted. With no rel
+// properties positions are unread and the forward scan keeps the frame
+// identical to the enumerate path.
 func (g *Snapshot) appendDirPosMatch(dst []uint32, u, v NodeID, out bool, m RelMatch) []uint32 {
 	base := len(dst)
-	flipOK := len(g.inToOut) > 0
+	flipOK := g.hasRelProps
 	// Typed-view tier: both endpoints have a contiguous per-type run; scan
 	// the shorter one.
 	if tcU := m.tp.view(out); tcU != nil {
@@ -175,7 +175,7 @@ func (g *Snapshot) appendDirPosMatch(dst []uint32, u, v NodeID, out bool, m RelM
 	// per-rel type tests, positions mapped to the stored frame for incoming.
 	offsets, nbrs, types, posMap := g.outOffsets, g.outNbrs, g.outTypes, []uint32(nil)
 	if !out {
-		offsets, nbrs, types, posMap = g.inOffsets, g.inNbrs, g.inTypes, g.inToOut
+		offsets, nbrs, types, posMap = g.inOffsets, g.inNbrs, g.inTypes, g.getInToOut()
 	}
 	lo, hi := relRange(offsets, u)
 	for k := lo; k < hi; k++ {

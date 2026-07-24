@@ -169,15 +169,17 @@ func (p *aliasPlan) aliasCSR(g *Snapshot, hasRelProps bool) {
 	g.outOffsets, g.outNbrs, g.outTypes = src.outOffsets, src.outNbrs, src.outTypes
 	g.inOffsets, g.inNbrs, g.inTypes = src.inOffsets, src.inNbrs, src.inTypes
 	maps.Copy(g.typeIndex, src.typeIndex)
+	g.hasRelProps = hasRelProps
 	if !hasRelProps {
 		return
 	}
-	if src.inToOut != nil {
-		g.inToOut = src.inToOut
-		return
-	}
-	g.inToOut = computeInToOutFromCSR(
-		g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
+	// The successor reads through the SAME CSR positions, so it shares the
+	// source's position map rather than deriving an identical copy -- forcing
+	// the source's lazy build once and completing g's Once with the shared
+	// slice, so getInToOut returns it without re-deriving. (A rebuilt CSR
+	// takes a different path and never reaches aliasCSR.)
+	shared := src.getInToOut()
+	g.inToOutOnce.Do(func() { g.inToOut = shared })
 }
 
 // aliasAtoms shares the source atom table when nothing new was interned. The

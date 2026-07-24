@@ -123,7 +123,7 @@ func (p *typedPair) view(out bool) *typedCSR {
 			// The incoming view bakes the inToOut position mapping in, so
 			// property reads index the stored (outgoing) positions directly;
 			// an absent mapping keeps raw indexes, mirroring relsYield.
-			p.in = buildTypedCSR(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.inToOut, p.t)
+			p.in = buildTypedCSR(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.getInToOut(), p.t)
 		}
 	})
 	return p.in
@@ -148,7 +148,7 @@ func (p *typedPair) runs(out bool) *typedRuns {
 	}
 	p.inRunsOnce.Do(func() {
 		if !p.g.typedAboveFloor(p.t) {
-			p.inRuns = buildTypedRuns(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.inToOut, p.t, p.typeCount())
+			p.inRuns = buildTypedRuns(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.getInToOut(), p.t, p.typeCount())
 		}
 	})
 	return p.inRuns
