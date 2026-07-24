@@ -112,16 +112,10 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		switch {
 		case n.hasMemo:
 			if ik, ok := packNodeKey(n.memoSlots, row); ok {
-				if c, hit := n.memoI[ik]; hit {
-					count = c
-				} else {
+				count = n.memoI.GetOrCreate(ik, func() int {
 					SubqueryWalks++
-					count = eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
-					if n.memoI == nil {
-						n.memoI = map[uint64]int{}
-					}
-					n.memoI[ik] = count
-				}
+					return eval.SubqueryCount(ctx, n.pattern, n.where, row, slots, !n.isCount)
+				})
 				break
 			}
 			n.key = n.key[:0]

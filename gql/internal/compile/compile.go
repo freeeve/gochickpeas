@@ -9,6 +9,7 @@ import (
 	"maps"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -95,10 +96,12 @@ type cSubquery struct {
 	hasMemo   bool
 	memo      map[string]int
 	// memoI is the entity-id fast-path memo: when every correlated slot
-	// holds a node id (<=2 of them), the key packs into a uint64 and a
-	// miss's insert allocates nothing, unlike the byte-string memo. Both
-	// are lazy; a subquery uses whichever its correlated slots select.
-	memoI map[uint64]int
+	// holds a node id (<=2 of them), the key packs into a uint64. A flat
+	// open-addressed table -- one backing-array doubling amortizes the fill
+	// -- rather than a built-in map, whose per-insert bucket/overflow growth
+	// dominated the correlated-subquery allocation profile (SPB a14). Both
+	// memos are lazy; a subquery uses whichever its correlated slots select.
+	memoI flatset.U64Map
 	// key is the reusable memo-key buffer: lookups probe string(key)
 	// without allocating; only a miss's insert converts.
 	key []byte
