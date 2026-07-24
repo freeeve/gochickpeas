@@ -141,3 +141,46 @@ func TestFreshScanKinds(t *testing.T) {
 		t.Fatalf("text-match rows = %d, want 1 (alice)", len(rows))
 	}
 }
+
+// TestExistsSeedScanExec drives an EXISTS-seeded scan end-to-end: with `a`
+// bound to a concrete node, the scan of `b` is seeded backward through the
+// EXISTS pattern's hop rather than scanning the whole label, so compileStage
+// builds the seed matchers and the executor walks them.
+func TestExistsSeedScanExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(8, 8)
+	var ps []graph.NodeID
+	for i := 0; i < 4; i++ {
+		p, err := bld.AddNode("Person")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = bld.SetProp(p, "pid", int64(i))
+		ps = append(ps, p)
+	}
+	// p3 KNOWS p1: the only KNOWS edge out of the pid=3 anchor.
+	if _, err := bld.AddRel(ps[3], ps[1], "KNOWS"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize("pid"))
+	ctx := &eval.Ctx{G: g}
+
+	q, err := parser.Parse("MATCH (b:Person) MATCH (a:Person {pid: 3}) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b) } RETURN b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// b is seeded from a=p3's single KNOWS neighbor, p1.
+	if len(rows) != 1 {
+		t.Fatalf("exists-seed rows = %d, want 1", len(rows))
+	}
+	if bv, _ := rows[0][0].AsNode(); uint32(bv) != uint32(ps[1]) {
+		t.Fatalf("b = %v, want p1", bv)
+	}
+}
