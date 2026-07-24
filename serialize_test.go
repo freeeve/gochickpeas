@@ -89,3 +89,51 @@ func TestComputeInToOutFromCSRMatchesReference(t *testing.T) {
 		}
 	}
 }
+
+// TestToGraphSectionRoundTrip covers ToGraphSection (the public snapshot ->
+// on-disk model converter) by round-tripping a small graph -- nodes, a label,
+// rels, and both a node and a rel property column -- through FromGraphSection
+// and asserting the reload preserves topology and property values.
+func TestToGraphSectionRoundTrip(t *testing.T) {
+	b := NewBuilder(4, 4)
+	for i := 0; i < 4; i++ {
+		if _, err := b.AddNode("Person"); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(NodeID(i), "age", int64(20+i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A 0->1->2->3 chain with a weight rel column.
+	for i := 0; i < 3; i++ {
+		idx, err := b.AddRel(NodeID(i), NodeID(i+1), "KNOWS")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetRelPropAt(idx, "w", float64(i)+0.25); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize("age", "w")
+
+	section := g.ToGraphSection()
+	if section.NNodes != 4 {
+		t.Fatalf("section NNodes = %d, want 4", section.NNodes)
+	}
+	if section.NRels != 3 {
+		t.Fatalf("section NRels = %d, want 3", section.NRels)
+	}
+	if len(section.NodeColumns) == 0 || len(section.RelColumns) == 0 {
+		t.Fatalf("section columns empty: node=%d rel=%d", len(section.NodeColumns), len(section.RelColumns))
+	}
+
+	// The section reloads to an equivalent snapshot.
+	g2 := FromGraphSection(section)
+	if g2.NodeCount() != g.NodeCount() || g2.RelCount() != g.RelCount() {
+		t.Fatalf("reload counts = (%d nodes, %d rels), want (%d, %d)",
+			g2.NodeCount(), g2.RelCount(), g.NodeCount(), g.RelCount())
+	}
+	if v, ok := g2.Prop(NodeID(2), "age").I64(); !ok || v != 22 {
+		t.Fatalf("reload age[2] = %d/%v, want 22", v, ok)
+	}
+}

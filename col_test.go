@@ -46,3 +46,47 @@ func TestSliceRange(t *testing.T) {
 		t.Fatal("wrong dtype must decline the window")
 	}
 }
+
+// TestColColumnAndF64Slice covers Col.Column (the raw generic reader passthrough)
+// and F64Col.Slice (the dense value slice, declined for a sparse column).
+func TestColColumnAndF64Slice(t *testing.T) {
+	b := NewBuilder(8, 0)
+	for i := 0; i < 8; i++ {
+		if _, err := b.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Full presence stores dense; partial presence stores sparse.
+	for i := 0; i < 8; i++ {
+		if err := b.SetProp(NodeID(i), "score", float64(i)+0.5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, i := range []int{2, 5} {
+		if err := b.SetProp(NodeID(i), "sf", float64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+
+	sc, _ := g.Col("score")
+	// Column() hands back the underlying reader, preserving the dtype.
+	if sc.Column().Dtype() != DtypeF64 {
+		t.Fatalf("Column().Dtype() = %v, want DtypeF64", sc.Column().Dtype())
+	}
+	// A dense f64 column exposes its value slice directly.
+	vals, ok := sc.F64().Slice()
+	if !ok || len(vals) != 8 {
+		t.Fatalf("dense F64 Slice = (len %d, %v), want (8, true)", len(vals), ok)
+	}
+	for i := range vals {
+		if vals[i] != float64(i)+0.5 {
+			t.Fatalf("Slice[%d] = %v, want %v", i, vals[i], float64(i)+0.5)
+		}
+	}
+	// A sparse column has no dense slice.
+	sf, _ := g.Col("sf")
+	if _, ok := sf.F64().Slice(); ok {
+		t.Fatal("sparse F64 column must decline Slice")
+	}
+}
