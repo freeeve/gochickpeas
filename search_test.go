@@ -264,3 +264,53 @@ func TestSearchScratchConcurrency(t *testing.T) {
 		}
 	}
 }
+
+// TestDijkstraDensifies drives a search whose settled set crosses the dense
+// threshold (dijkstraDenseAt = 4096), so the result switches from map state to
+// dense id-space arrays mid-run. A chain of >4096 reachable nodes forces it;
+// the search then answers Distance/Distances/PathTo out of the dense arrays.
+func TestDijkstraDensifies(t *testing.T) {
+	const n = 5000 // > dijkstraDenseAt, so densify() runs
+	b := chickpeas.NewBuilder(n, n)
+	for i := range chickpeas.NodeID(n) {
+		b.AddNodeWithID(i, "N")
+	}
+	for i := range chickpeas.NodeID(n - 1) {
+		if _, err := b.AddRel(i, i+1, "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+	unit := func(_ chickpeas.NodeID, _ chickpeas.RelRef) float64 { return 1 }
+
+	sp := g.Dijkstra(0, chickpeas.Outgoing, chickpeas.MatchAll(), unit)
+	// On a unit-weight chain, node k sits at distance k -- sample across the
+	// densify boundary.
+	for _, k := range []chickpeas.NodeID{0, 1, 100, 4095, 4096, 4999} {
+		if d, ok := sp.Distance(k); !ok || d != float64(k) {
+			t.Fatalf("Distance(%d) = %v/%v, want %v", k, d, ok, float64(k))
+		}
+	}
+	// Distances() materializes the dense arrays: one entry per reached node.
+	dm := sp.Distances()
+	if len(dm) != n {
+		t.Fatalf("Distances() size = %d, want %d", len(dm), n)
+	}
+	if dm[0] != 0 || dm[n-1] != float64(n-1) {
+		t.Fatalf("Distances() values wrong: [0]=%v [%d]=%v", dm[0], n-1, dm[n-1])
+	}
+	// The materialization is lazy/memoized: a second call returns the same map.
+	if dm2 := sp.Distances(); len(dm2) != n {
+		t.Fatalf("second Distances() size = %d, want %d", len(dm2), n)
+	}
+	// Path reconstruction walks the dense predecessor array.
+	if path, ok := sp.PathTo(3); !ok || !slices.Equal(path, []uint32{0, 1, 2, 3}) {
+		t.Fatalf("dense PathTo(3) = %v/%v", path, ok)
+	}
+	// An unreached node past the chain end (none here, but the reverse
+	// direction reaches nothing) stays absent.
+	rev := g.Dijkstra(0, chickpeas.Incoming, chickpeas.MatchAll(), unit)
+	if _, ok := rev.Distance(4999); ok {
+		t.Fatal("incoming search from 0 should not reach 4999 on a forward chain")
+	}
+}
