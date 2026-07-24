@@ -169,6 +169,52 @@ func TestOpsMatchRoaringReference(t *testing.T) {
 	}
 }
 
+// TestCloneAndEquals pins Clone's independence (mutating the copy leaves the
+// original untouched) and Equals's element-for-element comparison across
+// equal, unequal, and empty sets.
+func TestCloneAndEquals(t *testing.T) {
+	orig := nodeset.Of(1, 4, 9)
+	clone := orig.Clone()
+	if !clone.Equals(orig) {
+		t.Fatal("clone should equal its source")
+	}
+	// The clone is independent: mutating it must not touch the original.
+	clone.Insert(100)
+	clone.Remove(1)
+	if !orig.Contains(1) || orig.Contains(100) {
+		t.Fatalf("mutating clone changed original: %v", orig.ToSlice())
+	}
+	if clone.Equals(orig) {
+		t.Fatal("diverged clone should not equal original")
+	}
+
+	// Equals is order-independent of construction and true for equal contents.
+	if !nodeset.Of(9, 1, 4).Equals(orig) {
+		t.Fatal("sets with the same ids should be equal regardless of insert order")
+	}
+	// Differing cardinality and differing elements are both unequal.
+	if nodeset.Of(1, 4).Equals(orig) {
+		t.Fatal("subset should not equal superset")
+	}
+	if nodeset.Of(1, 4, 10).Equals(orig) {
+		t.Fatal("same-size sets with a different element should be unequal")
+	}
+	// Two empty sets are equal; an empty set differs from a non-empty one.
+	if !nodeset.New().Equals(nodeset.New()) {
+		t.Fatal("two empty sets should be equal")
+	}
+	if nodeset.New().Equals(orig) {
+		t.Fatal("empty set should not equal a non-empty set")
+	}
+	// Cloning an empty set yields an equal, independent empty set.
+	empty := nodeset.New()
+	ec := empty.Clone()
+	ec.Insert(7)
+	if !empty.IsEmpty() {
+		t.Fatal("mutating an empty set's clone emptied-set independence broken")
+	}
+}
+
 // FuzzOpsMatchRoaringReference extends the differential suite to fuzzed id
 // sets.
 func FuzzOpsMatchRoaringReference(f *testing.F) {
