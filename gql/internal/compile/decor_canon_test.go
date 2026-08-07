@@ -24,8 +24,8 @@ func encLabel(e *ast.LabelExpr) (string, bool) {
 // order-sensitive encoding, and the fail-closed propagation for an
 // unrenderable subtree.
 func TestCanonLabelExpr(t *testing.T) {
-	if s, ok := encLabel(labelName("Person")); !ok || s != ":n(Person)" {
-		t.Fatalf("name = %q,%v, want :n(Person)", s, ok)
+	if s, ok := encLabel(labelName("Person")); !ok || s != ":n(6:Person)" {
+		t.Fatalf("name = %q,%v, want :n(6:Person) (length-prefixed atom)", s, ok)
 	}
 	person, _ := encLabel(labelName("Person"))
 	if city, _ := encLabel(labelName("City")); city == person {
@@ -237,5 +237,49 @@ func TestDecorCanonWithLabelExpr(t *testing.T) {
 	// A label expression the encoder cannot render yields no shared identity.
 	if decorCanon(pat(&ast.LabelExpr{Kind: ast.LabelKind(99)}), nil, "a", "") != "" {
 		t.Fatal("unrenderable label expr must yield no identity")
+	}
+}
+
+// TestDecorCanonInjectivePairs writes the wrong reading out explicitly
+// (task 246): backtick-delimited identifiers can carry any byte, so the
+// pre-hardening encoding conflated exactly these pairs -- labels
+// {`A&B`} vs {A, B} both rendered ":A&B", rel types {`A,B`} vs {A, B}
+// both rendered "A,B" -- and a canon collision shares one decorrelated
+// COUNT table between different subqueries, an authoritative row-count
+// error. Length-prefixed atoms must keep every pair distinct, while
+// renaming the anchor/group endpoints must still share (the whole point
+// of the canon).
+func TestDecorCanonInjectivePairs(t *testing.T) {
+	node := func(labels ...string) *ast.Pattern {
+		return &ast.Pattern{Start: ast.NodePat{Var: "a", Labels: labels}}
+	}
+	if decorCanon(node("A&B"), nil, "a", "") == decorCanon(node("A", "B"), nil, "a", "") {
+		t.Fatal("label list {`A&B`} must not collide with {A, B}")
+	}
+	hop := func(types ...string) *ast.Pattern {
+		return &ast.Pattern{Start: ast.NodePat{Var: "a"},
+			Hops: []ast.PatternHop{{Rel: ast.RelPat{Dir: ast.DirOut, Types: types}, Node: ast.NodePat{Var: "g"}}}}
+	}
+	if decorCanon(hop("A,B"), nil, "a", "g") == decorCanon(hop("A", "B"), nil, "a", "g") {
+		t.Fatal("type list {`A,B`} must not collide with {A, B}")
+	}
+	// A variable name carrying the old frame byte must not collide with
+	// the framed rendering of a plain name.
+	pv := func(v, key string) ast.Expr { return &ast.Prop{Var: v, Key: key} }
+	base := &ast.Pattern{Start: ast.NodePat{Var: "a"}}
+	if decorCanon(base, pv("x)", "k"), "a", "") == decorCanon(base, pv("x", ")2:k"), "a", "") {
+		t.Fatal("frame bytes inside identifiers must not create collisions")
+	}
+	// The sharing property survives: renaming the outer endpoints still
+	// canonicalizes identically (BI Q8's C1(person)/C1(friend) shape).
+	knows := func(anchor, group string) (*ast.Pattern, string, string) {
+		return &ast.Pattern{Start: ast.NodePat{Var: anchor, Labels: []string{"Person"}},
+			Hops: []ast.PatternHop{{Rel: ast.RelPat{Dir: ast.DirOut, Types: []string{"KNOWS"}}, Node: ast.NodePat{Var: group}}}}, anchor, group
+	}
+	p1, a1, g1 := knows("person", "x")
+	p2, a2, g2 := knows("friend", "y")
+	c1, c2 := decorCanon(p1, nil, a1, g1), decorCanon(p2, nil, a2, g2)
+	if c1 == "" || c1 != c2 {
+		t.Fatalf("endpoint renames must share one canon: %q vs %q", c1, c2)
 	}
 }

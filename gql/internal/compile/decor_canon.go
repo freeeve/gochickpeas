@@ -32,15 +32,35 @@ func decorCanon(p *ast.Pattern, where ast.Expr, anchorVar, groupVar string) stri
 	return sb.String()
 }
 
+// canonAtom writes a length-prefixed identifier-ish string. Backtick
+// delimiting lets a label, type, key, variable, or parameter name carry
+// ANY byte, so no separator byte is safe as a frame; the length prefix
+// makes every atom self-delimiting and the whole encoding injective.
+func canonAtom(sb *strings.Builder, s string) {
+	sb.WriteString(strconv.Itoa(len(s)))
+	sb.WriteByte(':')
+	sb.WriteString(s)
+}
+
+// canonAtoms writes a length-prefixed list of atoms (the count guards
+// against a list/adjacent-field ambiguity).
+func canonAtoms(sb *strings.Builder, ss []string) {
+	sb.WriteString(strconv.Itoa(len(ss)))
+	sb.WriteByte('[')
+	for _, s := range ss {
+		canonAtom(sb, s)
+	}
+	sb.WriteByte(']')
+}
+
 // canonVar writes a variable reference under the substitution map.
 func canonVar(sb *strings.Builder, v string, sub map[string]string) {
 	if m, ok := sub[v]; ok {
 		sb.WriteString(m)
 		return
 	}
-	sb.WriteString("v(")
-	sb.WriteString(v)
-	sb.WriteByte(')')
+	sb.WriteByte('v')
+	canonAtom(sb, v)
 }
 
 // canonPattern encodes a linear pattern: nodes and hops in written order.
@@ -56,7 +76,7 @@ func canonPattern(sb *strings.Builder, p *ast.Pattern, sub map[string]string) bo
 		sb.WriteByte('-')
 		sb.WriteByte(byte('0' + int(h.Rel.Dir)))
 		canonVar(sb, h.Rel.Var, sub)
-		sb.WriteString(strings.Join(h.Rel.Types, ","))
+		canonAtoms(sb, h.Rel.Types)
 		if len(h.Rel.Props) > 0 || len(h.Rel.PropExprs) > 0 {
 			return false
 		}
@@ -78,14 +98,14 @@ func canonNode(sb *strings.Builder, n *ast.NodePat, sub map[string]string) bool 
 		}
 	} else {
 		sb.WriteByte(':')
-		sb.WriteString(strings.Join(n.Labels, "&"))
+		canonAtoms(sb, n.Labels)
 	}
 	if len(n.PropExprs) > 0 {
 		return false
 	}
 	for _, pe := range n.Props {
 		sb.WriteByte('{')
-		sb.WriteString(pe.Key)
+		canonAtom(sb, pe.Key)
 		sb.WriteByte(':')
 		canonLiteral(sb, pe.Val)
 		sb.WriteByte('}')
@@ -99,7 +119,7 @@ func canonLabelExpr(sb *strings.Builder, e *ast.LabelExpr) bool {
 	switch e.Kind {
 	case ast.LabelName:
 		sb.WriteString(":n(")
-		sb.WriteString(e.Name)
+		canonAtom(sb, e.Name)
 		sb.WriteByte(')')
 	case ast.LabelAnd, ast.LabelOr:
 		if e.Kind == ast.LabelAnd {
@@ -150,7 +170,7 @@ func canonLiteral(sb *strings.Builder, l ast.Literal) {
 		sb.WriteString(strconv.FormatUint(uint64(l.P), 10))
 	case ast.LitNamedParam:
 		sb.WriteString("P(")
-		sb.WriteString(l.S)
+		canonAtom(sb, l.S)
 		sb.WriteByte(')')
 	default:
 		sb.WriteByte('n') // null
@@ -168,14 +188,14 @@ func canonExpr(sb *strings.Builder, e ast.Expr, sub map[string]string) bool {
 	case *ast.Prop:
 		canonVar(sb, n.Var, sub)
 		sb.WriteByte('.')
-		sb.WriteString(n.Key)
+		canonAtom(sb, n.Key)
 	case *ast.PropOf:
 		sb.WriteString("of(")
 		if !canonExpr(sb, n.Base, sub) {
 			return false
 		}
 		sb.WriteByte('.')
-		sb.WriteString(n.Key)
+		canonAtom(sb, n.Key)
 		sb.WriteByte(')')
 	case *ast.Unary:
 		sb.WriteByte('u')
@@ -224,7 +244,7 @@ func canonExpr(sb *strings.Builder, e ast.Expr, sub map[string]string) bool {
 		sb.WriteByte(')')
 	case *ast.Func:
 		sb.WriteString("fn(")
-		sb.WriteString(strings.ToLower(n.Name))
+		canonAtom(sb, strings.ToLower(n.Name))
 		if n.Distinct || n.Star {
 			return false // never in a decor WHERE; fail closed
 		}
