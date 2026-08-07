@@ -44,7 +44,7 @@ func FuzzEvalDiff(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
-	g := socialGraph(f)
+	g := SocialGraph(f)
 	f.Fuzz(func(t *testing.T, expr string) {
 		q := "MATCH (p:Person) RETURN " + expr + " AS x ORDER BY p.age"
 		compiled, err := Run(g, q)

@@ -99,7 +99,7 @@ func FuzzQuery(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
-	g := socialGraph(f)
+	g := SocialGraph(f)
 	// The multigraph lane (task 144): the same inputs run over a fixture
 	// with parallel relationships, comparing the literal plan's rows
 	// against the auto-parameterized cached plan's AS MULTISETS. The two
@@ -107,7 +107,7 @@ func FuzzQuery(f *testing.F) {
 	// blind under the template), and parallel rels are exactly where a
 	// shape difference becomes a row-count difference if any hop form
 	// collapses multiplicity the others keep.
-	mg := multiSocialGraph(f)
+	mg := MultiSocialGraph(f)
 	mcache := NewPlanCache(1 << 20)
 	f.Fuzz(func(t *testing.T, q string) {
 		if len(fuzzBareScan.FindAllString(q, -1)) >= 6 || fuzzHugeQuant.MatchString(q) {

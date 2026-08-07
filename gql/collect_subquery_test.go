@@ -3,9 +3,10 @@
 // parses into the engine's pattern-comprehension node, so it gathers proj
 // over every correlated match into a list in match order, an empty list when
 // nothing matches (task 182).
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"slices"
 	"testing"
 
@@ -34,7 +35,7 @@ func collectGraph(t *testing.T) *chickpeas.Snapshot {
 // column "friends") and returns name -> sorted friend names.
 func nameToFriends(t *testing.T, g *chickpeas.Snapshot, q string) map[string][]string {
 	t.Helper()
-	rows := runBoth(t, g, q)
+	rows := gql.RunBoth(t, g, q)
 	out := map[string][]string{}
 	for r := range rows.All() {
 		nv, _ := r.Get("n")
@@ -139,7 +140,7 @@ func TestCollectSubqueryRejects(t *testing.T) {
 		"MATCH (p:Person) RETURN COLLECT { MATCH (p)-[:KNOWS]->(f) WITH f RETURN f.name } AS x",
 	}
 	for _, q := range rejects {
-		if _, err := Run(g, q); err == nil {
+		if _, err := gql.Run(g, q); err == nil {
 			t.Fatalf("expected a parse error, got success: %s", q)
 		}
 	}

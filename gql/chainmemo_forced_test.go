@@ -8,10 +8,11 @@
 //
 // Gated on GOCHICKPEAS_GQL_MANIFEST; run under the local-cpu lock with
 // -max-load.
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"os"
 	"slices"
 	"strings"
@@ -38,7 +39,7 @@ func TestChainMemoForcedTiming(t *testing.T) {
 	graphs := map[string]*chickpeas.Snapshot{}
 	rowKeys := func(g *chickpeas.Snapshot, q string) []string {
 		t.Helper()
-		res, err := RunUncached(g, q)
+		res, err := gql.RunUncached(g, q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -59,7 +60,7 @@ func TestChainMemoForcedTiming(t *testing.T) {
 		var ms []float64
 		for range reps {
 			start := time.Now()
-			res, err := RunUncached(g, q)
+			res, err := gql.RunUncached(g, q)
 			if err != nil {
 				t.Fatal(err)
 			}

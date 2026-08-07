@@ -6,10 +6,11 @@
 // than a whole slab), aliasing between neighboring hand-outs, and
 // retention validity after the stage ends and later work runs on the
 // same snapshot.
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func lineGraph(t *testing.T, n int) *chickpeas.Snapshot {
 func TestSPPathSlabBoundaries(t *testing.T) {
 	const n = 5100
 	g := lineGraph(t, n)
-	// Rows k = 100, 200, ..., 5000: total path nodes ~130k, crossing the
+	// gql.Rows k = 100, 200, ..., 5000: total path nodes ~130k, crossing the
 	// 4096 slab dozens of times; the k=5000 row exceeds one slab alone.
 	var ks []string
 	for k := 100; k <= 5000; k += 100 {
@@ -58,7 +59,7 @@ func TestSPPathSlabBoundaries(t *testing.T) {
 		"MATCH (a:N {id: 0}) MATCH (b:N) WHERE b.id = k " +
 		"MATCH p = ANY SHORTEST (a)-[:R]-{1,5100}(b) " +
 		"RETURN k, length(p) AS len, nodes(p) AS ns"
-	rows, err := RunUncached(g, q)
+	rows, err := gql.RunUncached(g, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestSPPathRetentionAcrossQueries(t *testing.T) {
 	g := lineGraph(t, 600)
 	capture := func(k int) []value.Value {
 		q := fmt.Sprintf("MATCH (a:N {id: 0}) MATCH (b:N {id: %d}) MATCH p = ANY SHORTEST (a)-[:R]-{1,600}(b) RETURN nodes(p) AS ns", k)
-		rows, err := RunUncached(g, q)
+		rows, err := gql.RunUncached(g, q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +170,7 @@ func TestAllShortestSlabFlood(t *testing.T) {
 	g := b.Finalize("ladder")
 
 	q := "MATCH (s:L {id: 9000}) MATCH (d:L {id: 9001}) MATCH p = ALL SHORTEST (s)-[:R]-{1,20}(d) RETURN nodes(p) AS ns"
-	rows, err := RunUncached(g, q)
+	rows, err := gql.RunUncached(g, q)
 	if err != nil {
 		t.Fatal(err)
 	}

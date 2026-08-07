@@ -8,9 +8,10 @@
 // and EXISTS/COUNT run as real correlated subqueries, so the bug should
 // not reproduce -- these sections pin that by EXECUTION (what the query
 // returns), the only thing that catches it, per the note's meta-lesson.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"sort"
 	"testing"
 
@@ -57,7 +58,7 @@ func residualFixture(t *testing.T) *chickpeas.Snapshot {
 // RETURN order -- unsorted, so an ORDER BY under test is observable.
 func idsInOrder(t *testing.T, g *chickpeas.Snapshot, q string) []int64 {
 	t.Helper()
-	rows, err := RunUncached(g, q)
+	rows, err := gql.RunUncached(g, q)
 	if err != nil {
 		t.Fatalf("run %q: %v", q, err)
 	}

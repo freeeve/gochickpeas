@@ -4,10 +4,11 @@
 // behind ctx.subqShapes: a per-row rebuild would cost tens of allocations
 // per outer row (the Rust sibling measured 36/person before preparing
 // once), so total allocations must not scale with the outer row count.
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -41,7 +42,7 @@ func TestSubqueryScaffoldingPreparedOnce(t *testing.T) {
 	g := knowsGraph(t, n)
 	q := "MATCH (p:Person) WHERE COUNT { MATCH (p)-[:KNOWS]->(f) } >= 2 RETURN count(*) AS c"
 	// Correctness first: every person has exactly two outgoing KNOWS.
-	rows, err := Run(g, q)
+	rows, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestSubqueryScaffoldingPreparedOnce(t *testing.T) {
 		t.Fatalf("count = %v, want %d", v, n)
 	}
 	allocs := testing.AllocsPerRun(3, func() {
-		if _, err := Run(g, q); err != nil {
+		if _, err := gql.Run(g, q); err != nil {
 			t.Fatal(err)
 		}
 	})

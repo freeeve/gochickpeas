@@ -1,6 +1,7 @@
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -36,7 +37,7 @@ func TestTriangleCountNoFalseSymmetry(t *testing.T) {
 
 	count := func(src string) int64 {
 		t.Helper()
-		rows, err := RunUncached(g, src)
+		rows, err := gql.RunUncached(g, src)
 		if err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}

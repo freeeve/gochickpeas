@@ -4,9 +4,10 @@
 // about. The assertion is the WALK COUNT (compile.SubqueryWalks) -- rows
 // are identical under either placement, and a duration can lie on a
 // shared box; the walk count is exact and names the defect.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -76,7 +77,7 @@ func TestExistsConjunctPlacement(t *testing.T) {
 	run := func(q string) int {
 		t.Helper()
 		before := compile.SubqueryWalks
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			t.Fatal(err)
 		}

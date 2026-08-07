@@ -1,9 +1,10 @@
 // M20 PROFILE tests: the annotated plan reports each operator's actual
 // produced-row count -- the Rust profile_reports_actual_cardinalities and
 // pushdown-pruning assertions translated to GQL.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 // planText joins a PROFILE/EXPLAIN result's plan column.
 func planText(t *testing.T, g *chickpeas.Snapshot, q string) string {
 	t.Helper()
-	rows, err := Run(g, q)
+	rows, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatalf("query failed: %s\n%v", q, err)
 	}
@@ -44,7 +45,7 @@ func lineWith(p string, needles ...string) string {
 }
 
 func TestProfileReportsActualCardinalities(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// 4 people scanned, 2 pass age > 30, 1 aggregate row.
 	p := planText(t, g,
 		"PROFILE MATCH (p:Person) WHERE p.age > 30 RETURN count(DISTINCT p.name) AS c")
@@ -63,7 +64,7 @@ func TestProfileReportsActualCardinalities(t *testing.T) {
 }
 
 func TestProfilePushdownPrunesBeforeExpand(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// a.age > 30 references only the anchor, so it pushes to op 0 and
 	// prunes there: only Bob and Carol expand, binding their 4
 	// out-neighbors at the Expand. Without pushdown all four people would
@@ -83,7 +84,7 @@ func TestProfilePushdownPrunesBeforeExpand(t *testing.T) {
 }
 
 func TestProfileBoundaryAndStageCounts(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// The boundary FILTER count shows the surviving projected rows, and a
 	// FOR stage records its expanded row count.
 	p := planText(t, g,
@@ -102,7 +103,7 @@ func TestProfileBoundaryAndStageCounts(t *testing.T) {
 }
 
 func TestProfileMultiBranchOrder(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Branch-major, segment-minor: each branch's scan shows its own count.
 	p := planText(t, g,
 		"PROFILE MATCH (p:Person) RETURN p.name AS n UNION ALL MATCH (c:Company) RETURN c.name AS n")
@@ -117,7 +118,7 @@ func TestProfileMultiBranchOrder(t *testing.T) {
 }
 
 func TestProfileOptionalAndShortest(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// A shortest-path stage records one produced row.
 	p := planText(t, g,
 		"PROFILE MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH q = ANY SHORTEST (a)-[:KNOWS]->{1,}(b) RETURN length(q) AS l")

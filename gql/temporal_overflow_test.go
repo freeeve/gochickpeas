@@ -1,9 +1,10 @@
 // Temporal/duration overflow yields Null, never a silently wrapped instant
 // (rcp twin 457c858). Go's integer overflow wraps in every build, so these
 // assert the value, and the compiled fast path stays identical to the tree.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -13,7 +14,7 @@ import (
 // scalarVal runs a one-row query and returns the single column's value.
 func scalarVal(t *testing.T, g *chickpeas.Snapshot, q, col string) (v value.Value, rows int) {
 	t.Helper()
-	res, err := Run(g, q)
+	res, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatalf("query failed: %s\n%v", q, err)
 	}
@@ -25,7 +26,7 @@ func scalarVal(t *testing.T, g *chickpeas.Snapshot, q, col string) (v value.Valu
 }
 
 func TestDurationOverflowYieldsNull(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	anchor := "MATCH (p:Person {name: 'Alice'}) RETURN "
 	// The rcp ask's example query: a days count that overflows the tick
 	// conversion returns Null, not a confidently wrong date.
@@ -51,7 +52,7 @@ func TestDurationOverflowYieldsNull(t *testing.T) {
 // and returned a silent Null in the projection. A calendar shift keeps the
 // kind, so the shifted instant stringifies too. Duration stays Null.
 func TestToStringTemporal(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	anchor := "MATCH (p:Person {name: 'Alice'}) RETURN "
 	cases := []struct{ q, want string }{
 		{anchor + "toString(datetime('2020-01-01T13:45:30')) AS s", "2020-01-01T13:45:30"},
@@ -91,13 +92,13 @@ func eventGraph(t *testing.T) *chickpeas.Snapshot {
 
 // The compiled whole-row fast path folds a months-free duration to a tick
 // offset; an overflowing constant must decline the specialization so the
-// tree's checked ApplyDuration produces the same Null (runBoth asserts the
+// tree's checked ApplyDuration produces the same Null (gql.RunBoth asserts the
 // compiled and interpreted paths agree row-for-row).
 func TestDurationFastPathOverflowMatchesTree(t *testing.T) {
 	g := eventGraph(t)
 	// b.t + duration({days: MaxInt64}) overflows the fold: the comparison is
 	// Null for every pair, so no rows survive on either path.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Event), (b:Event) WHERE a.t < b.t + duration({days: 9223372036854775807}) RETURN a.t AS at")
 	n := 0
 	for range rows.All() {
@@ -108,7 +109,7 @@ func TestDurationFastPathOverflowMatchesTree(t *testing.T) {
 	}
 	// A representable shift still filters normally: a.t < b.t + 10 days keeps
 	// the (earlier, later) ordering pairs.
-	rows2 := runBoth(t, g,
+	rows2 := gql.RunBoth(t, g,
 		"MATCH (a:Event), (b:Event) WHERE a.t < b.t + duration({days: 10}) RETURN a.t AS at")
 	n = 0
 	for range rows2.All() {
@@ -133,7 +134,7 @@ func TestDurationComponents(t *testing.T) {
 	g := b.Finalize()
 	one := func(q string) value.Value {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no row: %s", q)
@@ -173,7 +174,7 @@ func TestDurationISOStringEdges(t *testing.T) {
 	g := b.Finalize()
 	one := func(q string) value.Value {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no row: %s", q)

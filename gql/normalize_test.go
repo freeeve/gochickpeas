@@ -2,9 +2,10 @@
 // combining marks do not survive editors): the four forms through both
 // the function and the predicate, the bare-keyword and quoted form
 // arguments, null propagation, and the unknown-form null.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -27,7 +28,7 @@ func normFixture(t *testing.T) *chickpeas.Snapshot {
 // oneRow runs q and returns its single row's values.
 func oneRow(t *testing.T, g *chickpeas.Snapshot, q string) []value.Value {
 	t.Helper()
-	rows, err := Run(g, q)
+	rows, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
@@ -78,7 +79,7 @@ func TestIsNormalizedPredicate(t *testing.T) {
 		t.Fatal("IS NOT NORMALIZED did not negate")
 	}
 	// Null input: the predicate is null (unknown), so a WHERE drops the row.
-	rows, err := Run(g, "MATCH (s:S) WHERE s.missing IS NORMALIZED RETURN s")
+	rows, err := gql.Run(g, "MATCH (s:S) WHERE s.missing IS NORMALIZED RETURN s")
 	if err != nil {
 		t.Fatal(err)
 	}

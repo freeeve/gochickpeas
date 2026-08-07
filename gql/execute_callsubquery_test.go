@@ -1,6 +1,7 @@
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -13,8 +14,8 @@ import (
 // shared fixtures/helpers and the aggregation tests).
 
 func TestCallSubqueryCorrelated(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN count(f) AS friends } RETURN p.name AS name, friends ORDER BY name")
 	want := map[string]int64{"Alice": 2, "Bob": 2, "Carol": 2, "Dave": 1}
 	n := 0
@@ -34,8 +35,8 @@ func TestCallSubqueryCorrelated(t *testing.T) {
 }
 
 func TestCallSubqueryUncorrelatedCrossJoin(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (c:Company) CALL { MATCH (p:Person {name: 'Alice'}) RETURN p.name AS a } RETURN c.name AS cn, a ORDER BY cn")
 	batch := rows.NextBatch(10)
 	if len(batch) != 2 {
@@ -47,7 +48,7 @@ func TestCallSubqueryUncorrelatedCrossJoin(t *testing.T) {
 		}
 	}
 	// A non-matching inner subquery drops the outer row (inner join).
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH (c:Company) CALL { MATCH (p:Person {name: 'Zed'}) RETURN p.name AS a } RETURN c.name AS cn")
 	if _, ok := rows.Next(); ok {
 		t.Fatal("empty subquery drops outer rows")
@@ -57,8 +58,8 @@ func TestCallSubqueryUncorrelatedCrossJoin(t *testing.T) {
 // TestCallSubqueryScopeMultiVar pins a scope clause importing more than
 // one variable: both cross the boundary and are readable in the body.
 func TestCallSubqueryScopeMultiVar(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person)-[:WORKS_AT]->(c:Company) CALL (p, c) { RETURN p.name || '@' || c.name AS tag } RETURN tag ORDER BY tag")
 	got := strRows(t, rows, "tag")
 	want := []string{"Alice@Acme", "Bob@Acme", "Carol@Globex"}
@@ -76,8 +77,8 @@ func TestCallSubqueryScopeMultiVar(t *testing.T) {
 // authoritative for every UNION branch of the body: both branches read
 // the import without any per-branch declaration.
 func TestCallSubqueryScopeUnionBranches(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person {name: 'Alice'}) CALL (p) { "+
 			"MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x "+
 			"UNION ALL MATCH (p)-[:WORKS_AT]->(c) RETURN c.name AS x } "+
@@ -99,13 +100,13 @@ func TestCallSubqueryScopeUnionBranches(t *testing.T) {
 // outer variable referenced inside is a bind error, never silently
 // imported.
 func TestCallSubqueryEmptyScope(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (c:Company) CALL () { MATCH (p:Person {name: 'Alice'}) RETURN p.name AS a } RETURN c.name AS cn, a ORDER BY cn")
 	if n := len(rows.NextBatch(10)); n != 2 {
 		t.Fatalf("empty-scope cross join rows = %d, want 2", n)
 	}
-	if _, err := Run(g, "MATCH (p:Person) CALL () { RETURN p.age AS a } RETURN a"); err == nil {
+	if _, err := gql.Run(g, "MATCH (p:Person) CALL () { RETURN p.age AS a } RETURN a"); err == nil {
 		t.Fatal("outer variable inside CALL () {} must be a bind error")
 	}
 }
@@ -114,8 +115,8 @@ func TestCallSubqueryEmptyScope(t *testing.T) {
 // collected list crosses into the CALL via the scope clause, FOR-driven
 // UNION ALL branches expand it, and the outer query aggregates the union.
 func TestCallSubqueryQ4Miniature(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person) WHERE p.age >= 30 RETURN collect(p.name) AS names "+
 			"NEXT CALL (names) { "+
 			"FOR n IN names MATCH (q:Person {name: n})-[:KNOWS]->(f) RETURN f.name AS fn "+

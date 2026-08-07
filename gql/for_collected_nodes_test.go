@@ -5,9 +5,10 @@
 // materialization, but the shape is pinned exactly: aggregate counts
 // must be per-edge exact and a FOR-bound node's properties must read
 // through both the literal and cached paths.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -45,8 +46,8 @@ func forCollectedFixture(t *testing.T) *chickpeas.Snapshot {
 
 func TestForOverCollectedNodes(t *testing.T) {
 	g := forCollectedFixture(t)
-	for name, run := range map[string]func(*chickpeas.Snapshot, string) (*Rows, error){
-		"uncached": RunUncached, "cached": Run,
+	for name, run := range map[string]func(*chickpeas.Snapshot, string) (*gql.Rows, error){
+		"uncached": gql.RunUncached, "cached": gql.Run,
 	} {
 		t.Run(name, func(t *testing.T) {
 			// Membership counts: P1 in both forums (2), P2 in one (1) --

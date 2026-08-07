@@ -2,10 +2,11 @@
 // row, nested-aggregate wrappers), FOR row expansion, and CALL { }
 // subqueries -- the Rust execute.rs aggregation subset translated to GQL
 // under the dual-path harness.
-package gql
+package gql_test
 
 import (
 	"errors"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -16,7 +17,7 @@ import (
 // intCol collects an integer column preserving result order.
 func intCol(t *testing.T, g *chickpeas.Snapshot, q, col string) []int64 {
 	t.Helper()
-	rows := runBoth(t, g, q)
+	rows := gql.RunBoth(t, g, q)
 	var out []int64
 	for r := range rows.All() {
 		v, ok := r.Get(col)
@@ -33,12 +34,12 @@ func intCol(t *testing.T, g *chickpeas.Snapshot, q, col string) []int64 {
 }
 
 func TestCountStarAndGrouping(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	if got := intCol(t, g, "MATCH (p:Person) RETURN count(*) AS n", "n"); len(got) != 1 || got[0] != 4 {
 		t.Fatalf("count(*) = %v", got)
 	}
 	// Implicit group by the non-aggregate key, ordered by the count.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) RETURN c.name AS company, count(*) AS n ORDER BY n DESC")
 	type pair struct {
 		c string
@@ -58,7 +59,7 @@ func TestCountStarAndGrouping(t *testing.T) {
 }
 
 func TestCountDistinctVsCountStar(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Two hops from Alice reach Carol,Dave (via Bob) and Dave,Bob (via
 	// Carol): 4 rows, 3 distinct endpoints.
 	if got := intCol(t, g,
@@ -75,8 +76,8 @@ func TestCountDistinctVsCountStar(t *testing.T) {
 // arena backing slab, so each group's row must stay an independent window
 // (no aliasing) and the hidden accumulator slot must read back correctly.
 func TestGroupedRowsDoNotAliasAcrossArena(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) "+
 			"RETURN c.name AS company, count(*) AS n, count(*) * 2 AS dbl ORDER BY company")
 	type row struct {
@@ -102,8 +103,8 @@ func TestGroupedRowsDoNotAliasAcrossArena(t *testing.T) {
 // aggState struct). Group by company and check each group's extrema and
 // collected list resolve independently -- guards the slab indexing.
 func TestGroupedMinMaxCollectOverflowSlabs(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) "+
 			"RETURN c.name AS co, min(p.age) AS lo, max(p.age) AS hi, size(collect(p.name)) AS n "+
 			"ORDER BY co")
@@ -130,8 +131,8 @@ func TestGroupedMinMaxCollectOverflowSlabs(t *testing.T) {
 }
 
 func TestNumericAggregatesAndCollect(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person) RETURN sum(p.age) AS s, avg(p.age) AS a, min(p.age) AS lo, max(p.age) AS hi, count(p.city) AS cities")
 	r, _ := rows.Next()
 	if v, _ := r.Get("s"); !value.Equal(v, value.Int(130)) {
@@ -151,7 +152,7 @@ func TestNumericAggregatesAndCollect(t *testing.T) {
 		t.Fatalf("count(city) = %v", v)
 	}
 	// A float mixed into sum floats the result; collect drops nulls.
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH (p:Person) RETURN sum(p.age * 0.5) AS s, size(collect(p.city)) AS cs")
 	r, _ = rows.Next()
 	if v, _ := r.Get("s"); !value.Equal(v, value.Float(65.0)) {
@@ -163,9 +164,9 @@ func TestNumericAggregatesAndCollect(t *testing.T) {
 }
 
 func TestAggregateOverEmptyMatch(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Keyless: one zeroed row even over no input.
-	rows := runBoth(t, g, "MATCH (p:Person {name: 'Zed'}) RETURN count(*) AS n, sum(p.age) AS s, min(p.age) AS lo")
+	rows := gql.RunBoth(t, g, "MATCH (p:Person {name: 'Zed'}) RETURN count(*) AS n, sum(p.age) AS s, min(p.age) AS lo")
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatal("keyless aggregate over empty match must emit one row")
@@ -180,22 +181,22 @@ func TestAggregateOverEmptyMatch(t *testing.T) {
 		t.Fatalf("empty min = %v", v)
 	}
 	// Keyed: no groups, no rows.
-	rows = runBoth(t, g, "MATCH (p:Person {name: 'Zed'}) RETURN p.name AS name, count(*) AS n")
+	rows = gql.RunBoth(t, g, "MATCH (p:Person {name: 'Zed'}) RETURN p.name AS name, count(*) AS n")
 	if _, ok := rows.Next(); ok {
 		t.Fatal("keyed aggregate over empty match emits nothing")
 	}
 }
 
 func TestAggregateHavingBoundary(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// The HAVING idiom: aggregate, then FILTER the projected count.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) RETURN c.name AS name, count(*) AS n NEXT FILTER n > 1 RETURN name", "name"),
 		"Acme")
 }
 
 func TestCaseInsideSum(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	if got := intCol(t, g,
 		"MATCH (p:Person) RETURN sum(CASE WHEN p.age > 30 THEN 1 ELSE 0 END) AS n", "n"); got[0] != 2 {
 		t.Fatalf("conditional sum = %v", got)
@@ -203,17 +204,17 @@ func TestCaseInsideSum(t *testing.T) {
 }
 
 func TestForOverCollectedList(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// collect into a boundary, then FOR back into rows.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (p:Person) WHERE p.age > 30 RETURN collect(p.name) AS names NEXT FOR n IN names RETURN n AS n", "n"),
 		"Bob", "Carol")
 	// FOR over null emits nothing; over a scalar emits one row.
-	rows := runBoth(t, g, "MATCH (p:Person {name: 'Dave'}) FOR x IN p.city RETURN x AS x")
+	rows := gql.RunBoth(t, g, "MATCH (p:Person {name: 'Dave'}) FOR x IN p.city RETURN x AS x")
 	if _, ok := rows.Next(); ok {
 		t.Fatal("FOR over null emits nothing")
 	}
-	rows = runBoth(t, g, "MATCH (p:Person {name: 'Alice'}) FOR x IN p.age RETURN x AS x")
+	rows = gql.RunBoth(t, g, "MATCH (p:Person {name: 'Alice'}) FOR x IN p.age RETURN x AS x")
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatal("FOR over a scalar emits one row")
@@ -224,7 +225,7 @@ func TestForOverCollectedList(t *testing.T) {
 }
 
 // strRows drains a name column into a slice.
-func strRows(t *testing.T, rows *Rows, col string) []string {
+func strRows(t *testing.T, rows *gql.Rows, col string) []string {
 	t.Helper()
 	var out []string
 	for r := range rows.All() {
@@ -236,11 +237,11 @@ func strRows(t *testing.T, rows *Rows, col string) []string {
 }
 
 func TestGroupKeyInsideNestedAggWrapper(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// A carried list concatenated with a fresh collect (LDBC Q8's
 	// `interestedPersons + collect(person)`): the grouping key `ps` is a
 	// legal reference inside the wrapper.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person) RETURN collect(p.name) AS ps "+
 			"NEXT MATCH (c:Company) RETURN ps, size(ps + collect(c.name)) AS n")
 	r, ok := rows.Next()
@@ -252,7 +253,7 @@ func TestGroupKeyInsideNestedAggWrapper(t *testing.T) {
 	}
 	// A group key projected under a different alias re-points property
 	// access in the wrapper at the output column.
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH (c:Company)<-[:WORKS_AT]-(p:Person) RETURN c AS firm, c.name + toString(count(*)) AS tag ORDER BY tag")
 	var tags []string
 	for r := range rows.All() {
@@ -265,22 +266,22 @@ func TestGroupKeyInsideNestedAggWrapper(t *testing.T) {
 	}
 	// A reference that is neither a group key nor inside an aggregate is
 	// still a bind error.
-	if _, err := Run(g, "MATCH (p:Person) RETURN collect(p.name) AS ps NEXT MATCH (c:Company) RETURN size(ps + collect(c.name)) AS n"); !errors.Is(err, ErrBind) {
+	if _, err := gql.Run(g, "MATCH (p:Person) RETURN collect(p.name) AS ps NEXT MATCH (c:Company) RETURN size(ps + collect(c.name)) AS n"); !errors.Is(err, gql.ErrBind) {
 		t.Fatalf("unprojected carried var in wrapper: %v", err)
 	}
 }
 
 func TestDistinctCollectAndMinMaxStrings(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// DISTINCT inside collect: duplicate 2-hop endpoints collapse.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(f) RETURN size(collect(DISTINCT f.name)) AS n")
 	r, _ := rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(3)) {
 		t.Fatalf("collect distinct size = %v", v)
 	}
 	// min/max order strings via the comparison semantics.
-	rows = runBoth(t, g, "MATCH (p:Person) RETURN min(p.name) AS lo, max(p.name) AS hi")
+	rows = gql.RunBoth(t, g, "MATCH (p:Person) RETURN min(p.name) AS lo, max(p.name) AS hi")
 	r, _ = rows.Next()
 	if v, _ := r.Get("lo"); func() string { s, _ := v.AsStr(); return s }() != "Alice" {
 		t.Fatalf("min name = %v", v)
@@ -306,7 +307,7 @@ func TestSumInt64Overflow(t *testing.T) {
 	}
 	const q = "MATCH (n:N) RETURN sum(n.v) AS s"
 	sumOf := func(g *chickpeas.Snapshot) value.Value {
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatal("no row")
@@ -364,7 +365,7 @@ func TestStddevAggregates(t *testing.T) {
 	g := b.Finalize()
 	one := func(q string) float64 {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no row: %s", q)
@@ -393,10 +394,10 @@ func TestStddevAggregates(t *testing.T) {
 // non-numeric args skip, an empty group and an out-of-range percentile
 // are null, and the percentile must be a constant.
 func TestPercentileAggregates(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	one := func(q string) value.Value {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no row: %s", q)
@@ -437,7 +438,7 @@ func TestPercentileAggregates(t *testing.T) {
 		t.Fatalf("cont over mixed = %v, want 2.0", v)
 	}
 	// Grouped: Acme {30, 35} -> 32.5; Globex {40} -> 40.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN c.name AS cn, percentile_cont(p.age, 0.5) AS m ORDER BY cn")
 	want := map[string]float64{"Acme": 32.5, "Globex": 40}
 	n := 0
@@ -461,14 +462,14 @@ func TestPercentileAggregates(t *testing.T) {
 		t.Fatalf("out-of-range p = %v, want null", v)
 	}
 	// The percentile must be a constant literal; arity is two.
-	if _, err := Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age, p.age) AS m"); err == nil {
+	if _, err := gql.Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age, p.age) AS m"); err == nil {
 		t.Fatal("non-constant percentile must be a plan error")
 	}
-	if _, err := Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age) AS m"); err == nil {
+	if _, err := gql.Run(g, "MATCH (p:Person) RETURN percentile_cont(p.age) AS m"); err == nil {
 		t.Fatal("one-arg percentile must be a plan error")
 	}
 	// A parameter percentile works (it is a constant per execution).
-	rows2, err := RunWithParams(g, "MATCH (p:Person) RETURN percentile_disc(p.age, $p) AS m",
+	rows2, err := gql.RunWithParams(g, "MATCH (p:Person) RETURN percentile_disc(p.age, $p) AS m",
 		map[string]value.Value{"p": value.Float(0.5)})
 	if err != nil {
 		t.Fatal(err)

@@ -6,7 +6,7 @@
 // -- the un-collapsed count/sum are the specification, encoded as expected
 // values. A collapse wrongly applied to a multiplicity-sensitive aggregate would
 // return a demonstrably wrong number.
-package gql
+package gql_test
 
 import (
 	"testing"

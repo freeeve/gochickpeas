@@ -9,33 +9,13 @@ import (
 	"sync"
 	"testing"
 
-	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// cachedInts collects an int column through the cache.
-func cachedInts(t *testing.T, c *PlanCache, g *chickpeas.Snapshot, q, col string) []int64 {
-	t.Helper()
-	rows, err := c.Run(g, q)
-	if err != nil {
-		t.Fatalf("cached query failed: %s\n%v", q, err)
-	}
-	var out []int64
-	for r := range rows.All() {
-		v, _ := r.Get(col)
-		i, ok := v.AsInt()
-		if !ok {
-			t.Fatalf("column %q not an int in %s: %v", col, q, v)
-		}
-		out = append(out, i)
-	}
-	return out
-}
-
 func TestAutoParamSharesPlanAcrossInlineLiterals(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(0)
-	age := func(q string) []int64 { return cachedInts(t, c, g, q, "a") }
+	age := func(q string) []int64 { return CachedInts(t, c, g, q, "a") }
 	// Three queries differing only in the inline-prop constant: each
 	// resolves its own anchor value, all collapse to one cached template.
 	if got := age("MATCH (p:Person {name: 'Alice'}) RETURN p.age AS a"); !slices.Equal(got, []int64{30}) {
@@ -76,20 +56,20 @@ func TestAutoParamSharesPlanAcrossInlineLiterals(t *testing.T) {
 		cached = append(cached, s)
 	}
 	slices.Sort(cached)
-	wantStrs(t, cached, "Bob", "Carol")
+	WantStrs(t, cached, "Bob", "Carol")
 	if c.Len() != 2 {
 		t.Fatalf("Len = %d, want 2", c.Len())
 	}
 }
 
 func TestPlanCacheEvictsUnderByteBound(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	// A tiny budget: many distinct templates can't all stay resident.
 	c := NewPlanCache(8 * 1024)
 	for i := range 200 {
 		q := fmt.Sprintf("MATCH (p:Person {name: 'Alice'}) RETURN p.age AS a%d", i)
 		col := fmt.Sprintf("a%d", i)
-		if got := cachedInts(t, c, g, q, col); !slices.Equal(got, []int64{30}) {
+		if got := CachedInts(t, c, g, q, col); !slices.Equal(got, []int64{30}) {
 			t.Fatalf("query %d = %v", i, got)
 		}
 	}
@@ -100,7 +80,7 @@ func TestPlanCacheEvictsUnderByteBound(t *testing.T) {
 		t.Fatalf("nothing evicted: %d live", c.Len())
 	}
 	// Results stay correct after eviction.
-	if got := cachedInts(t, c, g, "MATCH (p:Person {name: 'Bob'}) RETURN p.age AS a", "a"); !slices.Equal(got, []int64{35}) {
+	if got := CachedInts(t, c, g, "MATCH (p:Person {name: 'Bob'}) RETURN p.age AS a", "a"); !slices.Equal(got, []int64{35}) {
 		t.Fatalf("post-eviction rows = %v", got)
 	}
 	// Shrinking the budget evicts immediately.
@@ -111,7 +91,7 @@ func TestPlanCacheEvictsUnderByteBound(t *testing.T) {
 }
 
 func TestPreparedRoundTrip(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	pr, err := Prepare(g, "MATCH (p:Person {name: $who}) WHERE p.age > 26 RETURN p.age AS age")
 	if err != nil {
 		t.Fatal(err)
@@ -174,12 +154,12 @@ func TestPreparedRoundTrip(t *testing.T) {
 }
 
 func TestCachedVsUncachedRowEquality(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(0)
 	// A selective literal anchor: the cached (template) plan may differ in
 	// shape from the uncached literal-probed plan, never in rows.
 	q := "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(f:Person) WHERE f.age > 26 RETURN f.name AS n ORDER BY n"
-	direct := strColOrdered(t, g, q, "n")
+	direct := StrColOrdered(t, g, q, "n")
 	rows, err := c.Run(g, q)
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +187,7 @@ func TestCachedVsUncachedRowEquality(t *testing.T) {
 }
 
 func TestPlanCacheConcurrent(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(32 * 1024)
 	names := []string{"Alice", "Bob", "Carol", "Dave"}
 	want := map[string]int64{"Alice": 30, "Bob": 35, "Carol": 40, "Dave": 25}

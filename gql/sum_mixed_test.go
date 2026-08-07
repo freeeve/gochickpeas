@@ -1,6 +1,7 @@
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -19,7 +20,7 @@ func TestMixedIntFloatSumNegative(t *testing.T) {
 
 	floatCase := func(src string, want float64) {
 		t.Helper()
-		rows, err := RunUncached(g, src)
+		rows, err := gql.RunUncached(g, src)
 		if err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}
@@ -41,7 +42,7 @@ func TestMixedIntFloatSumNegative(t *testing.T) {
 	}
 	intCase := func(src string, want int64) {
 		t.Helper()
-		rows, err := RunUncached(g, src)
+		rows, err := gql.RunUncached(g, src)
 		if err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}

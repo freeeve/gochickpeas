@@ -2,9 +2,10 @@
 // the same constant-matching paths as their positive twins: a negative
 // inline property plans a seek (not a label scan + post-filter), and queries
 // differing only in a negative WHERE bound collapse to one cached template.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"slices"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestNegativeInlinePropPlansSeek(t *testing.T) {
 		"MATCH (a:Acct {balance: -50}) RETURN a.balance AS b",
 		"MATCH (a:Acct {balance: 50}) RETURN a.balance AS b",
 	} {
-		plan, err := Explain(g, q)
+		plan, err := gql.Explain(g, q)
 		if err != nil {
 			t.Fatalf("explain %q: %v", q, err)
 		}
@@ -53,8 +54,8 @@ func TestNegativeInlinePropPlansSeek(t *testing.T) {
 
 func TestNegativeWhereBoundSharesPlan(t *testing.T) {
 	g := acctGraph(t)
-	c := NewPlanCache(0)
-	bal := func(q string) []int64 { return cachedInts(t, c, g, q, "b") }
+	c := gql.NewPlanCache(0)
+	bal := func(q string) []int64 { return gql.CachedInts(t, c, g, q, "b") }
 	// Three queries differing only in a negative WHERE bound: each resolves
 	// its own lifted constant, all collapse to one cached template.
 	if got := bal("MATCH (a:Acct) WHERE a.balance = -50 RETURN a.balance AS b"); !slices.Equal(got, []int64{-50}) {

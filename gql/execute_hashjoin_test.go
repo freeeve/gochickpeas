@@ -7,10 +7,11 @@
 // are shaped so the join reorderer produces the nested two-branch plan
 // the rewrite targets (a connecting edge cheap enough to chain through
 // would be the better plan, and correctly leaves nothing to extract).
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ import (
 // hjRowKeys runs q and returns the sorted row-key multiset.
 func hjRowKeys(t *testing.T, g *chickpeas.Snapshot, q string) []string {
 	t.Helper()
-	rows, err := Run(g, q)
+	rows, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatalf("query failed: %s\n%v", q, err)
 	}
@@ -53,7 +54,7 @@ func hjCompare(t *testing.T, g *chickpeas.Snapshot, q string, wantJoin bool) []s
 		plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = mr, ff, ed
 	}()
 	qf := q + " " // defeat the plan cache: the lowered thresholds must re-plan
-	pl, err := Explain(g, qf)
+	pl, err := gql.Explain(g, qf)
 	if err != nil {
 		t.Fatalf("explain failed: %s\n%v", qf, err)
 	}
@@ -166,7 +167,7 @@ func TestHashJoinValueKeyWithinScope(t *testing.T) {
 
 func TestHashJoinDefaultThresholdsUntouched(t *testing.T) {
 	g := hashJoinGraph(t)
-	pl, err := Explain(g, hjBaseQuery+" RETURN a.name AS an")
+	pl, err := gql.Explain(g, hjBaseQuery+" RETURN a.name AS an")
 	if err != nil {
 		t.Fatal(err)
 	}

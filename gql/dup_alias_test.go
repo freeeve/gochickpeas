@@ -5,15 +5,16 @@
 // `RETURN c AS n, count(0) AS n ORDER BY n`). An explicit item shadows a
 // same-named `*` variable rather than duplicating it, so a re-binding LET
 // stays legal.
-package gql
+package gql_test
 
 import (
 	"errors"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 )
 
 func TestDuplicateOutputColumnRejected(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Each of these has two columns resolving to the same output name.
 	reject := []string{
 		"MATCH (n:Person) RETURN n.name AS x, n.age AS x",       // two explicit aliases
@@ -23,7 +24,7 @@ func TestDuplicateOutputColumnRejected(t *testing.T) {
 		"MATCH (n:Person) RETURN n AS m, n.age AS m",            // node and scalar collide
 	}
 	for _, q := range reject {
-		if _, err := Run(g, q); !errors.Is(err, ErrBind) {
+		if _, err := gql.Run(g, q); !errors.Is(err, gql.ErrBind) {
 			t.Fatalf("want ErrBind for duplicate output column: %q -> %v", q, err)
 		}
 	}
@@ -35,7 +36,7 @@ func TestDuplicateOutputColumnRejected(t *testing.T) {
 		"MATCH (n:Person) RETURN *, n.name AS extra", // * plus a distinct explicit column
 	}
 	for _, q := range accept {
-		if _, err := Run(g, q); err != nil {
+		if _, err := gql.Run(g, q); err != nil {
 			t.Fatalf("unexpected rejection of a legal projection: %q -> %v", q, err)
 		}
 	}
@@ -45,8 +46,8 @@ func TestDuplicateOutputColumnRejected(t *testing.T) {
 // on: an explicit item re-projecting a `*` variable under the same name
 // yields a SINGLE column carrying the explicit value, not two columns.
 func TestExplicitShadowsStarColumn(t *testing.T) {
-	g := socialGraph(t)
-	rows, err := Run(g, "MATCH (n:Person) RETURN *, 7 AS n ORDER BY n")
+	g := gql.SocialGraph(t)
+	rows, err := gql.Run(g, "MATCH (n:Person) RETURN *, 7 AS n ORDER BY n")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

@@ -1,7 +1,8 @@
-package gql
+package gql_test
 
 import (
 	"errors"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -15,8 +16,8 @@ import (
 // fixtures/helpers and the expand/quantifier/path-mode tests).
 
 func TestAnyShortest(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = ANY SHORTEST (a)-[:KNOWS]->{1,}(b) RETURN length(p) AS l")
 	r, ok := rows.Next()
 	if !ok {
@@ -29,7 +30,7 @@ func TestAnyShortest(t *testing.T) {
 		t.Fatal("ANY SHORTEST binds one path per row")
 	}
 	// Same endpoints: a zero-length path.
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'}) MATCH p = ANY SHORTEST (a)-[:KNOWS]->{1,}(a) RETURN length(p) AS l")
 	r, _ = rows.Next()
 	if v, _ := r.Get("l"); !value.Equal(v, value.Int(0)) {
@@ -38,10 +39,10 @@ func TestAnyShortest(t *testing.T) {
 }
 
 func TestAllShortestDiamond(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// The directed diamond Alice -> {Bob, Carol} -> Dave has two 2-hop
 	// minimum paths; ALL SHORTEST is row-expanding.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Dave'}) MATCH p = ALL SHORTEST (a)-[:KNOWS]->{1,}(b) RETURN length(p) AS l")
 	batch := rows.NextBatch(10)
 	if len(batch) != 2 {
@@ -81,7 +82,7 @@ func TestAnyShortestCost(t *testing.T) {
 	g := weightedTriangle(t)
 	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
 	lengthOf := func(q string) int64 {
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no path: %s", q)
@@ -105,7 +106,7 @@ func TestAnyShortestCost(t *testing.T) {
 		t.Fatalf("formula-cost length = %d, want 2", l)
 	}
 	// relationships(p) reflects the exact edges the search optimized.
-	rows := runBoth(t, g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN size(rels(p)) AS n")
+	rows := gql.RunBoth(t, g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN size(rels(p)) AS n")
 	r, _ := rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
 		t.Fatalf("rels(p) size = %v, want 2", v)
@@ -116,23 +117,23 @@ func TestAnyShortestCostErrors(t *testing.T) {
 	g := weightedTriangle(t)
 	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
 	// ALL SHORTEST does not combine with COST.
-	if _, err := Run(g, ends+"MATCH p = ALL SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+	if _, err := gql.Run(g, ends+"MATCH p = ALL SHORTEST (a)-[r:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, gql.ErrPlan) {
 		t.Fatalf("ALL SHORTEST + COST: %v", err)
 	}
 	// A weight formula may reference only the pattern's rel variable.
-	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST a.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+	if _, err := gql.Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST a.w RETURN length(p) AS l"); !errors.Is(err, gql.ErrPlan) {
 		t.Fatalf("foreign-var COST: %v", err)
 	}
 	// An unknown function inside the weight is a bind error, not null.
-	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST nosuchfn(r) RETURN length(p) AS l"); !errors.Is(err, ErrBind) {
+	if _, err := gql.Run(g, ends+"MATCH p = ANY SHORTEST (a)-[r:R]->{1,}(b) COST nosuchfn(r) RETURN length(p) AS l"); !errors.Is(err, gql.ErrBind) {
 		t.Fatalf("unknown-fn COST: %v", err)
 	}
 	// A per-edge formula needs a named relationship variable.
-	if _, err := Run(g, ends+"MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrPlan) {
+	if _, err := gql.Run(g, ends+"MATCH p = ANY SHORTEST (a)-[:R]->{1,}(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, gql.ErrPlan) {
 		t.Fatalf("unnamed-rel COST: %v", err)
 	}
 	// COST applies only to a path search, not a plain path bind.
-	if _, err := Run(g, "MATCH p = (a:N)-[r:R]->(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, ErrParse) {
+	if _, err := gql.Run(g, "MATCH p = (a:N)-[r:R]->(b) COST r.w RETURN length(p) AS l"); !errors.Is(err, gql.ErrParse) {
 		t.Fatalf("path-bind COST: %v", err)
 	}
 }
@@ -147,7 +148,7 @@ func TestConstantCostMatchesUnweighted(t *testing.T) {
 	ends := "MATCH (a:N {name: 's'}), (b:N {name: 't'}) "
 	lengthOf := func(q string) int64 {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no path: %s", q)
@@ -193,13 +194,13 @@ func TestShortestHopBoundExcludes(t *testing.T) {
 		"MATCH p = ANY SHORTEST (a)-[r:R]->{1,1}(b) COST r.w RETURN length(p) AS l",
 		"MATCH p = ALL SHORTEST (a)-[:R]->{1,1}(b) RETURN length(p) AS l",
 	} {
-		rows := runBoth(t, g, ends+form)
+		rows := gql.RunBoth(t, g, ends+form)
 		if r, ok := rows.Next(); ok {
 			t.Fatalf("beyond-bound target produced a row %v: %s", r.Values(), form)
 		}
 	}
 	// OPTIONAL keeps the row, path null.
-	rows := runBoth(t, g, ends+"OPTIONAL MATCH p = ANY SHORTEST (a)-[:R]->{1,1}(b) RETURN p")
+	rows := gql.RunBoth(t, g, ends+"OPTIONAL MATCH p = ANY SHORTEST (a)-[:R]->{1,1}(b) RETURN p")
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatal("OPTIONAL beyond-bound dropped the row")
@@ -212,7 +213,7 @@ func TestShortestHopBoundExcludes(t *testing.T) {
 		"MATCH p = ANY SHORTEST (a)-[:R]->{1,2}(b) RETURN length(p) AS l",
 		"MATCH p = ANY SHORTEST (a)-[r:R]->{1,2}(b) COST r.w RETURN length(p) AS l",
 	} {
-		rows := runBoth(t, g, ends+form)
+		rows := gql.RunBoth(t, g, ends+form)
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("within-bound target found no path: %s", form)

@@ -6,54 +6,15 @@
 // the planner's cost-driven choice, and a divergence makes row counts
 // plan-dependent. LDBC parity is structurally blind here (simple graph),
 // so these pins and the fuzz lane are the coverage.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 )
-
-// multiSocialGraph is socialGraph with every 4th relationship duplicated
-// (the sibling engine's multigraph fuzz-lane recipe): same reachability,
-// parallel-pair multiplicities > 1.
-func multiSocialGraph(t testing.TB) *chickpeas.Snapshot {
-	t.Helper()
-	b := chickpeas.NewBuilder(8, 32)
-	people := []struct {
-		name string
-		age  int64
-	}{{"Alice", 30}, {"Bob", 35}, {"Carol", 40}, {"Dave", 25}}
-	for _, p := range people {
-		id, _ := b.AddNode("Person")
-		_ = b.SetProp(id, "name", p.name)
-		_ = b.SetProp(id, "age", p.age)
-	}
-	for _, name := range []string{"Acme", "Globex"} {
-		id, _ := b.AddNode("Company")
-		_ = b.SetProp(id, "name", name)
-	}
-	rels := []struct {
-		u, v chickpeas.NodeID
-		t    string
-	}{
-		{0, 1, "KNOWS"}, {0, 2, "KNOWS"}, {1, 2, "KNOWS"}, {1, 3, "KNOWS"},
-		{2, 3, "KNOWS"}, {2, 1, "KNOWS"}, {3, 0, "KNOWS"},
-		{0, 4, "WORKS_AT"}, {1, 4, "WORKS_AT"}, {2, 5, "WORKS_AT"},
-	}
-	for i, r := range rels {
-		if _, err := b.AddRel(r.u, r.v, r.t); err != nil {
-			t.Fatal(err)
-		}
-		if i%4 == 0 {
-			if _, err := b.AddRel(r.u, r.v, r.t); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	return b.Finalize("multisocial")
-}
 
 // TestParallelRelMultiplicityConsistency pins the execution forms of one
 // hop over a doubled edge to the same per-rel count: enumerated (unnamed
@@ -97,7 +58,7 @@ func TestParallelRelMultiplicityConsistency(t *testing.T) {
 	// kernel arrangement -- which still counts 2 -- would leave the test green
 	// while no longer exercising the semijoin emission at all. Assert the plan
 	// carries the [into bound] marker so such a regression turns this red.
-	ex, err := Explain(g2, q)
+	ex, err := gql.Explain(g2, q)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -109,7 +70,7 @@ func TestParallelRelMultiplicityConsistency(t *testing.T) {
 // oneCount runs q through both eval paths and returns its single count.
 func oneCount(t *testing.T, g *chickpeas.Snapshot, q string) int64 {
 	t.Helper()
-	rows := runBoth(t, g, q)
+	rows := gql.RunBoth(t, g, q)
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatalf("no row: %s", q)

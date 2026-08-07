@@ -1,6 +1,7 @@
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -39,7 +40,7 @@ func TestOptionalUnsatisfiableEdgeNullExtends(t *testing.T) {
 
 	anchorIDs := func(src string) map[chickpeas.NodeID]bool {
 		t.Helper()
-		rows, err := RunUncached(g, src)
+		rows, err := gql.RunUncached(g, src)
 		if err != nil {
 			t.Fatalf("%s: %v", src, err)
 		}

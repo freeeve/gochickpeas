@@ -1,7 +1,8 @@
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"slices"
 	"strings"
 	"testing"
@@ -151,7 +152,7 @@ func TestMultiPivotExtraction(t *testing.T) {
 	defer func() {
 		plan.HashJoinMinRows, plan.HashJoinFanFactor, plan.HashJoinExtDivisor = mr, ff, ed
 	}()
-	pl, err := Explain(g, q+" ")
+	pl, err := gql.Explain(g, q+" ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,14 +228,14 @@ func TestExactDegreeGate(t *testing.T) {
 		{1, true, 16 * 64}, // hub: real degree 64 clears the x8 gate
 		{2, false, 16 * 1}, // sparse: real degree 1 declines it
 	} {
-		pl, err := Explain(g, q(tc.hk))
+		pl, err := gql.Explain(g, q(tc.hk))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := strings.Contains(pl, "HashJoin"); got != tc.wantJoin {
 			t.Fatalf("hk=%d HashJoin = %v, want %v:\n%s", tc.hk, got, tc.wantJoin, pl)
 		}
-		rows, err := Run(g, q(tc.hk))
+		rows, err := gql.Run(g, q(tc.hk))
 		if err != nil {
 			t.Fatal(err)
 		}

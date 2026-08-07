@@ -5,10 +5,11 @@
 // counters), not results -- row-level correctness is covered by the
 // existing suites -- and pin the protocol's necessary asymmetry: ORDER BY
 // and aggregation must still consume everything.
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,7 +73,7 @@ func TestLimitStopCrossesStreamedBoundary(t *testing.T) {
 	const n = 10000
 	g := bigScanGraph(t, n)
 	q := "MATCH (x:N) RETURN 'v' + x.v AS y NEXT RETURN y LIMIT 3"
-	rows, err := Run(g, q)
+	rows, err := gql.Run(g, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestLimitStopCrossesStreamedBoundary(t *testing.T) {
 		t.Fatalf("rows = %d, want 3", count)
 	}
 	allocs := testing.AllocsPerRun(3, func() {
-		if _, err := Run(g, q); err != nil {
+		if _, err := gql.Run(g, q); err != nil {
 			t.Fatal(err)
 		}
 	})

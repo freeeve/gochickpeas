@@ -55,12 +55,12 @@ func weightedGraph(t testing.TB) *chickpeas.Snapshot {
 }
 
 // xcheckBuilders are the harness's built-in seed graphs, keyed by the
-// corpus record's graph name (geoGraph is the M19 CALL-test fixture).
+// corpus record's graph name (GeoGraph is the M19 CALL-test fixture).
 var xcheckBuilders = map[string]func(testing.TB) *chickpeas.Snapshot{
-	"social":   func(t testing.TB) *chickpeas.Snapshot { return socialGraph(t) },
-	"replies":  func(t testing.TB) *chickpeas.Snapshot { return replyForest(t.(*testing.T)) },
+	"social":   func(t testing.TB) *chickpeas.Snapshot { return SocialGraph(t) },
+	"replies":  func(t testing.TB) *chickpeas.Snapshot { return ReplyForest(t.(*testing.T)) },
 	"weighted": weightedGraph,
-	"geo":      func(t testing.TB) *chickpeas.Snapshot { return geoGraph(t.(*testing.T)) },
+	"geo":      func(t testing.TB) *chickpeas.Snapshot { return GeoGraph(t.(*testing.T)) },
 }
 
 // encodeValue maps a runtime value to the canonical corpus encoding.

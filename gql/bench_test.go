@@ -1,9 +1,10 @@
 // GQL engine benchmarks over a deterministic xorshift graph (the root
 // bench_test.go fixture shape). Go-vs-Go regressions tracked with
 // benchstat; Rust-vs-Go comparisons are documentation-only, never gated.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"strconv"
 	"testing"
 
@@ -75,7 +76,7 @@ func BenchmarkExecuteScanFilter(b *testing.B) {
 	q := "MATCH (p:Person) WHERE p.age > 70 RETURN p.name AS name"
 	b.ResetTimer()
 	for b.Loop() {
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -88,7 +89,7 @@ func BenchmarkExecuteExpandAgg(b *testing.B) {
 	g := gqlBenchGraph(b, 20_000, 100_000)
 	b.ResetTimer()
 	for b.Loop() {
-		rows, err := Run(g, benchQuery)
+		rows, err := gql.Run(g, benchQuery)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -102,7 +103,7 @@ func BenchmarkExecuteVarLength(b *testing.B) {
 	q := "MATCH (p:Person {name: 'p42'})-[:KNOWS]->{1,2}(f) RETURN count(DISTINCT f) AS n"
 	b.ResetTimer()
 	for b.Loop() {
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -122,7 +123,7 @@ func BenchmarkExecuteCountSubquery(b *testing.B) {
 		"RETURN p.name AS name, COUNT { (p)-[:KNOWS]->(f:Person {age: 42}) } AS c"
 	b.ResetTimer()
 	for b.Loop() {
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -133,7 +134,7 @@ func BenchmarkExecuteCountSubquery(b *testing.B) {
 
 func BenchmarkPlanCacheHit(b *testing.B) {
 	g := gqlBenchGraph(b, 20_000, 100_000)
-	cache := NewPlanCache(DefaultCacheBytes)
+	cache := gql.NewPlanCache(gql.DefaultCacheBytes)
 	q := "MATCH (p:Person) WHERE p.age > 75 RETURN p.name AS name LIMIT 5"
 	if _, err := cache.Run(g, q); err != nil {
 		b.Fatal(err)

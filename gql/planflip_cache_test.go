@@ -31,7 +31,7 @@ func runRows(t *testing.T, f func() (*Rows, error)) []string {
 // query's blind plan matches its sighted plan, so the template is not
 // marked flipped and repeats hit the cache.
 func TestUnflippedTemplateStaysCached(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(0)
 	q := "MATCH (p:Person) WHERE p.age > 30 RETURN p.name AS n ORDER BY n"
 	want := runRows(t, func() (*Rows, error) { return Run(g, q) })
@@ -55,7 +55,7 @@ func TestUnflippedTemplateStaysCached(t *testing.T) {
 // statistics), both the L1-hit and L2-hit paths return the same rows as
 // the uncached sighted path.
 func TestFlippedTemplateRoutesSighted(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(0)
 	q := "MATCH (p:Person) WHERE p.age > 30 RETURN p.name AS n ORDER BY n"
 	want := runRows(t, func() (*Rows, error) { return Run(g, q) })
@@ -85,7 +85,7 @@ func TestFlippedTemplateRoutesSighted(t *testing.T) {
 // template plan for a query whose structure survives parameter lifting
 // compares equal to the sighted plan.
 func TestFlipDetectionSameTreeNotFlipped(t *testing.T) {
-	g := socialGraph(t)
+	g := SocialGraph(t)
 	c := NewPlanCache(0)
 	queries := []string{
 		"MATCH (p:Person {name: 'Alice'}) RETURN p.age AS a",

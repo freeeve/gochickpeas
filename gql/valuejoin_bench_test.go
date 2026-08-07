@@ -2,10 +2,11 @@
 // components joined only by a property equality. The A side flips the
 // join on/off via the exported thresholds in one process, so both arms
 // run the same binary on the same graph.
-package gql
+package gql_test
 
 import (
 	"fmt"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -51,7 +52,7 @@ func benchValueJoin(b *testing.B, join bool) {
 	}()
 	b.ResetTimer()
 	for b.Loop() {
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			b.Fatal(err)
 		}

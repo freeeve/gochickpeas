@@ -10,15 +10,16 @@
 // deterministic (they return Null, not the current instant). They fail loudly
 // the day a zero-arg function stops being deterministic without its fold
 // being guarded (rustychickpeas twin 9735204).
-package gql
+package gql_test
 
+import "github.com/freeeve/gochickpeas/gql"
 import "testing"
 
 // TestZeroArgTemporalFunctionsAreDeterministic locks that the only zero-arg
 // scalar functions are non-volatile, so the vacuous plan-time fold of a
 // zero-arg call stays sound (task 083).
 func TestZeroArgTemporalFunctionsAreDeterministic(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	anchor := "MATCH (p:Person {name: 'Alice'}) RETURN "
 	for _, fn := range []string{"date()", "datetime()", "localdatetime()"} {
 		v, n := scalarVal(t, g, anchor+fn+" AS d", "d")
@@ -33,7 +34,7 @@ func TestZeroArgTemporalFunctionsAreDeterministic(t *testing.T) {
 // second execution, never a value frozen from the first. Trivially true today
 // (deterministic Null) and the tripwire that a future volatile addition trips.
 func TestZeroArgFoldStableAcrossExecutions(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	q := "MATCH (p:Person {name: 'Alice'}) RETURN datetime() AS d"
 	first, n1 := scalarVal(t, g, q, "d")
 	second, n2 := scalarVal(t, g, q, "d")
@@ -49,8 +50,8 @@ func TestZeroArgFoldStableAcrossExecutions(t *testing.T) {
 // through the plan cache -- where the fold hazard actually bites (one plan is
 // built once and replayed). Both executions must agree.
 func TestZeroArgFoldStableThroughPlanCache(t *testing.T) {
-	g := socialGraph(t)
-	c := NewPlanCache(1 << 20)
+	g := gql.SocialGraph(t)
+	c := gql.NewPlanCache(1 << 20)
 	q := "MATCH (p:Person {name: 'Alice'}) RETURN datetime() AS d"
 	run := func() (nullVal bool, rows int) {
 		res, err := c.Run(g, q)

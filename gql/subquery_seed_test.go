@@ -6,9 +6,10 @@
 // Reversal enumerates the same match multiset, and these tests pin the
 // two subtle arms: the zero-length quantifier (the seed node itself must
 // satisfy BOTH endpoint patterns) and COUNT's path multiplicity.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -68,7 +69,7 @@ func TestUnanchoredCountSeedReversal(t *testing.T) {
 		"RETURN COUNT { (:X)-[:S]->{0,2}(:C {name: 'root'}) } AS c",
 		"RETURN COUNT { (:C {name: 'root'})<-[:S]-{0,2}(:X) } AS c",
 	} {
-		rows, err := Run(g, q)
+		rows, err := gql.Run(g, q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -85,7 +86,7 @@ func TestUnanchoredCountSeedReversal(t *testing.T) {
 // outer row.
 func TestUnanchoredExistsBareStart(t *testing.T) {
 	g := seedFixture(t)
-	rows, err := Run(g, "MATCH (n:N) WHERE EXISTS { ()-[:S]->{0,2}(:C {name: 'root'}) } RETURN count(n) AS k")
+	rows, err := gql.Run(g, "MATCH (n:N) WHERE EXISTS { ()-[:S]->{0,2}(:C {name: 'root'}) } RETURN count(n) AS k")
 	if err != nil {
 		t.Fatal(err)
 	}

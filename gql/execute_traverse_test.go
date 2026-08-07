@@ -2,69 +2,53 @@
 // quantified paths (GQL: {m,n}, + is {1,}, * is {0,}), OPTIONAL MATCH,
 // named paths, and ANY/ALL SHORTEST -- the Rust execute.rs expansion
 // subset translated to GQL under the dual-path harness.
-package gql
+package gql_test
 
 import (
 	"errors"
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// replyForest is the Rust fixture: root <- a, root <- b, a <- c (replyOf
-// points child -> parent).
-func replyForest(t *testing.T) *chickpeas.Snapshot {
-	t.Helper()
-	b := chickpeas.NewBuilder(4, 4)
-	for _, n := range []string{"root", "a", "b", "c"} {
-		id, _ := b.AddNode("Msg")
-		_ = b.SetProp(id, "name", n)
-	}
-	for _, e := range [][2]chickpeas.NodeID{{1, 0}, {2, 0}, {3, 1}} {
-		if _, err := b.AddRel(e[0], e[1], "replyOf"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return b.Finalize("name")
-}
-
 func TestExpandOutgoing(t *testing.T) {
-	g := socialGraph(t)
-	wantStrs(t, strCol(t, g,
+	g := gql.SocialGraph(t)
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (p:Person {name: 'Alice'})-[:KNOWS]->(f:Person) RETURN f.name AS name", "name"),
 		"Bob", "Carol")
 }
 
 func TestExpandIncomingAndChained(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Incoming expand (aggregation lands in M18, so assert row-level).
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (c:Company {name: 'Acme'})<-[:WORKS_AT]-(p:Person) RETURN p.name AS name", "name"),
 		"Alice", "Bob")
 	// Two hops chained in one pattern.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(f)-[:WORKS_AT]->(c:Company) RETURN c.name AS name", "name"),
 		"Acme", "Globex")
 }
 
 func TestCarriedNodeAndMultipleMatchClauses(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Carry the node across a projection boundary, then expand from it.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (p:Person {name: 'Alice'}) RETURN p AS p NEXT MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name AS name", "name"),
 		"Bob", "Carol")
 	// Two MATCH clauses in one segment: the second anchors on a.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Person {name: 'Alice'}) MATCH (a)-[:KNOWS]->(f:Person) RETURN f.name AS name", "name"),
 		"Bob", "Carol")
 }
 
 func TestSemijoinRebind(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// Both endpoints bound before the edge test: the rebind expand probes
 	// the memoized reverse-neighbor set.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH (a)-[:KNOWS]->(b) RETURN b.name AS name", "name"),
 		"Bob")
 	// A missing edge yields nothing (Dave does not know Bob).
@@ -75,8 +59,8 @@ func TestSemijoinRebind(t *testing.T) {
 }
 
 func TestNamedRelationshipVariable(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) RETURN id(startNode(r)) AS s, b.name AS name ORDER BY name")
 	var starts []int64
 	for r := range rows.All() {
@@ -90,57 +74,57 @@ func TestNamedRelationshipVariable(t *testing.T) {
 }
 
 func TestQuantifiedPaths(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// {1,2}: Bob, Carol at 1 hop; Dave (and Bob/Carol again) at 2.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (p:Person {name: 'Alice'})-[:KNOWS]->{1,2}(f:Person) RETURN DISTINCT f.name AS name", "name"),
 		"Bob", "Carol", "Dave")
 	// {1,1} collapses to direct neighbors.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (p:Person {name: 'Alice'})-[:KNOWS]->{1,1}(f:Person) RETURN DISTINCT f.name AS name", "name"),
 		"Bob", "Carol")
 	// + is {1,}: unbounded reachable set dedups, so the KNOWS cycle
 	// terminates and reaches everyone including back to Alice.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Person {name: 'Alice'})-[:KNOWS]->+(b) RETURN DISTINCT b.name AS name", "name"),
 		"Alice", "Bob", "Carol", "Dave")
 }
 
 func TestZeroLengthQuantifiers(t *testing.T) {
-	g := replyForest(t)
+	g := gql.ReplyForest(t)
 	// * is {0,}: includes the node itself plus every ancestor to the root.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (c:Msg {name: 'c'})-[:replyOf]->*(x) RETURN x.name AS name", "name"),
 		"a", "c", "root")
 	// Reversed and unbounded: the whole thread, self included.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (root:Msg {name: 'root'})<-[:replyOf]-*(x) RETURN x.name AS name", "name"),
 		"a", "b", "c", "root")
 	// + excludes the zero-length hop in an acyclic forest.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (c:Msg {name: 'c'})-[:replyOf]->+(x) RETURN x.name AS name", "name"),
 		"a", "root")
 }
 
 func TestRelVarOnReachableSetIsPlanError(t *testing.T) {
-	g := replyForest(t)
+	g := gql.ReplyForest(t)
 	// A reachable set has no per-path relationship list, so a named rel
 	// variable on {0,} / unbounded is rejected at plan time.
 	for _, q := range []string{
 		"MATCH (c:Msg {name: 'c'})-[e:replyOf]->*(x) RETURN x.name AS name",
 		"MATCH (c:Msg {name: 'c'})-[e:replyOf]->+(x) RETURN x.name AS name",
 	} {
-		if _, err := Run(g, q); !errors.Is(err, ErrPlan) {
+		if _, err := gql.Run(g, q); !errors.Is(err, gql.ErrPlan) {
 			t.Fatalf("expected a plan error for %s, got %v", q, err)
 		}
 	}
 }
 
 func TestNamedVarLengthRelList(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	// A bounded quantified hop with a named rel binds the trail's rel
 	// list; one row per trail with size(e) = its hop count.
-	rows := runBoth(t, g,
+	rows := gql.RunBoth(t, g,
 		"MATCH (a:Person {name: 'Alice'})-[e:KNOWS]->{1,2}(f:Person {name: 'Dave'}) RETURN size(e) AS hops")
 	var hops []int64
 	for r := range rows.All() {
@@ -155,8 +139,8 @@ func TestNamedVarLengthRelList(t *testing.T) {
 }
 
 func TestOptionalMatch(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH (p:Person) OPTIONAL MATCH (p)-[:WORKS_AT]->(c:Company) RETURN p.name AS name, c.name AS company ORDER BY name")
 	want := map[string]string{"Alice": "Acme", "Bob": "Acme", "Carol": "Globex", "Dave": ""}
 	n := 0
@@ -179,7 +163,7 @@ func TestOptionalMatch(t *testing.T) {
 		t.Fatalf("rows = %d", n)
 	}
 	// OPTIONAL over an impossible pattern still emits every input row.
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH (p:Person {name: 'Dave'}) OPTIONAL MATCH (p)-[:WORKS_AT]->(c) RETURN c AS c")
 	r, ok := rows.Next()
 	if !ok {
@@ -191,8 +175,8 @@ func TestOptionalMatch(t *testing.T) {
 }
 
 func TestNamedPathFixedHop(t *testing.T) {
-	g := socialGraph(t)
-	rows := runBoth(t, g,
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
 		"MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN size(nodes(p)) AS n, length(p) AS l")
 	count := 0
 	for r := range rows.All() {
@@ -210,17 +194,17 @@ func TestNamedPathFixedHop(t *testing.T) {
 		t.Fatalf("paths = %d", count)
 	}
 	// A WHERE over the bound path runs post-assembly.
-	rows = runBoth(t, g,
+	rows = gql.RunBoth(t, g,
 		"MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->{1,2}(b:Person {name: 'Dave'}) WHERE length(p) = 2 RETURN length(p) AS l")
 	if batch := rows.NextBatch(10); len(batch) != 2 {
 		t.Fatalf("filtered paths = %d", len(batch))
 	}
 }
 func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
-	g := replyForest(t)
+	g := gql.ReplyForest(t)
 	// Undirected {1,2} from a: root and c at 1 hop; b (via root) and the
 	// (a<-c is one edge, trail-unique) at 2. Distinct endpoints:
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Msg {name: 'a'})-[:replyOf]-{1,2}(x) RETURN DISTINCT x.name AS name", "name"),
 		"b", "c", "root")
 }
@@ -248,34 +232,34 @@ func TestMatchScopeRelUniqueness(t *testing.T) {
 	// Comma patterns in ONE MATCH bind pairwise-distinct relationships
 	// (ISO GQL DIFFERENT EDGES): with two M edges only the 2 permutations
 	// survive -- p2 == p3 would reuse one edge.
-	rows := runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
+	rows := gql.RunBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
 	r, _ := rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
 		t.Fatalf("same-clause count = %v, want 2", v)
 	}
 	// Separate MATCH clauses are separate scopes: reuse is allowed, all
 	// 4 combinations match.
-	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2) MATCH (f)-[:M]->(p3) RETURN count(*) AS n")
+	rows = gql.RunBoth(t, g, "MATCH (f:Forum)-[:M]->(p2) MATCH (f)-[:M]->(p3) RETURN count(*) AS n")
 	r, _ = rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(4)) {
 		t.Fatalf("cross-clause count = %v, want 4", v)
 	}
 	// Disjoint rel types never conflict (untracked, zero-cost).
-	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:OTHER]->(p3) RETURN count(*) AS n")
+	rows = gql.RunBoth(t, g, "MATCH (f:Forum)-[:M]->(p2), (f)-[:OTHER]->(p3) RETURN count(*) AS n")
 	r, _ = rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
 		t.Fatalf("disjoint-type count = %v, want 2", v)
 	}
 	// A var-length pattern shares the scope with a fixed hop of the same
 	// type: the fixed hop cannot reuse an edge the trail bound.
-	rows = runBoth(t, g, "MATCH (f:Forum)-[:M]->{1,1}(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
+	rows = gql.RunBoth(t, g, "MATCH (f:Forum)-[:M]->{1,1}(p2), (f)-[:M]->(p3) RETURN count(*) AS n")
 	r, _ = rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
 		t.Fatalf("varlen+fixed count = %v, want 2", v)
 	}
 	// Within one pattern too: an undirected 2-hop cannot walk the same
 	// edge there and back.
-	rows = runBoth(t, g, "MATCH (p:Person)-[:M]-(f)-[:M]-(q:Person) RETURN count(*) AS n")
+	rows = gql.RunBoth(t, g, "MATCH (p:Person)-[:M]-(f)-[:M]-(q:Person) RETURN count(*) AS n")
 	r, _ = rows.Next()
 	if v, _ := r.Get("n"); !value.Equal(v, value.Int(2)) {
 		t.Fatalf("within-pattern count = %v, want 2 (p0-f-p1 both ways)", v)
@@ -304,12 +288,12 @@ func pingPong(t *testing.T) *chickpeas.Snapshot {
 // the reachable set (min 0 includes the anchor itself), not a single hop
 // (IC12's shape: EXISTS { (tc)-[:IS_SUBCLASS_OF]->{0,10}(:X {..}) }).
 func TestExistsQuantifiedHop(t *testing.T) {
-	g := replyForest(t)
+	g := gql.ReplyForest(t)
 	// root at 0 hops, a and b at 1, c at 2 -- everything reaches root.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (x:Msg) WHERE EXISTS { (x)-[:replyOf]->{0,2}(:Msg {name: 'root'}) } RETURN x.name AS name", "name"),
 		"a", "b", "c", "root")
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (x:Msg) WHERE EXISTS { (x)-[:replyOf]->{2,2}(:Msg {name: 'root'}) } RETURN x.name AS name", "name"),
 		"c")
 }
@@ -317,7 +301,7 @@ func TestExistsQuantifiedHop(t *testing.T) {
 // TestDurationISOString: duration('P100D') parses the ISO-8601 string
 // form and adds calendar-correctly to a zoned datetime.
 func TestDurationISOString(t *testing.T) {
-	g := replyForest(t)
+	g := gql.ReplyForest(t)
 	got := intCol(t, g,
 		"RETURN (zoned_datetime('2012-06-01') + duration('P100D')).epochMillis AS ms", "ms")
 	if len(got) != 1 || got[0] != 1347148800000 {
@@ -340,20 +324,20 @@ func TestAcyclicPathMode(t *testing.T) {
 	g := pingPong(t)
 	// Trail semantics (bare and with the no-op TRAIL prefix): the 2-hop
 	// round trip lands back on a.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"), "a")
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH TRAIL (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"), "a")
 	// ACYCLIC rejects the revisit -- both bare and path-bind positions.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{2,2}(x) RETURN x.name AS name", "name"))
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{1,2}(x) RETURN x.name AS name", "name"), "b")
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH p = ACYCLIC (a:Msg {name: 'a'})-[:R]->{1,2}(x) RETURN x.name AS name", "name"), "b")
 	// ACYCLIC needs bounded, min >= 1 quantifiers (reach mode has no
 	// per-path node stack).
-	if _, err := Run(g, "MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{0,}(x) RETURN x.name AS name"); !errors.Is(err, ErrPlan) {
+	if _, err := gql.Run(g, "MATCH ACYCLIC (a:Msg {name: 'a'})-[:R]->{0,}(x) RETURN x.name AS name"); !errors.Is(err, gql.ErrPlan) {
 		t.Fatalf("unbounded ACYCLIC: %v", err)
 	}
 }
@@ -375,11 +359,11 @@ func TestChainCollapseVarExpand(t *testing.T) {
 	b.AddRel(c1, root, "R")
 	b.AddRel(c2, c1, "R")
 	g := b.Finalize()
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (m:N {name: 'c2'})-[:R]->{0,}(r:Root) RETURN r.name AS name", "name"),
 		"root")
 	// Zero-length arm: the start itself carries the label.
-	wantStrs(t, strCol(t, g,
+	gql.WantStrs(t, strCol(t, g,
 		"MATCH (m:N {name: 'root'})-[:R]->{0,}(r:Root) RETURN r.name AS name", "name"),
 		"root")
 
@@ -395,7 +379,7 @@ func TestChainCollapseVarExpand(t *testing.T) {
 	b2.AddRel(mid2, root2, "R")
 	b2.AddRel(leaf2, mid2, "R")
 	g2 := b2.Finalize()
-	wantStrs(t, strColOrdered(t, g2,
+	gql.WantStrs(t, gql.StrColOrdered(t, g2,
 		"MATCH (m:N {name: 'leaf'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
 		"mid", "root")
 
@@ -411,7 +395,7 @@ func TestChainCollapseVarExpand(t *testing.T) {
 	b3.AddRel(fork, rootA, "R")
 	b3.AddRel(fork, rootB, "R")
 	g3 := b3.Finalize()
-	wantStrs(t, strColOrdered(t, g3,
+	gql.WantStrs(t, gql.StrColOrdered(t, g3,
 		"MATCH (m:N {name: 'fork'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
 		"ra", "rb")
 }

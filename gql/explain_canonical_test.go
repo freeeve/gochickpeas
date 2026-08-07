@@ -1,19 +1,20 @@
-// Public-surface tests for ExplainCanonical (task 112): the golden plan-shape
+// Public-surface tests for gql.ExplainCanonical (task 112): the golden plan-shape
 // entry point cmd/gqlbench consumes (it cannot import gql/internal/explain).
 // Asserts the output pins shape/anchor, excludes volatile parts, and is
 // deterministic across plannings -- the properties a plan-regression golden
 // depends on.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"strings"
 	"testing"
 )
 
 func TestExplainCanonicalPinsShapeExcludesVolatile(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	const q = "MATCH (p:Person {name: 'Alice'})-[:KNOWS]->(f:Person) WHERE f.age > 25 RETURN f.name AS n ORDER BY n LIMIT 3"
-	c, err := ExplainCanonical(g, q)
+	c, err := gql.ExplainCanonical(g, q)
 	if err != nil {
 		t.Fatalf("ExplainCanonical: %v", err)
 	}
@@ -39,14 +40,14 @@ func TestExplainCanonicalPinsShapeExcludesVolatile(t *testing.T) {
 // TestExplainCanonicalDeterministic: Go randomizes map iteration each run, so a
 // canonical string that varied across plannings would be useless as a golden.
 func TestExplainCanonicalDeterministic(t *testing.T) {
-	g := socialGraph(t)
+	g := gql.SocialGraph(t)
 	const q = "MATCH (p:Person {name: 'Alice'})-[:KNOWS]->(f:Person) WHERE f.age > 25 RETURN f.name AS n ORDER BY n"
-	first, err := ExplainCanonical(g, q)
+	first, err := gql.ExplainCanonical(g, q)
 	if err != nil {
 		t.Fatalf("ExplainCanonical: %v", err)
 	}
 	for range 50 {
-		got, err := ExplainCanonical(g, q)
+		got, err := gql.ExplainCanonical(g, q)
 		if err != nil {
 			t.Fatalf("ExplainCanonical: %v", err)
 		}
@@ -60,8 +61,8 @@ func TestExplainCanonicalDeterministic(t *testing.T) {
 // partial string -- the gqlbench golden mode must distinguish "cannot plan" from
 // "planned to this shape".
 func TestExplainCanonicalParseError(t *testing.T) {
-	g := socialGraph(t)
-	if _, err := ExplainCanonical(g, "MATCH (p:Person) RETURN"); err == nil {
+	g := gql.SocialGraph(t)
+	if _, err := gql.ExplainCanonical(g, "MATCH (p:Person) RETURN"); err == nil {
 		t.Fatal("expected an error for a malformed query, got nil")
 	}
 }

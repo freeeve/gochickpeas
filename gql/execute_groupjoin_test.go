@@ -6,9 +6,10 @@
 // inner variables escaping, WHERE reading beyond the pattern). The
 // breadth floor is lowered per forced run so fixture-scale outers
 // qualify; the default-floor case pins the gate itself.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"slices"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ func gjCompare(t *testing.T, g *chickpeas.Snapshot, q string, wantJoin bool) []s
 	plan.GroupJoinMinOuterRows = 0
 	defer func() { plan.GroupJoinMinOuterRows = floor }()
 	qf := q + " " // defeat the plan cache: the lowered floor must re-plan
-	pl, err := Explain(g, qf)
+	pl, err := gql.Explain(g, qf)
 	if err != nil {
 		t.Fatalf("explain failed: %s\n%v", qf, err)
 	}
@@ -164,7 +165,7 @@ func TestGroupJoinDeclines(t *testing.T) {
 // when the outer is broad enough that the nested walk multiplies.
 func TestGroupJoinBreadthGate(t *testing.T) {
 	g := groupJoinGraph(t)
-	pl, err := Explain(g, "MATCH (u:U) OPTIONAL MATCH (u)<-[:R]-(m:M) RETURN u.name AS un, count(m) AS c")
+	pl, err := gql.Explain(g, "MATCH (u:U) OPTIONAL MATCH (u)<-[:R]-(m:M) RETURN u.name AS un, count(m) AS c")
 	if err != nil {
 		t.Fatal(err)
 	}

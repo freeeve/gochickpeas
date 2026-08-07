@@ -2,9 +2,10 @@
 // the clause WHERE, `?` is the {0,1} quantifier, `%` is the any-label
 // wildcard, and REPEATABLE ELEMENTS switches a clause to walk semantics
 // (relationship reuse allowed) where the TRAIL default excludes it.
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -35,7 +36,7 @@ func gpmlFixture(t *testing.T) *chickpeas.Snapshot {
 
 func countOf(t *testing.T, g *chickpeas.Snapshot, q string) int64 {
 	t.Helper()
-	rows := runBoth(t, g, q)
+	rows := gql.RunBoth(t, g, q)
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatalf("no row: %s", q)
@@ -108,7 +109,7 @@ func TestExpressionBatch(t *testing.T) {
 	g := gpmlFixture(t)
 	one := func(q string) string {
 		t.Helper()
-		rows := runBoth(t, g, "RETURN "+q+" AS x")
+		rows := gql.RunBoth(t, g, "RETURN "+q+" AS x")
 		r, ok := rows.Next()
 		if !ok {
 			t.Fatalf("no row: %s", q)
@@ -172,7 +173,7 @@ func TestSetOperations(t *testing.T) {
 	g := gpmlFixture(t)
 	vals := func(q string) []int64 {
 		t.Helper()
-		rows := runBoth(t, g, q)
+		rows := gql.RunBoth(t, g, q)
 		var out []int64
 		for r := range rows.All() {
 			v, _ := r.GetAt(0)

@@ -3,9 +3,10 @@
 // a sparse one (low fill) both report an absent slot as null. Guards against
 // the dense-column presence gap reported on the Rust side (rustychickpeas
 // task 370 / gochickpeas task 184).
-package gql
+package gql_test
 
 import (
+	"github.com/freeeve/gochickpeas/gql"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -33,7 +34,7 @@ func fillGraph(t *testing.T, span, present int) *chickpeas.Snapshot {
 // countScalar runs q (which must RETURN a single count column) and returns it.
 func countScalar(t *testing.T, g *chickpeas.Snapshot, q string) int64 {
 	t.Helper()
-	rows := runBoth(t, g, q)
+	rows := gql.RunBoth(t, g, q)
 	r, ok := rows.Next()
 	if !ok {
 		t.Fatalf("no row from %s", q)
