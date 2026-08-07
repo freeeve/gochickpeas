@@ -118,10 +118,11 @@ func substKindCases() []substKindCase {
 		{"Index", func() ast.Expr { return &ast.Index{Base: n(), Idx: n()} }, nil},
 		{"Slice", func() ast.Expr { return &ast.Slice{Base: n(), From: n(), To: n()} }, nil},
 		{"MapLit", func() ast.Expr { return &ast.MapLit{Fields: []ast.MapField{{Key: "k", Val: n()}}} }, nil},
-		// Sources rewrite; the bound bodies keep the bare name (policy).
-		{"ListPred", func() ast.Expr { return &ast.ListPred{Var: "v", List: n(), Pred: n()} }, []string{"n"}},
-		{"ListComp", func() ast.Expr { return &ast.ListComp{Var: "v", List: n(), Filter: n(), Map: n()} }, []string{"n"}},
-		{"Reduce", func() ast.Expr { return &ast.Reduce{Acc: "a", Init: n(), Var: "v", List: n(), Body: n()} }, []string{"n"}},
+		// Sources and bodies both rewrite; the binder's locals only filter
+		// the groups they shadow (see TestSubstGroupKeysShadowing).
+		{"ListPred", func() ast.Expr { return &ast.ListPred{Var: "v", List: n(), Pred: n()} }, nil},
+		{"ListComp", func() ast.Expr { return &ast.ListComp{Var: "v", List: n(), Filter: n(), Map: n()} }, nil},
+		{"Reduce", func() ast.Expr { return &ast.Reduce{Acc: "a", Init: n(), Var: "v", List: n(), Body: n()} }, nil},
 		// Correlated subquery filters stay by the same policy.
 		{"Exists", func() ast.Expr { return &ast.Exists{Pattern: pat(), Where: n()} }, []string{"n"}},
 		{"CountSub", func() ast.Expr { return &ast.CountSub{Pattern: pat(), Where: n()} }, []string{"n"}},
@@ -144,6 +145,44 @@ func requireKindRollCall(t *testing.T, covered map[string]bool) {
 		if !covered[m[1]] {
 			t.Errorf("ast.%s has no substitution-walker case: add one and decide its rename policy", m[1])
 		}
+	}
+}
+
+// TestSubstGroupKeysShadowing pins the binder-scope policy of the descent
+// (tasks 232/233): a body reference the binder shadows stays the local, a
+// body reference to an unshadowed key rewrites, and a binder local
+// colliding with a key's output name drops that key for the sub-scope --
+// the outer reference then stays free (a clean bind error downstream)
+// instead of being captured; alpha-renaming the local would lift this.
+func TestSubstGroupKeysShadowing(t *testing.T) {
+	groups := []groupCol{{idx: 0, name: "m", expr: &ast.Var{Name: "n"}}}
+	one := &ast.Lit{Value: ast.IntLit(1)}
+
+	// [x IN [1] | x + n.val]: the body's n is the renamed key -- rewrites.
+	lc := &ast.ListComp{Var: "x", List: &ast.ListExpr{Elems: []ast.Expr{one}},
+		Map: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Var{Name: "x"}, RHS: &ast.Prop{Var: "n", Key: "val"}}}
+	got := substGroupKeys(lc, groups).(*ast.ListComp)
+	if free := freeVarsOutside(got, []string{"m"}); len(free) != 0 {
+		t.Fatalf("unshadowed body ref: free = %v, want none", free)
+	}
+
+	// [n IN [1] | n]: the local shadows the key's source variable -- the
+	// body's n means the local and must NOT be substituted.
+	shadow := &ast.ListComp{Var: "n", List: &ast.ListExpr{Elems: []ast.Expr{one}},
+		Map: &ast.Var{Name: "n"}}
+	got = substGroupKeys(shadow, groups).(*ast.ListComp)
+	if v, ok := got.Map.(*ast.Var); !ok || v.Name != "n" {
+		t.Fatalf("shadowed body ref = %#v, want the untouched local n", got.Map)
+	}
+
+	// [m IN [1] | m + n.x]: the local collides with the key's OUTPUT name;
+	// substituting would be captured, so the key is dropped for the body
+	// and the outer n stays free (task 233 pins the alpha-rename upgrade).
+	collide := &ast.ListComp{Var: "m", List: &ast.ListExpr{Elems: []ast.Expr{one}},
+		Map: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Var{Name: "m"}, RHS: &ast.Prop{Var: "n", Key: "x"}}}
+	got = substGroupKeys(collide, groups).(*ast.ListComp)
+	if free := freeVarsOutside(got, []string{"m"}); !slices.Equal(free, []string{"n"}) {
+		t.Fatalf("colliding local: free = %v, want [n] (dropped, not captured)", free)
 	}
 }
 

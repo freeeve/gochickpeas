@@ -14,15 +14,52 @@ type groupCol struct {
 	expr ast.Expr
 }
 
+// shadowFiltered returns groups minus the ones a binder's locals make
+// unusable in its sub-scope: a group whose key expression mentions a local
+// (the body reference means the local, not the key) or whose output name
+// IS a local (substituting it would be captured). The common case -- no
+// collision -- returns groups unchanged without allocating.
+func shadowFiltered(groups []groupCol, locals ...string) []groupCol {
+	drop := func(g groupCol) bool {
+		for _, l := range locals {
+			if l == "" {
+				continue
+			}
+			if g.name == l || MentionsVar(g.expr, l) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, g := range groups {
+		if drop(g) {
+			kept := make([]groupCol, 0, len(groups)-1)
+			kept = append(kept, groups[:i]...)
+			for _, h := range groups[i+1:] {
+				if !drop(h) {
+					kept = append(kept, h)
+				}
+			}
+			return kept
+		}
+	}
+	return groups
+}
+
 // substGroupKeys re-points wrapper subexpressions at the grouping columns:
 // a subexpression structurally equal to a grouping item's expression
 // becomes a reference to its output column. Aggregates were already pulled
 // out by extractNestedAggs, so no aggregate call remains in the wrapper.
-// Interiors that bind their own variables (comprehension/quantifier/reduce
-// bodies, correlated subquery filters) are left untouched: a bare-variable
-// key still resolves there by name through the post-projection scope,
-// while a composite key appearing only there stays a bind error rather
-// than risking capture by the local binding.
+// Comprehension/quantifier/reduce bodies bind their own variables but
+// still evaluate post-projection, so the walk descends into them with the
+// shadowed keys filtered out: a group is dropped for a sub-scope when the
+// binder shadows a variable its key expression mentions (the body
+// reference means the local) or when the binder's local equals the group's
+// output name (substituting would be captured; the outer reference then
+// stays a clean bind error rather than a silent capture). Correlated
+// subquery interiors (EXISTS/COUNT/pattern comprehensions) remain
+// untouched: their filters evaluate against the subquery's own pattern
+// scope, and a composite key appearing only there stays a bind error.
 func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 	for _, g := range groups {
 		if exprEqual(g.expr, e) {
@@ -95,15 +132,24 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 		if n.To != nil {
 			n.To = substGroupKeys(n.To, groups)
 		}
-	// Sources evaluate in the outer scope; the bodies bind their own
-	// variables (see above).
+	// Sources evaluate in the outer scope; the bodies descend with the
+	// binder's locals filtered out of the group set (see above).
 	case *ast.ListPred:
 		n.List = substGroupKeys(n.List, groups)
+		n.Pred = substGroupKeys(n.Pred, shadowFiltered(groups, n.Var))
 	case *ast.ListComp:
 		n.List = substGroupKeys(n.List, groups)
+		inner := shadowFiltered(groups, n.Var)
+		if n.Filter != nil {
+			n.Filter = substGroupKeys(n.Filter, inner)
+		}
+		if n.Map != nil {
+			n.Map = substGroupKeys(n.Map, inner)
+		}
 	case *ast.Reduce:
 		n.Init = substGroupKeys(n.Init, groups)
 		n.List = substGroupKeys(n.List, groups)
+		n.Body = substGroupKeys(n.Body, shadowFiltered(groups, n.Acc, n.Var))
 	case *ast.MapLit:
 		for i := range n.Fields {
 			n.Fields[i].Val = substGroupKeys(n.Fields[i].Val, groups)
