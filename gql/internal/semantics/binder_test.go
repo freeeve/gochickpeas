@@ -228,6 +228,71 @@ func TestErrorRendering(t *testing.T) {
 	}
 }
 
+// TestExprHasAggPolarity pins the aggregate DETECTOR per Expr kind (task
+// 240): a missed arm under-reports, and the planner then routes an
+// aggregating projection through the scalar path. Every kind that can
+// carry a subexpression must surface an embedded count(*); the pinned
+// exceptions are the documented policy skips -- EXISTS/COUNT subquery
+// interiors and pattern-comprehension interiors are their own scope, and
+// Cost's weight is validated separately (an aggregate there fails the
+// unknown-scalar-function check in CheckRefs). Leaf kinds cannot embed
+// anything. The roll call forces a decision for every future kind.
+func TestExprHasAggPolarity(t *testing.T) {
+	agg := func() ast.Expr { return &ast.Func{Name: "count", Star: true} }
+	one := func() ast.Expr { return &ast.Lit{Value: ast.IntLit(1)} }
+	pat := func() *ast.Pattern { return &ast.Pattern{Start: ast.NodePat{Var: "z"}} }
+	type kase struct {
+		kind  string
+		build func() ast.Expr
+		want  bool
+	}
+	cases := []kase{
+		// Leaves: structurally cannot embed an aggregate.
+		{"Lit", one, false},
+		{"Var", func() ast.Expr { return &ast.Var{Name: "n"} }, false},
+		{"Prop", func() ast.Expr { return &ast.Prop{Var: "n", Key: "k"} }, false},
+		{"HasLabelExpr", func() ast.Expr { return &ast.HasLabelExpr{Var: "n", Expr: &ast.LabelExpr{Name: "L"}} }, false},
+		// Cost holds only a weight spec; aggregates there are rejected by
+		// the function check, not detected here.
+		{"Cost", func() ast.Expr { return &ast.Cost{From: "n", To: "q"} }, false},
+		// Every embedding position must report.
+		{"Func", func() ast.Expr { return &ast.Func{Name: "abs", Args: []ast.Expr{agg()}} }, true},
+		{"Unary", func() ast.Expr { return &ast.Unary{Op: ast.Not, Expr: agg()} }, true},
+		{"Binary", func() ast.Expr { return &ast.Binary{Op: ast.OpAdd, LHS: one(), RHS: agg()} }, true},
+		{"In", func() ast.Expr { return &ast.In{Expr: one(), List: agg()} }, true},
+		{"IsNull", func() ast.Expr { return &ast.IsNull{Expr: agg()} }, true},
+		{"IsTruth", func() ast.Expr { return &ast.IsTruth{Expr: agg()} }, true},
+		{"IsTyped", func() ast.Expr { return &ast.IsTyped{Expr: agg()} }, true},
+		{"ListExpr", func() ast.Expr { return &ast.ListExpr{Elems: []ast.Expr{agg()}} }, true},
+		{"ListPred", func() ast.Expr { return &ast.ListPred{Var: "v", List: one(), Pred: agg()} }, true},
+		{"ListComp", func() ast.Expr { return &ast.ListComp{Var: "v", List: one(), Map: agg()} }, true},
+		{"Reduce", func() ast.Expr { return &ast.Reduce{Acc: "a", Init: one(), Var: "v", List: one(), Body: agg()} }, true},
+		{"Index", func() ast.Expr { return &ast.Index{Base: one(), Idx: agg()} }, true},
+		{"Slice", func() ast.Expr { return &ast.Slice{Base: one(), From: agg()} }, true},
+		{"PropOf", func() ast.Expr { return &ast.PropOf{Base: agg(), Key: "k"} }, true},
+		{"Case", func() ast.Expr {
+			return &ast.Case{Whens: []ast.CaseWhen{{Cond: one(), Result: agg()}}}
+		}, true},
+		{"MapLit", func() ast.Expr { return &ast.MapLit{Fields: []ast.MapField{{Key: "k", Val: agg()}}} }, true},
+		{"MapProj", func() ast.Expr {
+			return &ast.MapProj{Var: "n", Entries: []ast.MapProjEntry{{Kind: ast.MapProjField, Key: "f", Expr: agg()}}}
+		}, true},
+		// Subquery-scope interiors: an aggregate there belongs to the
+		// subquery, not the outer projection -- deliberately not reported.
+		{"Exists", func() ast.Expr { return &ast.Exists{Pattern: pat(), Where: agg()} }, false},
+		{"CountSub", func() ast.Expr { return &ast.CountSub{Pattern: pat(), Where: agg()} }, false},
+		{"PatternComp", func() ast.Expr { return &ast.PatternComp{Pattern: pat(), Proj: agg()} }, false},
+	}
+	covered := map[string]bool{}
+	for _, c := range cases {
+		covered[c.kind] = true
+		if got := ExprHasAgg(c.build()); got != c.want {
+			t.Errorf("%s: ExprHasAgg = %v, want %v", c.kind, got, c.want)
+		}
+	}
+	asttest.RollCall(t, covered)
+}
+
 // TestCheckRefsRejectsEveryKind asserts the reference gate over every
 // ast.Expr kind: an out-of-scope variable reference must be rejected no
 // matter which construct carries it. CheckRefs is the plan-time backstop
