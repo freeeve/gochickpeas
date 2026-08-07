@@ -7,6 +7,7 @@ package gql_test
 import (
 	"errors"
 	"github.com/freeeve/gochickpeas/gql"
+	"slices"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -398,4 +399,37 @@ func TestChainCollapseVarExpand(t *testing.T) {
 	gql.WantStrs(t, gql.StrColOrdered(t, g3,
 		"MATCH (m:N {name: 'fork'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
 		"ra", "rb")
+}
+
+// TestVarLengthAcrossDisjointEndpointLabels pins that endpoint-label
+// disjointness (no node is both a Person and a Company) must not prune a
+// quantified path: disjoint labels mean the endpoints are different
+// entities, not that one cannot reach the other (task 229).
+func TestVarLengthAcrossDisjointEndpointLabels(t *testing.T) {
+	g := gql.SocialGraph(t)
+	pairs := func(q string) []string {
+		rows := gql.RunBoth(t, g, q)
+		var out []string
+		for r := range rows.All() {
+			pv, _ := r.Get("p")
+			cv, _ := r.Get("c")
+			ps, _ := pv.AsStr()
+			cs, _ := cv.AsStr()
+			out = append(out, ps+"->"+cs)
+		}
+		slices.Sort(out)
+		return out
+	}
+	// One to two hops Person -> Company (KNOWS then WORKS_AT on the long
+	// arm): every pair below is satisfiable and must survive planning.
+	gql.WantStrs(t, pairs(
+		"MATCH (p:Person)-[]->{1,2}(c:Company) RETURN DISTINCT p.name AS p, c.name AS c"),
+		"Alice->Acme", "Alice->Globex", "Bob->Acme", "Bob->Globex",
+		"Carol->Acme", "Carol->Globex", "Dave->Acme")
+	// The zero-hop arm binds p and c to the same node, which would need
+	// both labels at once -- that arm alone is unsatisfiable, but it must
+	// only drop those bindings, keeping the one-hop rows.
+	gql.WantStrs(t, pairs(
+		"MATCH (p:Person)-[]->{0,1}(c:Company) RETURN DISTINCT p.name AS p, c.name AS c"),
+		"Alice->Acme", "Bob->Acme", "Carol->Globex")
 }
