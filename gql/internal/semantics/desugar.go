@@ -137,6 +137,15 @@ func lowerPatternProps(p *ast.Pattern, where *ast.Expr, ctr *int) error {
 }
 
 func lowerNodeProps(n *ast.NodePat, where *ast.Expr, ctr *int) {
+	// A general label expression (`|`/`!`) lowers to a HasLabelExpr
+	// conjunct -- the same lowering the planner applies to MATCH stages,
+	// done here so subquery patterns (EXISTS/COUNT/pattern
+	// comprehensions), whose node matchers see only the plain label list,
+	// honor it too.
+	if n.LabelExpr != nil {
+		andInto(where, &ast.HasLabelExpr{Var: ensureVar(&n.Var, ctr), Expr: n.LabelExpr})
+		n.LabelExpr = nil
+	}
 	// An inline element predicate ((v WHERE expr)) conjoins onto the
 	// clause WHERE -- the predicate may reference any clause variable, so
 	// the clause boundary is its ISO evaluation point anyway.

@@ -387,7 +387,17 @@ func TestLabelExpressionLowering(t *testing.T) {
 	if ms.Ops[0].Source.Kind != ScanAll {
 		t.Fatalf("scan = %+v", ms.Ops[0].Source)
 	}
-	planErr(t, g, "MATCH (:Person|Message) RETURN 1", "requires a variable")
+	// An anonymous node with a label expression plans too: desugar names
+	// it with a synthetic variable and lowers the expression (task 245
+	// moved the lowering to desugar so subquery patterns get it; the
+	// planner's requires-a-variable error remains only for direct Build
+	// callers that skip desugar).
+	p2 := mustPlan(t, g, "MATCH (:Person|Message) RETURN 1")
+	ms2 := firstMatch(t, p2)
+	hle2, ok := ms2.Where.(*ast.HasLabelExpr)
+	if !ok || hle2.Var == "" || hle2.Expr.Kind != ast.LabelOr {
+		t.Fatalf("anonymous where = %#v, want a HasLabelExpr OR conjunct on a synthetic var", ms2.Where)
+	}
 }
 
 func TestWeightExprValidation(t *testing.T) {
