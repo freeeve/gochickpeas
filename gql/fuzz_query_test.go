@@ -37,6 +37,13 @@ var (
 	// trail enumeration's cost explodes combinatorially with permissive
 	// bounds (same execution-budget rationale as fuzzBareScan).
 	fuzzHugeQuant = regexp.MustCompile(`\{\s*\d{3,}|,\s*\d{3,}\s*\}`)
+	// fuzzUnboundedQuant matches one unbounded quantifier (postfix * / +,
+	// or an open-ended {n,}). Three or more chained in one query multiply
+	// DIFFERENT-EDGES trail enumerations -- intrinsic combinatorial cost
+	// that the harness's six execution lanes push past the fuzz engine's
+	// per-input deadline (task 235; the shape itself runs in tens of
+	// milliseconds and is pinned by TestChainedUnboundedUndirected).
+	fuzzUnboundedQuant = regexp.MustCompile(`[*+]\s*\(|\{\s*\d+\s*,\s*\}\s*\(`)
 	// fuzzPlanMode marks EXPLAIN/PROFILE queries, which return a rendered
 	// plan (with a wall-clock planning-time header) rather than query rows
 	// -- the row invariants don't apply.
@@ -117,8 +124,9 @@ func FuzzQuery(f *testing.F) {
 	mg := MultiSocialGraph(f)
 	mcache := NewPlanCache(1 << 20)
 	f.Fuzz(func(t *testing.T, q string) {
-		if len(fuzzBareScan.FindAllString(q, -1)) >= 6 || fuzzHugeQuant.MatchString(q) {
-			t.Skip("execution-budget skip (wide cartesian / huge quantifier), not semantics")
+		if len(fuzzBareScan.FindAllString(q, -1)) >= 6 || fuzzHugeQuant.MatchString(q) ||
+			len(fuzzUnboundedQuant.FindAllString(q, -1)) >= 3 {
+			t.Skip("execution-budget skip (wide cartesian / huge or chained unbounded quantifier), not semantics")
 		}
 		rows, err := Run(g, q)
 		if err != nil {

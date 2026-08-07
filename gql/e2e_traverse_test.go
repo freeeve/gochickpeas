@@ -6,11 +6,12 @@ package gql_test
 
 import (
 	"errors"
-	"github.com/freeeve/gochickpeas/gql"
 	"slices"
+	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -399,6 +400,32 @@ func TestChainCollapseVarExpand(t *testing.T) {
 	gql.WantStrs(t, gql.StrColOrdered(t, g3,
 		"MATCH (m:N {name: 'fork'})-[:R]->{0,}(r:Root) RETURN r.name AS name ORDER BY name", "name"),
 		"ra", "rb")
+}
+
+// TestChainedUnboundedUndirected pins the fuzz-found chained
+// reachable-set shape (task 235): four chained undirected unbounded hops
+// under DIFFERENT-EDGES semantics enumerate trails, so the row counts
+// grow combinatorially but the engine stays in the tens of milliseconds
+// on this fixture. Counts are the dual-path engine baseline (compiled ==
+// interpreted), guarding regressions in either the trail semantics or
+// the expansion's cost class; the fuzz harness budget-skips the shape,
+// so this is its executable pin.
+func TestChainedUnboundedUndirected(t *testing.T) {
+	g := gql.SocialGraph(t)
+	for _, tc := range []struct {
+		hops int
+		rows int
+	}{{2, 7596}, {4, 179806}} {
+		q := "MATCH ()" + strings.Repeat("--*()", tc.hops) + "RETURN 0"
+		rows := gql.RunBoth(t, g, q)
+		n := 0
+		for range rows.All() {
+			n++
+		}
+		if n != tc.rows {
+			t.Fatalf("%d hops: %d rows, want %d", tc.hops, n, tc.rows)
+		}
+	}
 }
 
 // TestVarLengthAcrossDisjointEndpointLabels pins that endpoint-label
