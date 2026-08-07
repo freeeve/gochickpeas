@@ -1,6 +1,9 @@
 package plan
 
 import (
+	"os"
+	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -68,6 +71,102 @@ func TestSubstGroupKeys(t *testing.T) {
 	if hl2, ok := substGroupKeys(&ast.HasLabelExpr{Var: "n", Expr: lbl.Expr}, same).(*ast.HasLabelExpr); !ok || hl2.Var != "n" {
 		t.Fatal("a same-name key must leave the label test on its variable")
 	}
+}
+
+// substKindCase is one entry of the per-Expr-kind substitution roll call
+// shared by the walker invariant tests: kind names the ast type it covers,
+// build returns a fresh instance referencing the variable `n` in the
+// position under test, and want states what a rename of `n` to `m` must
+// leave free in the result.
+type substKindCase struct {
+	kind  string
+	build func() ast.Expr
+	want  []string // free vars outside {m} expected after the rename
+}
+
+// substKindCases returns one buildable instance of every ast.Expr kind.
+// Kinds where a free reference deliberately survives are pinned with a
+// non-empty want: binder interiors (comprehension/quantifier/reduce
+// bodies, correlated subquery filters) keep the bare name by the policy
+// documented on substGroupKeys, and Cost is a pattern-clause construct
+// that cannot occur in a projection wrapper.
+func substKindCases() []substKindCase {
+	n := func() ast.Expr { return &ast.Var{Name: "n"} }
+	one := func() ast.Expr { return &ast.Lit{Value: ast.IntLit(1)} }
+	pat := func() *ast.Pattern { return &ast.Pattern{Start: ast.NodePat{Var: "z"}} }
+	lbl := func() *ast.LabelExpr { return &ast.LabelExpr{Name: "L"} }
+	return []substKindCase{
+		{"Lit", one, nil},
+		{"Var", n, nil},
+		{"Prop", func() ast.Expr { return &ast.Prop{Var: "n", Key: "x"} }, nil},
+		{"PropOf", func() ast.Expr { return &ast.PropOf{Base: n(), Key: "x"} }, nil},
+		{"HasLabelExpr", func() ast.Expr { return &ast.HasLabelExpr{Var: "n", Expr: lbl()} }, nil},
+		{"MapProj", func() ast.Expr {
+			return &ast.MapProj{Var: "n", Entries: []ast.MapProjEntry{{Kind: ast.MapProjField, Key: "k", Expr: n()}}}
+		}, nil},
+		{"Unary", func() ast.Expr { return &ast.Unary{Op: ast.Not, Expr: n()} }, nil},
+		{"IsNull", func() ast.Expr { return &ast.IsNull{Expr: n()} }, nil},
+		{"IsTruth", func() ast.Expr { return &ast.IsTruth{Expr: n()} }, nil},
+		{"IsTyped", func() ast.Expr { return &ast.IsTyped{Expr: n()} }, nil},
+		{"Binary", func() ast.Expr { return &ast.Binary{Op: ast.OpAdd, LHS: n(), RHS: one()} }, nil},
+		{"Func", func() ast.Expr { return &ast.Func{Name: "abs", Args: []ast.Expr{n()}} }, nil},
+		{"ListExpr", func() ast.Expr { return &ast.ListExpr{Elems: []ast.Expr{n()}} }, nil},
+		{"In", func() ast.Expr { return &ast.In{Expr: n(), List: n()} }, nil},
+		{"Case", func() ast.Expr {
+			return &ast.Case{Operand: n(), Whens: []ast.CaseWhen{{Cond: n(), Result: n()}}, Else: n()}
+		}, nil},
+		{"Index", func() ast.Expr { return &ast.Index{Base: n(), Idx: n()} }, nil},
+		{"Slice", func() ast.Expr { return &ast.Slice{Base: n(), From: n(), To: n()} }, nil},
+		{"MapLit", func() ast.Expr { return &ast.MapLit{Fields: []ast.MapField{{Key: "k", Val: n()}}} }, nil},
+		// Sources rewrite; the bound bodies keep the bare name (policy).
+		{"ListPred", func() ast.Expr { return &ast.ListPred{Var: "v", List: n(), Pred: n()} }, []string{"n"}},
+		{"ListComp", func() ast.Expr { return &ast.ListComp{Var: "v", List: n(), Filter: n(), Map: n()} }, []string{"n"}},
+		{"Reduce", func() ast.Expr { return &ast.Reduce{Acc: "a", Init: n(), Var: "v", List: n(), Body: n()} }, []string{"n"}},
+		// Correlated subquery filters stay by the same policy.
+		{"Exists", func() ast.Expr { return &ast.Exists{Pattern: pat(), Where: n()} }, []string{"n"}},
+		{"CountSub", func() ast.Expr { return &ast.CountSub{Pattern: pat(), Where: n()} }, []string{"n"}},
+		{"PatternComp", func() ast.Expr { return &ast.PatternComp{Pattern: pat(), Where: n(), Proj: n()} }, []string{"n"}},
+		// A pattern-clause construct; projection wrappers cannot hold one.
+		{"Cost", func() ast.Expr { return &ast.Cost{From: "n", To: "q"} }, []string{"n", "q"}},
+	}
+}
+
+// requireKindRollCall fails unless covered contains every ast.Expr kind
+// declared in the ast package source, so adding a kind forces an explicit
+// decision in these walker tests.
+func requireKindRollCall(t *testing.T, covered map[string]bool) {
+	t.Helper()
+	src, err := os.ReadFile("../ast/expr.go")
+	if err != nil {
+		t.Fatalf("reading ast source: %v", err)
+	}
+	for _, m := range regexp.MustCompile(`(?m)^func \(\*(\w+)\) isExpr\(\)`).FindAllStringSubmatch(string(src), -1) {
+		if !covered[m[1]] {
+			t.Errorf("ast.%s has no substitution-walker case: add one and decide its rename policy", m[1])
+		}
+	}
+}
+
+// TestSubstGroupKeysInvariant asserts the rename invariant over every
+// ast.Expr kind (task 231): after substituting a key projected under a
+// different name, no expression references a variable no surviving binder
+// provides, except the pinned policy carve-outs in substKindCases.
+func TestSubstGroupKeysInvariant(t *testing.T) {
+	groups := []groupCol{{idx: 0, name: "m", expr: &ast.Var{Name: "n"}}}
+	covered := map[string]bool{}
+	for _, c := range substKindCases() {
+		covered[c.kind] = true
+		got := substGroupKeys(c.build(), groups)
+		free := freeVarsOutside(got, []string{"m"})
+		want := c.want
+		if want == nil {
+			want = []string{}
+		}
+		if !slices.Equal(free, want) {
+			t.Errorf("%s: free vars after rename = %v, want %v", c.kind, free, want)
+		}
+	}
+	requireKindRollCall(t, covered)
 }
 
 // TestExtractAgg covers the top-level aggregate compiler: each supported

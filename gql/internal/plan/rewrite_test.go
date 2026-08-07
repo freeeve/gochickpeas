@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -277,4 +278,27 @@ func TestInlineProjectionPreservesPostfixOrderKey(t *testing.T) {
 	if _, ok := w.Proj.OrderBy[2].Expr.(*ast.IsNull); !ok {
 		t.Fatalf("order key 2 = %#v, want *ast.IsNull", w.Proj.OrderBy[2].Expr)
 	}
+}
+
+// TestSubstExprFailsClosed asserts the fusion substitution's safety
+// invariant over every ast.Expr kind (task 231): substExpr either rewrites
+// an expression completely -- no free reference to the inlined alias
+// survives -- or refuses the fusion (ok=false). A kind it does not handle
+// must refuse rather than pass the expression through untouched; that
+// fail-open default is exactly how the grouping walk's label-test arm went
+// missing.
+func TestSubstExprFailsClosed(t *testing.T) {
+	subst := map[string]ast.Expr{"n": &ast.Var{Name: "m"}}
+	covered := map[string]bool{}
+	for _, c := range substKindCases() {
+		covered[c.kind] = true
+		got, ok := substExpr(c.build(), subst)
+		if !ok {
+			continue // refusal is always safe
+		}
+		if free := freeVarsOutside(got, []string{"m"}); slices.Contains(free, "n") {
+			t.Errorf("%s: substExpr accepted the rewrite but left a free reference to n (free = %v)", c.kind, free)
+		}
+	}
+	requireKindRollCall(t, covered)
 }

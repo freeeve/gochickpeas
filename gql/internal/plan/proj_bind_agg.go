@@ -109,6 +109,14 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 			n.Fields[i].Val = substGroupKeys(n.Fields[i].Val, groups)
 		}
 	case *ast.MapProj:
+		// The projected variable is held by name, so it re-points like a
+		// property access or label test when its key is renamed.
+		for _, g := range groups {
+			if v, ok := g.expr.(*ast.Var); ok && v.Name == n.Var && g.name != n.Var {
+				n.Var = g.name
+				break
+			}
+		}
 		for i := range n.Entries {
 			if n.Entries[i].Kind == ast.MapProjField {
 				n.Entries[i].Expr = substGroupKeys(n.Entries[i].Expr, groups)
