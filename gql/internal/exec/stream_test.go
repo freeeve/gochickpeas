@@ -190,3 +190,65 @@ func TestNamedPathWhereExec(t *testing.T) {
 		t.Fatalf("surviving path = %v, want a0 -> a1", rows[0][0])
 	}
 }
+
+// TestUnwindSinkExec drives the FOR (unwind) sink through the pushed
+// pipeline: a list emits one row per element crossed with the following
+// match, a null list emits nothing, and a non-list scalar emits a single
+// row.
+func TestUnwindSinkExec(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 0)
+	n0, _ := bld.AddNode("A")
+	if err := bld.SetProp(n0, "v", int64(7)); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize("v"))
+	ctx := &eval.Ctx{G: g}
+	run := func(src string) [][]value.Value {
+		t.Helper()
+		q, err := parser.Parse(src)
+		if err != nil {
+			t.Fatalf("parse %q: %v", src, err)
+		}
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatalf("plan %q: %v", src, err)
+		}
+		rows, err := Execute(ctx, p)
+		if err != nil {
+			t.Fatalf("exec %q: %v", src, err)
+		}
+		return rows
+	}
+
+	// List: each element crosses with the single A node.
+	rows := run("FOR x IN [1, 2, 3] MATCH (a:A) RETURN x, a.v AS v")
+	if len(rows) != 3 {
+		t.Fatalf("list unwind rows = %d, want 3", len(rows))
+	}
+	sum := int64(0)
+	for _, r := range rows {
+		x, _ := r[0].AsInt()
+		v, _ := r[1].AsInt()
+		if v != 7 {
+			t.Fatalf("crossed v = %d, want 7", v)
+		}
+		sum += x
+	}
+	if sum != 6 {
+		t.Fatalf("unwound elements sum = %d, want 6", sum)
+	}
+
+	// Null list: no rows.
+	if rows := run("MATCH (a:A) FOR x IN a.nope RETURN x"); len(rows) != 0 {
+		t.Fatalf("null unwind rows = %d, want 0", len(rows))
+	}
+
+	// Non-list scalar: one row carrying the scalar itself.
+	rows = run("MATCH (a:A) FOR x IN a.v RETURN x")
+	if len(rows) != 1 {
+		t.Fatalf("scalar unwind rows = %d, want 1", len(rows))
+	}
+	if x, _ := rows[0][0].AsInt(); x != 7 {
+		t.Fatalf("scalar unwind value = %d, want 7", x)
+	}
+}
