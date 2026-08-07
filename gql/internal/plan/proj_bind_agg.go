@@ -4,7 +4,11 @@
 // projection binding and nested-aggregate extraction.
 package plan
 
-import "github.com/freeeve/gochickpeas/gql/internal/ast"
+import (
+	"fmt"
+
+	"github.com/freeeve/gochickpeas/gql/internal/ast"
+)
 
 // groupCol is one grouping item of an aggregating projection: its output
 // column index, name, and source expression.
@@ -14,10 +18,55 @@ type groupCol struct {
 	expr ast.Expr
 }
 
+// alphaLocal renames the binder local *v to a fresh name when it collides
+// with a grouping column's output name, rewriting the bodies in place --
+// substituting a column reference into the body can then never be captured
+// by the local. avoid carries sibling locals of the same binder so the
+// fresh name cannot collide with them either; nil bodies are skipped.
+func alphaLocal(v *string, groups []groupCol, avoid []string, bodies ...*ast.Expr) {
+	clash := false
+	for _, g := range groups {
+		if g.name == *v {
+			clash = true
+			break
+		}
+	}
+	if !clash {
+		return
+	}
+	used := map[string]bool{}
+	for _, a := range avoid {
+		used[a] = true
+	}
+	for _, b := range bodies {
+		if *b != nil {
+			collectAllVars(*b, used)
+		}
+	}
+	for _, g := range groups {
+		used[g.name] = true
+		collectAllVars(g.expr, used)
+	}
+	var fresh string
+	for i := 1; ; i++ {
+		fresh = fmt.Sprintf("%s__%d", *v, i)
+		if !used[fresh] {
+			break
+		}
+	}
+	for _, b := range bodies {
+		if *b != nil {
+			*b = renameFree(*b, *v, fresh)
+		}
+	}
+	*v = fresh
+}
+
 // shadowFiltered returns groups minus the ones a binder's locals make
 // unusable in its sub-scope: a group whose key expression mentions a local
 // (the body reference means the local, not the key) or whose output name
-// IS a local (substituting it would be captured). The common case -- no
+// IS a local (defense in depth -- alphaLocal renames such locals away
+// before this filter runs on the wired paths). The common case -- no
 // collision -- returns groups unchanged without allocating.
 func shadowFiltered(groups []groupCol, locals ...string) []groupCol {
 	drop := func(g groupCol) bool {
@@ -51,15 +100,15 @@ func shadowFiltered(groups []groupCol, locals ...string) []groupCol {
 // becomes a reference to its output column. Aggregates were already pulled
 // out by extractNestedAggs, so no aggregate call remains in the wrapper.
 // Comprehension/quantifier/reduce bodies bind their own variables but
-// still evaluate post-projection, so the walk descends into them with the
-// shadowed keys filtered out: a group is dropped for a sub-scope when the
-// binder shadows a variable its key expression mentions (the body
-// reference means the local) or when the binder's local equals the group's
-// output name (substituting would be captured; the outer reference then
-// stays a clean bind error rather than a silent capture). Correlated
-// subquery interiors (EXISTS/COUNT/pattern comprehensions) remain
-// untouched: their filters evaluate against the subquery's own pattern
-// scope, and a composite key appearing only there stays a bind error.
+// still evaluate post-projection, so the walk descends into them: a local
+// that collides with a group's output name is first alpha-renamed to a
+// fresh name (substituting the column reference could otherwise be
+// captured), and a group is dropped for a sub-scope when the binder
+// shadows a variable its key expression mentions -- that body reference
+// means the local, not the key. Correlated subquery interiors
+// (EXISTS/COUNT/pattern comprehensions) remain untouched: their filters
+// evaluate against the subquery's own pattern scope, and a composite key
+// appearing only there stays a bind error.
 func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 	for _, g := range groups {
 		if exprEqual(g.expr, e) {
@@ -132,13 +181,16 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 		if n.To != nil {
 			n.To = substGroupKeys(n.To, groups)
 		}
-	// Sources evaluate in the outer scope; the bodies descend with the
-	// binder's locals filtered out of the group set (see above).
+	// Sources evaluate in the outer scope; the bodies descend after any
+	// local colliding with an output name is alpha-renamed away, with the
+	// remaining shadowed keys filtered out of the group set (see above).
 	case *ast.ListPred:
 		n.List = substGroupKeys(n.List, groups)
+		alphaLocal(&n.Var, groups, nil, &n.Pred)
 		n.Pred = substGroupKeys(n.Pred, shadowFiltered(groups, n.Var))
 	case *ast.ListComp:
 		n.List = substGroupKeys(n.List, groups)
+		alphaLocal(&n.Var, groups, nil, &n.Filter, &n.Map)
 		inner := shadowFiltered(groups, n.Var)
 		if n.Filter != nil {
 			n.Filter = substGroupKeys(n.Filter, inner)
@@ -149,6 +201,8 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 	case *ast.Reduce:
 		n.Init = substGroupKeys(n.Init, groups)
 		n.List = substGroupKeys(n.List, groups)
+		alphaLocal(&n.Acc, groups, []string{n.Var}, &n.Body)
+		alphaLocal(&n.Var, groups, []string{n.Acc}, &n.Body)
 		n.Body = substGroupKeys(n.Body, shadowFiltered(groups, n.Acc, n.Var))
 	case *ast.MapLit:
 		for i := range n.Fields {

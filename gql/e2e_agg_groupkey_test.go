@@ -56,3 +56,27 @@ func TestGroupKeyRenameReachesComprehensionBody(t *testing.T) {
 		t.Fatalf("x column = %v, want [1 4]", got)
 	}
 }
+
+// TestGroupKeyRenameAlphaRenamesCollidingLocal pins the capture guard
+// (task 233): the comprehension local is named `comp` -- the key's output
+// name -- while the body also references the key by its source name. The
+// planner alpha-renames the local so the key substitution cannot be
+// captured; the local still iterates the list elements.
+func TestGroupKeyRenameAlphaRenamesCollidingLocal(t *testing.T) {
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
+		"MATCH (p:Person)-[:WORKS_AT]->(c) "+
+			"RETURN c AS comp, count(*) + size([comp IN [1,2] WHERE c.name = 'Acme' | comp]) AS x ORDER BY x")
+	var got []int64
+	for r := range rows.All() {
+		v, _ := r.Get("x")
+		i, ok := v.AsInt()
+		if !ok {
+			t.Fatalf("x not an int: %v", v)
+		}
+		got = append(got, i)
+	}
+	if len(got) != 2 || got[0] != 1 || got[1] != 4 {
+		t.Fatalf("x column = %v, want [1 4]", got)
+	}
+}

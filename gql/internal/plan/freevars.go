@@ -1,7 +1,9 @@
-// The one exhaustive expression-variable descent, shared by the reorder
-// correlation guard (collectAllVars: every mentioned name, binder locals
-// included) and the scope-subset validators (freeVarsOutside: free
-// references only) -- so a new AST kind is added in exactly one walker.
+// The exhaustive expression-variable walkers: the shared read descent
+// behind the reorder correlation guard (collectAllVars: every mentioned
+// name, binder locals included) and the scope-subset validators
+// (freeVarsOutside: free references only), plus the alpha-rename
+// (renameFree). A new AST kind is added here and covered by the per-kind
+// roll call in the walker invariant tests.
 package plan
 
 import (
@@ -176,4 +178,134 @@ func collectVars(e ast.Expr, out, locals map[string]bool) {
 			collectVars(f.Val, out, locals)
 		}
 	}
+}
+
+// renameFree rewrites every free reference to from -- Var nodes and the
+// by-name holders (Prop, HasLabelExpr, MapProj, Cost endpoints) -- into to,
+// stopping wherever an inner binder rebinds from (its references mean the
+// local). Children are rewritten in place; the possibly-replaced node is
+// returned. Callers pick a `to` that is fresh in e's scope, so the rename
+// can never capture.
+func renameFree(e ast.Expr, from, to string) ast.Expr {
+	rec := func(c ast.Expr) ast.Expr { return renameFree(c, from, to) }
+	shadowed := func(names ...string) bool {
+		return slices.Contains(names, from)
+	}
+	switch n := e.(type) {
+	case *ast.Var:
+		if n.Name == from {
+			return &ast.Var{Name: to}
+		}
+	case *ast.Prop:
+		if n.Var == from {
+			n.Var = to
+		}
+	case *ast.HasLabelExpr:
+		if n.Var == from {
+			n.Var = to
+		}
+	case *ast.MapProj:
+		if n.Var == from {
+			n.Var = to
+		}
+		for i := range n.Entries {
+			if n.Entries[i].Kind == ast.MapProjField {
+				n.Entries[i].Expr = rec(n.Entries[i].Expr)
+			}
+		}
+	case *ast.Cost:
+		if n.From == from {
+			n.From = to
+		}
+		if n.To == from {
+			n.To = to
+		}
+	case *ast.Unary:
+		n.Expr = rec(n.Expr)
+	case *ast.IsNull:
+		n.Expr = rec(n.Expr)
+	case *ast.IsTruth:
+		n.Expr = rec(n.Expr)
+	case *ast.IsTyped:
+		n.Expr = rec(n.Expr)
+	case *ast.PropOf:
+		n.Base = rec(n.Base)
+	case *ast.Binary:
+		n.LHS = rec(n.LHS)
+		n.RHS = rec(n.RHS)
+	case *ast.In:
+		n.Expr = rec(n.Expr)
+		n.List = rec(n.List)
+	case *ast.Index:
+		n.Base = rec(n.Base)
+		n.Idx = rec(n.Idx)
+	case *ast.Func:
+		for i := range n.Args {
+			n.Args[i] = rec(n.Args[i])
+		}
+	case *ast.ListExpr:
+		for i := range n.Elems {
+			n.Elems[i] = rec(n.Elems[i])
+		}
+	case *ast.Case:
+		if n.Operand != nil {
+			n.Operand = rec(n.Operand)
+		}
+		for i := range n.Whens {
+			n.Whens[i].Cond = rec(n.Whens[i].Cond)
+			n.Whens[i].Result = rec(n.Whens[i].Result)
+		}
+		if n.Else != nil {
+			n.Else = rec(n.Else)
+		}
+	case *ast.Slice:
+		n.Base = rec(n.Base)
+		if n.From != nil {
+			n.From = rec(n.From)
+		}
+		if n.To != nil {
+			n.To = rec(n.To)
+		}
+	case *ast.MapLit:
+		for i := range n.Fields {
+			n.Fields[i].Val = rec(n.Fields[i].Val)
+		}
+	case *ast.ListPred:
+		n.List = rec(n.List)
+		if !shadowed(n.Var) {
+			n.Pred = rec(n.Pred)
+		}
+	case *ast.ListComp:
+		n.List = rec(n.List)
+		if !shadowed(n.Var) {
+			if n.Filter != nil {
+				n.Filter = rec(n.Filter)
+			}
+			if n.Map != nil {
+				n.Map = rec(n.Map)
+			}
+		}
+	case *ast.Reduce:
+		n.Init = rec(n.Init)
+		n.List = rec(n.List)
+		if !shadowed(n.Acc, n.Var) {
+			n.Body = rec(n.Body)
+		}
+	case *ast.Exists:
+		if n.Where != nil && !shadowed(patternVarNames(n.Pattern)...) {
+			n.Where = rec(n.Where)
+		}
+	case *ast.CountSub:
+		if n.Where != nil && !shadowed(patternVarNames(n.Pattern)...) {
+			n.Where = rec(n.Where)
+		}
+	case *ast.PatternComp:
+		if !shadowed(patternVarNames(n.Pattern)...) {
+			if n.Where != nil {
+				n.Where = rec(n.Where)
+			}
+			n.Proj = rec(n.Proj)
+		}
+	}
+	return e
 }

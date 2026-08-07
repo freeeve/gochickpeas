@@ -175,14 +175,60 @@ func TestSubstGroupKeysShadowing(t *testing.T) {
 		t.Fatalf("shadowed body ref = %#v, want the untouched local n", got.Map)
 	}
 
-	// [m IN [1] | m + n.x]: the local collides with the key's OUTPUT name;
-	// substituting would be captured, so the key is dropped for the body
-	// and the outer n stays free (task 233 pins the alpha-rename upgrade).
+	// [m IN [1] | m + n.x]: the local collides with the key's OUTPUT name.
+	// The local is alpha-renamed to a fresh name, the body's local refs
+	// follow it, and the outer n then substitutes to the column -- no
+	// capture, no residual free reference (task 233).
 	collide := &ast.ListComp{Var: "m", List: &ast.ListExpr{Elems: []ast.Expr{one}},
 		Map: &ast.Binary{Op: ast.OpAdd, LHS: &ast.Var{Name: "m"}, RHS: &ast.Prop{Var: "n", Key: "x"}}}
 	got = substGroupKeys(collide, groups).(*ast.ListComp)
-	if free := freeVarsOutside(got, []string{"m"}); !slices.Equal(free, []string{"n"}) {
-		t.Fatalf("colliding local: free = %v, want [n] (dropped, not captured)", free)
+	if got.Var == "m" {
+		t.Fatalf("colliding local was not alpha-renamed: %#v", got)
+	}
+	bin := got.Map.(*ast.Binary)
+	if v, ok := bin.LHS.(*ast.Var); !ok || v.Name != got.Var {
+		t.Fatalf("local body ref = %#v, want the renamed local %q", bin.LHS, got.Var)
+	}
+	po, ok := bin.RHS.(*ast.PropOf)
+	if !ok || asVarName(po.Base) != "m" {
+		t.Fatalf("outer key ref = %#v, want PropOf(m).x", bin.RHS)
+	}
+	if free := freeVarsOutside(got, []string{"m"}); len(free) != 0 {
+		t.Fatalf("colliding local: free = %v, want none after alpha-rename", free)
+	}
+}
+
+// TestRenameFree asserts the alpha-rename over every ast.Expr kind: each
+// free reference to the source name moves to the target, shadowing binders
+// stop the descent, and nothing else changes.
+func TestRenameFree(t *testing.T) {
+	covered := map[string]bool{}
+	for _, c := range substKindCases() {
+		covered[c.kind] = true
+		before := freeVarsOutside(c.build(), nil)
+		got := renameFree(c.build(), "n", "n2")
+		want := make([]string, 0, len(before))
+		for _, v := range before {
+			if v == "n" {
+				v = "n2"
+			}
+			want = append(want, v)
+		}
+		slices.Sort(want)
+		if free := freeVarsOutside(got, nil); !slices.Equal(free, want) {
+			t.Errorf("%s: free vars after rename = %v, want %v", c.kind, free, want)
+		}
+	}
+	requireKindRollCall(t, covered)
+
+	// A binder that rebinds the source name stops the descent: the body's
+	// references mean the local and must stay.
+	one := &ast.Lit{Value: ast.IntLit(1)}
+	shadow := &ast.ListComp{Var: "n", List: &ast.ListExpr{Elems: []ast.Expr{one}},
+		Map: &ast.Var{Name: "n"}}
+	got := renameFree(shadow, "n", "n2").(*ast.ListComp)
+	if v, ok := got.Map.(*ast.Var); !ok || v.Name != "n" || got.Var != "n" {
+		t.Fatalf("shadowing binder descended: %#v", got)
 	}
 }
 
