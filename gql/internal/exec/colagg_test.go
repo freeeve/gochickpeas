@@ -132,6 +132,17 @@ func TestColumnarAggMatchesGeneral(t *testing.T) {
 		 RETURN count(m) AS c`,
 		`MATCH (m:Message) WHERE m.length > 190 RETURN m.length AS l, count(m) AS n
 		 NEXT RETURN l, n ORDER BY l`,
+		// Conjunctive window bounds read correctly (task 237): a one-sided
+		// bound leaves the other side open -- an implied bound is NOT a
+		// second constraint -- while two explicit contradictory bounds are
+		// genuinely empty; flipped operands and eq+range narrowing must all
+		// agree with the general sweep.
+		`MATCH (m:Message) WHERE m.length >= 100 RETURN count(m) AS c`,
+		`MATCH (m:Message) WHERE m.length > 150 AND m.length < 100 RETURN count(m) AS c`,
+		`MATCH (m:Message) WHERE 100 <= m.length AND 190 > m.length RETURN count(m) AS c`,
+		`MATCH (m:Message) WHERE m.length >= 130 AND m.length <= 130 RETURN count(m) AS c`,
+		`MATCH (m:Message) WHERE m.creationDate >= zoned_datetime('1970-01-01') AND m.length < 50
+		 RETURN count(m) AS c`,
 	}
 	for i, q := range queries {
 		before := colAggFired
