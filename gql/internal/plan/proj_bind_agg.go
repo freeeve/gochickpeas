@@ -39,6 +39,16 @@ func substGroupKeys(e ast.Expr, groups []groupCol) ast.Expr {
 				return &ast.PropOf{Base: &ast.Var{Name: g.name}, Key: n.Key}
 			}
 		}
+	// `var:Label` where `var` is a grouping key projected under a different
+	// name: the label test references its variable by name, so it needs the
+	// same re-pointing as a property access (`RETURN c AS comp, count(*) +
+	// (CASE WHEN c:Company THEN 1 ELSE 0 END) AS x`).
+	case *ast.HasLabelExpr:
+		for _, g := range groups {
+			if v, ok := g.expr.(*ast.Var); ok && v.Name == n.Var && g.name != n.Var {
+				return &ast.HasLabelExpr{Var: g.name, Expr: n.Expr}
+			}
+		}
 	case *ast.Unary:
 		n.Expr = substGroupKeys(n.Expr, groups)
 	case *ast.IsNull:

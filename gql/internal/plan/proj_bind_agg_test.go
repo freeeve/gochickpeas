@@ -43,6 +43,31 @@ func TestSubstGroupKeys(t *testing.T) {
 	if _, ok := substGroupKeys(&ast.Lit{Value: ast.IntLit(5)}, groups).(*ast.Lit); !ok {
 		t.Fatal("an unrelated literal must be unchanged")
 	}
+
+	// A label test on a variable key projected under a different name
+	// repoints its variable at the output column, exactly like a property
+	// access -- the arm the Rust walker missed (task 230).
+	lbl := &ast.HasLabelExpr{Var: "n", Expr: &ast.LabelExpr{Name: "Company"}}
+	hl, ok := substGroupKeys(lbl, renamed).(*ast.HasLabelExpr)
+	if !ok || hl.Var != "m" || hl.Expr != lbl.Expr {
+		t.Fatalf("label-test repoint = %#v, want HasLabelExpr(m:Company)", substGroupKeys(lbl, renamed))
+	}
+	// Nested inside a CASE arm it is rewritten in place.
+	cs := &ast.Case{Whens: []ast.CaseWhen{{
+		Cond:   &ast.HasLabelExpr{Var: "n", Expr: &ast.LabelExpr{Name: "Company"}},
+		Result: &ast.Lit{Value: ast.IntLit(1)},
+	}}}
+	out, ok := substGroupKeys(cs, renamed).(*ast.Case)
+	if !ok {
+		t.Fatalf("case rewrite = %#v", substGroupKeys(cs, renamed))
+	}
+	if w, ok := out.Whens[0].Cond.(*ast.HasLabelExpr); !ok || w.Var != "m" {
+		t.Fatalf("label test inside CASE = %#v, want Var m", out.Whens[0].Cond)
+	}
+	// A same-name key leaves the label test untouched.
+	if hl2, ok := substGroupKeys(&ast.HasLabelExpr{Var: "n", Expr: lbl.Expr}, same).(*ast.HasLabelExpr); !ok || hl2.Var != "n" {
+		t.Fatal("a same-name key must leave the label test on its variable")
+	}
 }
 
 // TestExtractAgg covers the top-level aggregate compiler: each supported
