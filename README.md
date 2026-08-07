@@ -106,6 +106,9 @@ for _, nbr := range g.OutNeighbors(42) {
   per-node payloads.
 - **`nodeset`**: the Roaring-backed node-id set that query results compose
   through.
+- **`flatset`**, **`parallel`**: flat probe sets/maps and chunked worker
+  pools. Exported so the external LDBC benchmark harness can import them;
+  implementation helpers, not a stable API surface.
 
 ## Documentation
 
