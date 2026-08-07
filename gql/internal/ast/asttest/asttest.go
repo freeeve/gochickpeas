@@ -7,10 +7,14 @@
 package asttest
 
 import (
+	goast "go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -64,22 +68,94 @@ func KindCases(ref string) []KindCase {
 	}
 }
 
-// RollCall fails unless covered contains every ast.Expr kind declared in
-// the ast package source, so adding a kind forces an explicit policy
-// decision in every walker test that calls this.
-func RollCall(t *testing.T, covered map[string]bool) {
-	t.Helper()
+// ExprKinds returns every ast.Expr kind declared anywhere in the ast
+// package, by parsing the package source for isExpr method declarations
+// with go/parser -- not a text pattern, and not a single-file assumption:
+// a completeness tool with a quiet matching gap silently stops enforcing
+// (the sibling engines both shipped that bug), so the scanner itself is
+// pinned against the kind-case table by TestRollCallScannerAgreesWithTable.
+func ExprKinds() ([]string, error) {
 	_, self, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("locating asttest source")
+		return nil, os.ErrNotExist
 	}
-	src, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "expr.go"))
+	dir := filepath.Join(filepath.Dir(self), "..")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("reading ast source: %v", err)
+		return nil, err
 	}
-	for _, m := range regexp.MustCompile(`(?m)^func \(\*(\w+)\) isExpr\(\)`).FindAllStringSubmatch(string(src), -1) {
-		if !covered[m[1]] {
-			t.Errorf("ast.%s has no walker case: add one and decide its policy", m[1])
+	var kinds []string
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*goast.FuncDecl)
+			if !ok || fd.Name.Name != "isExpr" || fd.Recv == nil || len(fd.Recv.List) != 1 {
+				continue
+			}
+			kinds = append(kinds, recvTypeName(fd.Recv.List[0].Type))
+		}
+	}
+	slices.Sort(kinds)
+	return kinds, nil
+}
+
+// recvTypeName unwraps a method receiver's type expression to its named
+// type, through any pointer.
+func recvTypeName(e goast.Expr) string {
+	if star, ok := e.(*goast.StarExpr); ok {
+		e = star.X
+	}
+	if id, ok := e.(*goast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+// MissingKinds returns the ast.Expr kinds covered does not contain,
+// sorted -- the pure core of RollCall, exported so its discriminating
+// power is testable directly (feed a deliberately incomplete map, assert
+// the gap is reported).
+func MissingKinds(covered map[string]bool) ([]string, error) {
+	kinds, err := ExprKinds()
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, k := range kinds {
+		if !covered[k] {
+			missing = append(missing, k)
+		}
+	}
+	return missing, nil
+}
+
+// RollCall fails unless covered contains every ast.Expr kind declared in
+// the ast package, so adding a kind forces an explicit policy decision in
+// every walker test that calls this. It also fails on covered kinds the
+// scanner does NOT find: the two-sided comparison means a scanner
+// matching gap surfaces as a table/scan disagreement instead of silently
+// weakening enforcement.
+func RollCall(t *testing.T, covered map[string]bool) {
+	t.Helper()
+	missing, err := MissingKinds(covered)
+	if err != nil {
+		t.Fatalf("scanning ast source: %v", err)
+	}
+	for _, k := range missing {
+		t.Errorf("ast.%s has no walker case: add one and decide its policy", k)
+	}
+	kinds, _ := ExprKinds()
+	for c := range covered {
+		if !slices.Contains(kinds, c) {
+			t.Errorf("walker case %q matches no ast.Expr kind the scanner found: renamed kind or scanner gap (%s)", c, strings.Join(kinds, ","))
 		}
 	}
 }
