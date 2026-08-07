@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/ast/asttest"
 )
 
 func TestFunctionRecognition(t *testing.T) {
@@ -224,5 +225,39 @@ func TestErrorRendering(t *testing.T) {
 	}
 	if planErrf("nope").Kind != KindPlan {
 		t.Fatal("plan kind")
+	}
+}
+
+// TestCheckRefsRejectsEveryKind asserts the reference gate over every
+// ast.Expr kind: an out-of-scope variable reference must be rejected no
+// matter which construct carries it. CheckRefs is the plan-time backstop
+// behind every rewrite pass -- eval reads an unbound variable as Null, so
+// a kind this gate lets through fails as silently wrong rows, not an
+// error. The roll call makes a new Expr kind fail here until its arm is
+// written; the fallthrough default stays legal only for reference-free
+// literals.
+func TestCheckRefsRejectsEveryKind(t *testing.T) {
+	covered := map[string]bool{}
+	for _, c := range asttest.KindCases("n") {
+		covered[c.Kind] = true
+		err := CheckRefs(c.Build(), map[string]int{})
+		if c.Kind == "Lit" {
+			if err != nil {
+				t.Errorf("Lit: unexpected error %v", err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: out-of-scope reference passed CheckRefs", c.Kind)
+		}
+	}
+	asttest.RollCall(t, covered)
+
+	// The same instances pass once the reference is in scope (binder
+	// locals and pattern variables supply the rest).
+	for _, c := range asttest.KindCases("n") {
+		if err := CheckRefs(c.Build(), map[string]int{"n": 0, "q": 1}); err != nil {
+			t.Errorf("%s: in-scope reference rejected: %v", c.Kind, err)
+		}
 	}
 }

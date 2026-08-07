@@ -96,6 +96,13 @@ func FuzzQuery(f *testing.F) {
 		"INSERT (n:Person) RETURN n",
 		"RETURN reduce(s = 0, x IN [1] | s + x) AS r",
 		"MATCH (p:Person) RETURN q.name AS n",
+		// Grouping-key rename seeds: renamed keys referenced from nested
+		// aggregate wrappers, label tests, binder bodies, and colliding
+		// locals -- the space where the substitution walkers live.
+		"MATCH (p:Person)-[:WORKS_AT]->(c) RETURN c AS comp, count(*) + (CASE WHEN c:Company THEN 100 ELSE 0 END) AS x ORDER BY x",
+		"MATCH (p:Person)-[:WORKS_AT]->(c) RETURN c AS comp, count(*) + size([x IN [1,2] WHERE c.name = 'Acme' | x]) AS x ORDER BY x",
+		"MATCH (p:Person)-[:WORKS_AT]->(c) RETURN c AS comp, count(*) + size([comp IN [1,2] WHERE c.name = 'Acme' | comp]) AS x ORDER BY x",
+		"MATCH (p:Person) RETURN p AS q, count(*) + reduce(s = 0, x IN [1] | s + p.age) AS r",
 	} {
 		f.Add(seed)
 	}
