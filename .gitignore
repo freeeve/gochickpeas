@@ -3,3 +3,4 @@ conformance-out/
 dist/
 export/
 tasks/
+*.test
