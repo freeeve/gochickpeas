@@ -413,25 +413,20 @@ func buildMatchStage(spec *stageSpec, slots map[string]int, bound map[int]bool, 
 	if err := extractVarlenHopPreds(&stageWhere, ops); err != nil {
 		return nil, err
 	}
-	// Lower a general node label expression to a synthetic HasLabelExpr
-	// conjunct on the node's variable, applied after the node binds.
+	// General label expressions are lowered to HasLabelExpr conjuncts by
+	// semantics.Desugar, the single lowering site (Build desugars, and
+	// BuildWithInCols replans bodies the outer Desugar already reached).
+	// A surviving LabelExpr here means a caller skipped desugar; failing
+	// closed beats a silently ignored label expression -- the exact bug
+	// this replaced arm's duplicate lowering once masked in subqueries.
 	nodes := make([]*ast.NodePat, 0, len(pattern.Hops)+1)
 	nodes = append(nodes, &pattern.Start)
 	for hi := range pattern.Hops {
 		nodes = append(nodes, &pattern.Hops[hi].Node)
 	}
 	for _, node := range nodes {
-		if node.LabelExpr == nil {
-			continue
-		}
-		if node.Var == "" {
-			return nil, planErrf("a label expression (`|`/`!`) requires a variable on the node (Tier 1)")
-		}
-		conj := &ast.HasLabelExpr{Var: node.Var, Expr: node.LabelExpr}
-		if stageWhere == nil {
-			stageWhere = conj
-		} else {
-			stageWhere = &ast.Binary{Op: ast.OpAnd, LHS: stageWhere, RHS: conj}
+		if node.LabelExpr != nil {
+			return nil, planErrf("internal: node label expression not lowered -- semantics.Desugar must run before planning")
 		}
 	}
 	if stageWhere != nil {

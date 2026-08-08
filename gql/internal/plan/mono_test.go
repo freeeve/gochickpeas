@@ -389,16 +389,32 @@ func TestLabelExpressionLowering(t *testing.T) {
 	}
 	// An anonymous node with a label expression plans too: desugar names
 	// it with a synthetic variable and lowers the expression (task 245
-	// moved the lowering to desugar so subquery patterns get it; the
-	// planner's requires-a-variable error remains only for direct Build
-	// callers that skip desugar).
+	// moved the lowering to desugar so subquery patterns get it).
 	p2 := mustPlan(t, g, "MATCH (:Person|Message) RETURN 1")
 	ms2 := firstMatch(t, p2)
 	hle2, ok := ms2.Where.(*ast.HasLabelExpr)
 	if !ok || hle2.Var == "" || hle2.Expr.Kind != ast.LabelOr {
 		t.Fatalf("anonymous where = %#v, want a HasLabelExpr OR conjunct on a synthetic var", ms2.Where)
 	}
+
+	// Desugar is the SINGLE lowering site (task 248): a caller that skips
+	// it and hands the planner a surviving LabelExpr gets a loud internal
+	// error, never a silently ignored label expression. BuildWithInCols
+	// skips desugar by contract, so it drives the guard directly.
+	raw := &ast.Query{Parts: []ast.QueryPart{{
+		Clauses: []ast.Clause{&ast.Match{Patterns: []ast.Pattern{{
+			Start: ast.NodePat{Var: "n", LabelExpr: &ast.LabelExpr{
+				Kind: ast.LabelOr, L: labelNameExpr("Person"), R: labelNameExpr("Message")}},
+		}}}},
+		Ret: ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Var{Name: "n"}, Alias: "n"}}},
+	}}}
+	if _, err := BuildWithInCols(raw, nil, g); err == nil || !strings.Contains(err.Error(), "not lowered") {
+		t.Fatalf("un-desugared LabelExpr: err = %v, want the internal not-lowered guard", err)
+	}
 }
+
+// labelNameExpr builds a single-name label expression.
+func labelNameExpr(s string) *ast.LabelExpr { return &ast.LabelExpr{Kind: ast.LabelName, Name: s} }
 
 func TestWeightExprValidation(t *testing.T) {
 	g := buildFixture(t)
