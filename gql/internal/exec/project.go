@@ -15,6 +15,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
+	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -52,12 +53,14 @@ type projSink struct {
 	kBase   int
 	kRowbuf []value.Value
 	kBuf    []value.Value
-	// kGate marks the payload-gated top-k path: every ORDER BY key is a
-	// bare output column and no DISTINCT dedups on the full row, so the
-	// keys can evaluate alone and the heap can refuse a candidate BEFORE
-	// its remaining columns are built (most candidates die on one
-	// comparison once the heap fills).
-	kGate bool
+	// kGate marks the payload-gated top-k path: every ORDER BY key either
+	// is an output column or evaluates against the matched row alone
+	// (kRowEval, the RETURN m ... ORDER BY m.x identity family), and no
+	// DISTINCT dedups on the full row -- so the keys can evaluate first
+	// and the heap can refuse a candidate BEFORE its remaining columns are
+	// built (most candidates die on one comparison once the heap fills).
+	kGate    bool
+	kRowEval []RowEval
 }
 
 // topkPayloadBuilds counts full projected payload constructions on the
@@ -114,7 +117,18 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 			p.kGate = !proj.Distinct && !disableTopkGate
 			for k := range proj.OrderBy {
 				if p.kColIdx[k] < 0 {
-					p.kGate = false // composite key: needs the whole row
+					// Not an output column, but still gateable when the
+					// key's references all resolve in the matched row's
+					// scope (RETURN m ... ORDER BY m.x and friends): it
+					// then evaluates pre-build, exactly like a column key.
+					if semantics.CheckRefs(proj.OrderBy[k].Expr, slots) == nil {
+						if p.kRowEval == nil {
+							p.kRowEval = make([]RowEval, nk)
+						}
+						p.kRowEval[k] = compileEval(ctx, proj.OrderBy[k].Expr, slots)
+						continue
+					}
+					p.kGate = false // key needs the built row
 					break
 				}
 			}
@@ -159,7 +173,11 @@ func (p *projSink) push(row []value.Value) bool {
 	// exactly.
 	if p.kGate {
 		for k := range p.proj.OrderBy {
-			p.kBuf[k] = p.returns[p.kColIdx[k]].Eval(p.ctx, row, p.slots)
+			if idx := p.kColIdx[k]; idx >= 0 {
+				p.kBuf[k] = p.returns[idx].Eval(p.ctx, row, p.slots)
+			} else {
+				p.kBuf[k] = p.kRowEval[k].Eval(p.ctx, row, p.slots)
+			}
 		}
 		if !p.topk.wouldAccept(p.kBuf) {
 			p.topk.seq++ // rejected offers still order future arrivals
@@ -168,7 +186,9 @@ func (p *projSink) push(row []value.Value) bool {
 		topkPayloadBuilds++
 		out := p.oArena.alloc()
 		for k := range p.proj.OrderBy {
-			out[p.kColIdx[k]] = p.kBuf[k]
+			if idx := p.kColIdx[k]; idx >= 0 {
+				out[idx] = p.kBuf[k]
+			}
 		}
 		for i, c := range p.returns {
 			if !p.kGateCol(i) {

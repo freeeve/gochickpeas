@@ -82,16 +82,51 @@ func TestTopKGateTieAtBoundary(t *testing.T) {
 	}
 }
 
-// TestTopKCompositeKeyUngated pins the unguarded path: an ORDER BY
-// expression that is not a bare output column needs the whole row, so it
-// must keep the build-then-offer flow and still agree with the general
-// sort.
-func TestTopKCompositeKeyUngated(t *testing.T) {
-	g := topkFixture(t, 100)
+// TestTopKRowEvalKeyGated pins the row-evaluable key extension (task
+// 260, the shape the sibling engine's guard wrongly declined): an ORDER
+// BY expression that is NOT an output column but references only matched
+// row variables (m.v + 1 over RETURN m.name) now gates -- ascending
+// input under DESC means every candidate after the first admissions
+// competes, so the build count stays O(k), and rows must equal the
+// unguarded reference exactly.
+func TestTopKRowEvalKeyGated(t *testing.T) {
+	g := topkFixture(t, 500)
+	before := topkPayloadBuilds
+	disableTopkGate = false
+	rows, _ := runBoth(t, g,
+		"MATCH (m:N) RETURN m.name AS name ORDER BY m.v + 1 ASC LIMIT 4")
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d, want 4", len(rows))
+	}
+	builds := topkPayloadBuilds - before
+	if builds != 8 {
+		t.Fatalf("payload builds = %d across two runs, want 8 (4 per run; ~1000 means the row-eval key did not gate)", builds)
+	}
 	gated, ungated := runGateBoth(t, g,
 		"MATCH (m:N) RETURN m.name AS name ORDER BY m.v + 1 DESC LIMIT 4")
 	if fmt.Sprint(gated) != fmt.Sprint(ungated) {
-		t.Fatalf("composite-key path diverged:\n%v\nvs\n%v", gated, ungated)
+		t.Fatalf("row-eval-key path diverged:\n%v\nvs\n%v", gated, ungated)
+	}
+	// The identity-projection family itself: the entity is the output,
+	// the key is its property.
+	gated, ungated = runGateBoth(t, g,
+		"MATCH (m:N) RETURN m ORDER BY m.v DESC LIMIT 5")
+	if fmt.Sprint(gated) != fmt.Sprint(ungated) {
+		t.Fatalf("identity-projection path diverged:\n%v\nvs\n%v", gated, ungated)
+	}
+}
+
+// TestTopKComputedAliasKeyUngated pins the remaining unguarded path: a
+// key over a COMPUTED output alias (w is not a matched-row variable, and
+// w + 1 is not structurally a projected expression) needs the built row,
+// so it keeps the build-then-offer flow and still agrees with the
+// general sort.
+func TestTopKComputedAliasKeyUngated(t *testing.T) {
+	g := topkFixture(t, 100)
+	gated, ungated := runGateBoth(t, g,
+		"MATCH (m:N) RETURN m.v + 1 AS w ORDER BY w + 1 DESC LIMIT 4")
+	if fmt.Sprint(gated) != fmt.Sprint(ungated) {
+		t.Fatalf("computed-alias-key path diverged:\n%v\nvs\n%v", gated, ungated)
 	}
 }
 
