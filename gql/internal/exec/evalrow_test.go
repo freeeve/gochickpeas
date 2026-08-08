@@ -99,3 +99,32 @@ func TestInterpExprEval(t *testing.T) {
 		t.Fatalf("interpExpr.Eval(x) over row[0]=7 = %v, want 7", slotRead.Eval(ctx, urow(7), map[string]int{"x": 0}))
 	}
 }
+
+// TestForceInterpRoutesToInterpreter is the dual-path harness's liveness
+// pin (task 251): a differential asserting compiled == interpreted is
+// satisfied by a dead hook that compares compiled against compiled, so
+// the hook's routing must be asserted directly -- ForceInterp yields the
+// interpreter form and advances the pinned counter; without it a native
+// graph yields the compiled form.
+func TestForceInterpRoutesToInterpreter(t *testing.T) {
+	b := chickpeas.NewBuilder(2, 0)
+	if _, err := b.AddNode("A"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(b.Finalize())
+	e := &ast.Binary{Op: ast.OpAdd, LHS: &ast.Lit{Value: ast.IntLit(1)}, RHS: &ast.Lit{Value: ast.IntLit(2)}}
+	slots := map[string]int{}
+
+	ctx := &eval.Ctx{G: g}
+	if _, isInterp := compileEval(ctx, e, slots).(interpExpr); isInterp {
+		t.Fatal("a native graph without the hook must take the compiled path")
+	}
+	before := InterpPinned()
+	ctx.ForceInterp = true
+	if _, isInterp := compileEval(ctx, e, slots).(interpExpr); !isInterp {
+		t.Fatal("ForceInterp must route to the interpreter")
+	}
+	if InterpPinned() != before+1 {
+		t.Fatalf("pinned counter = %d, want %d", InterpPinned(), before+1)
+	}
+}

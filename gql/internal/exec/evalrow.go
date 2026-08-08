@@ -25,14 +25,25 @@ func (i interpExpr) Eval(ctx *eval.Ctx, row []value.Value, slots map[string]int)
 	return eval.Eval(ctx, i.e, row, slots)
 }
 
+// interpPinned counts expressions the differential test hook routed to
+// the interpreter, so the dual-path harness can assert its forced leg
+// really took the interpreted path -- a silently dead hook would compare
+// compiled against compiled and prove nothing (the colAggFired pattern).
+var interpPinned int
+
+// InterpPinned exposes the counter to the harness's liveness assertion.
+func InterpPinned() int { return interpPinned }
+
 // compileEval binds an expression for per-row evaluation: the columnar
 // compiled form when the graph asserts the native capability (and the
 // differential test hook doesn't pin the interpreter), else interpreted.
 func compileEval(ctx *eval.Ctx, e ast.Expr, slots map[string]int) RowEval {
-	if !ctx.ForceInterp {
-		if n, ok := ctx.G.(graph.Native); ok {
-			return compile.New(ctx, e, slots, n.Snapshot())
-		}
+	if ctx.ForceInterp {
+		interpPinned++
+		return interpExpr{e}
+	}
+	if n, ok := ctx.G.(graph.Native); ok {
+		return compile.New(ctx, e, slots, n.Snapshot())
 	}
 	return interpExpr{e}
 }
