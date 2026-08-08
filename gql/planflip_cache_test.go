@@ -6,9 +6,13 @@
 package gql
 
 import (
+	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/explain"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -102,4 +106,35 @@ func TestFlipDetectionSameTreeNotFlipped(t *testing.T) {
 		}
 	}
 	_ = chickpeas.NodeID(0)
+}
+
+// TestCanonicalRenderStableAndTimeFree is the teeth check on the flip
+// detector's own input (task 252): planFlipped compares two independent
+// Canonical renders, so any volatile content -- a wall-clock line like
+// Render's "Planning: ... ms", map-order nondeterminism -- would mark
+// every template flipped and silently bypass the cache for everything
+// (the inverse polarity of the always-passing comparison this ask
+// reports). Two renders of one plan must be byte-identical, and no
+// canonical line may carry a timing marker.
+func TestCanonicalRenderStableAndTimeFree(t *testing.T) {
+	g := SocialGraph(t)
+	q, err := parseDesugar("MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE p.age > 30 RETURN f.name AS n ORDER BY n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gr := graph.New(g)
+	p, err := plan.Build(q, gr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1 := explain.Canonical(p, plan.Estimate(p, gr))
+	r2 := explain.Canonical(p, plan.Estimate(p, gr))
+	if strings.Join(r1, "\n") != strings.Join(r2, "\n") {
+		t.Fatalf("canonical render is nondeterministic:\n%v\nvs\n%v", r1, r2)
+	}
+	for _, ln := range r1 {
+		if strings.Contains(ln, "Planning:") || strings.Contains(ln, " ms") {
+			t.Fatalf("canonical render carries a timing line: %q", ln)
+		}
+	}
 }
