@@ -358,7 +358,34 @@ func TestFusionMonoConjunctConserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	homes := 0
+	specs, filters := conjunctHomes(p)
+	if specs+filters != 1 {
+		t.Fatalf("sortedness conjunct homes = %d spec + %d filter, want exactly 1 -- the fusion x mono composition lost or duplicated the predicate", specs, filters)
+	}
+
+	// Keep side (task 254's fixture-scope lesson: the pin above exercises
+	// only the push-succeeds home): a comprehension over a non-rels list
+	// defeats alias provenance, so the push must FAIL and the conjunct
+	// must survive as a filter -- one home, zero specs.
+	q.Parts[0].Clauses[1].(*ast.With).Proj.Items[1].Expr = &ast.ListComp{
+		Var: "r",
+		List: &ast.ListExpr{Elems: []ast.Expr{
+			&ast.Lit{Value: ast.IntLit(1)}, &ast.Lit{Value: ast.IntLit(2)}}},
+		Map: &ast.Var{Name: "r"},
+	}
+	p2, err := Build(q, g)
+	if err != nil {
+		t.Fatalf("keep-side plan: %v", err)
+	}
+	specs2, filters2 := conjunctHomes(p2)
+	if specs2 != 0 || filters2 != 1 {
+		t.Fatalf("keep side: %d spec + %d filter homes, want 0 + 1 (unpushable conjunct must survive as a filter)", specs2, filters2)
+	}
+}
+
+// conjunctHomes counts where the all() sortedness conjunct ended up:
+// consumed onto MonoHop specs, or surviving in stage/boundary filters.
+func conjunctHomes(p *Plan) (specs, filters int) {
 	for _, seg := range p.Branches[0] {
 		for _, st := range seg.Stages {
 			ms, ok := st.(*MatchStage)
@@ -367,20 +394,18 @@ func TestFusionMonoConjunctConserved(t *testing.T) {
 			}
 			for i := range ms.Ops {
 				if ms.Ops[i].MonoHop != nil {
-					homes++
+					specs++
 				}
 			}
 			if containsAllPred(ms.Where) {
-				homes++
+				filters++
 			}
 		}
 		if containsAllPred(seg.PostWhere) {
-			homes++
+			filters++
 		}
 	}
-	if homes != 1 {
-		t.Fatalf("sortedness conjunct homes = %d, want exactly 1 -- the fusion x mono composition lost or duplicated the predicate", homes)
-	}
+	return specs, filters
 }
 
 // TestSubstExprFailsClosed asserts the fusion substitution's safety
