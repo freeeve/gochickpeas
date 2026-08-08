@@ -108,6 +108,15 @@ fetches unwanted/unknown sections (same asymmetry as the Rust codec).
   build-outside-lock, discard racing duplicate; `sync.OnceValue` for stats.
 - NodeSet is roaring-only behind a private repr; the Rust adaptive
   small-set arm lands later only if Go benchmarks prove the win.
+- Resident footprint at scale (measured on the 16M-rel sf1_weighted
+  export via `cmd/rssbench`): the retained working set is ~1.12x the
+  on-disk file, but default GC leaves ~130 MB of load-transient pages
+  MADV_FREE'd yet resident (phys_footprint ~840 vs ~707 MB real). An
+  RSS-sensitive embedding application can eliminate the residue with
+  limit-driven collection -- `GOGC=off GOMEMLIMIT=<~1.15x expected
+  footprint>` measured phys_footprint ~710 MB, equal to the real
+  working set, with no load-time penalty. This is a process-level knob
+  for the HOST application; the library never sets runtime GC policy.
 
 ## GQL seam
 
