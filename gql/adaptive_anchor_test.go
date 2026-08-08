@@ -8,10 +8,12 @@
 package gql
 
 import (
+	"slices"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/exec"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -107,6 +109,56 @@ func TestAdaptiveAnchorPicksPerValue(t *testing.T) {
 	// SAME cached template, OPPOSITE anchor -- the adaptive property.
 	if got := chosenAnchorLabel(t, p, gr, []value.Value{value.Str("a2"), value.Str("b2")}); got != "A" {
 		t.Fatalf("(a2,b2): chose anchor %q, want A (a2 is the selective end)", got)
+	}
+}
+
+// TestAdaptiveAnchorAltRowDifferential executes the primary plan and the
+// flipped sibling over the same value sets and requires identical row
+// multisets -- the invariant the adaptive chooser's existence rests on,
+// and the one leg of it no test compared directly (task 249: an
+// alternate path without an on-vs-off differential can hide a divergent
+// plan behind whichever side the chooser happens to pick).
+func TestAdaptiveAnchorAltRowDifferential(t *testing.T) {
+	snap := adaptiveFixture(t)
+	gr := graph.New(snap)
+	q, err := parser.Parse("MATCH (a:A {k: 'a1'})-[:R]->(b:B {k: 'b1'}) RETURN a.k, b.k")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	semantics.AutoParameterize(q)
+	p, err := plan.Build(q, gr)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if p.Alt == nil {
+		t.Fatal("expected a flipped sibling plan")
+	}
+	multiset := func(pl *plan.Plan, params []value.Value) []string {
+		t.Helper()
+		rows, err := exec.Execute(&eval.Ctx{G: gr, Params: params}, pl)
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		keys := make([]string, 0, len(rows))
+		for _, r := range rows {
+			var k []byte
+			for _, v := range r {
+				k = value.AppendKey(k, v)
+			}
+			keys = append(keys, string(k))
+		}
+		slices.Sort(keys)
+		return keys
+	}
+	for _, params := range [][]value.Value{
+		{value.Str("a1"), value.Str("b1")},
+		{value.Str("a2"), value.Str("b2")},
+	} {
+		prim, alt := multiset(p, params), multiset(p.Alt, params)
+		if !slices.Equal(prim, alt) {
+			t.Fatalf("primary/sibling row divergence for %v:\n primary (%d): %v\n sibling (%d): %v",
+				params, len(prim), prim, len(alt), alt)
+		}
 	}
 }
 
