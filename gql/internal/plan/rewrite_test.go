@@ -280,6 +280,109 @@ func TestInlineProjectionPreservesPostfixOrderKey(t *testing.T) {
 	}
 }
 
+// containsAllPred reports whether e contains an all(...) list predicate.
+func containsAllPred(e ast.Expr) bool {
+	if e == nil {
+		return false
+	}
+	found := false
+	ast.Walk(e, func(x ast.Expr) bool {
+		if lp, ok := x.(*ast.ListPred); ok && lp.Quant == ast.QuantAll {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// TestFusionMonoConjunctConserved pins the pass-interaction invariant
+// (task 247): when the projection-fusion pass and the monotonic pushdown
+// both have a stake in the same clauses -- a pure LET defining a
+// rels-derived alias, then an aggregating boundary whose FILTER carries
+// the sortedness conjunct over that alias -- their composition may cost
+// an optimization but must never lose or duplicate the predicate. Today
+// the composition resolves by fusion failing closed (substExpr has no
+// ListPred arm); if either pass learns the shape, this still holds the
+// pipeline to the invariant: the conjunct is consumed onto a MonoHop
+// spec or survives as a stage/boundary filter -- exactly one home.
+func TestFusionMonoConjunctConserved(t *testing.T) {
+	g := buildFixture(t)
+	one, three := uint64(1), uint64(3)
+	pattern := ast.Pattern{
+		Start: ast.NodePat{Var: "a", Labels: []string{"Person"}},
+		Hops: []ast.PatternHop{{
+			Rel:  ast.RelPat{Var: "e", Dir: ast.DirOut, Types: []string{"KNOWS"}, Length: &ast.VarLength{Min: &one, Max: &three}},
+			Node: ast.NodePat{Var: "b", Labels: []string{"Person"}},
+		}},
+	}
+	tsComp := &ast.ListComp{Var: "r", List: &ast.Var{Name: "e"}, Map: &ast.Prop{Var: "r", Key: "ts"}}
+	idx := func(i ast.Expr) ast.Expr { return &ast.Index{Base: &ast.Var{Name: "ts"}, Idx: i} }
+	iVar := &ast.Var{Name: "i"}
+	sorted := &ast.ListPred{
+		Quant: ast.QuantAll,
+		Var:   "i",
+		List: &ast.Func{Name: "range", Args: []ast.Expr{
+			&ast.Lit{Value: ast.IntLit(0)},
+			&ast.Binary{Op: ast.OpSub,
+				LHS: &ast.Func{Name: "size", Args: []ast.Expr{&ast.Var{Name: "ts"}}},
+				RHS: &ast.Lit{Value: ast.IntLit(2)}},
+		}},
+		Pred: &ast.Binary{Op: ast.OpLt, LHS: idx(iVar),
+			RHS: idx(&ast.Binary{Op: ast.OpAdd, LHS: iVar, RHS: &ast.Lit{Value: ast.IntLit(1)}})},
+	}
+	q := &ast.Query{Parts: []ast.QueryPart{{
+		Clauses: []ast.Clause{
+			&ast.Match{Patterns: []ast.Pattern{pattern}},
+			// Pure boundary defining the alias -- fusion's left operand.
+			&ast.With{Proj: ast.Projection{Items: []ast.ReturnItem{
+				{Expr: &ast.Var{Name: "b"}, Alias: "b"},
+				{Expr: tsComp, Alias: "ts"},
+			}}},
+			// Aggregating boundary carrying the sortedness conjunct --
+			// fusion's right operand and the mono pushdown's source.
+			&ast.With{
+				Proj: ast.Projection{Items: []ast.ReturnItem{
+					{Expr: &ast.Var{Name: "b"}, Alias: "b"},
+					{Expr: &ast.Var{Name: "ts"}, Alias: "ts"},
+					{Expr: &ast.Func{Name: "count", Star: true}, Alias: "n"},
+				}},
+				Where: sorted,
+			},
+		},
+		Ret: ast.Projection{Items: []ast.ReturnItem{
+			{Expr: &ast.Var{Name: "b"}, Alias: "b"},
+			{Expr: &ast.Var{Name: "n"}, Alias: "n"},
+		}},
+	}}}
+	p, err := Build(q, g)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	homes := 0
+	for _, seg := range p.Branches[0] {
+		for _, st := range seg.Stages {
+			ms, ok := st.(*MatchStage)
+			if !ok {
+				continue
+			}
+			for i := range ms.Ops {
+				if ms.Ops[i].MonoHop != nil {
+					homes++
+				}
+			}
+			if containsAllPred(ms.Where) {
+				homes++
+			}
+		}
+		if containsAllPred(seg.PostWhere) {
+			homes++
+		}
+	}
+	if homes != 1 {
+		t.Fatalf("sortedness conjunct homes = %d, want exactly 1 -- the fusion x mono composition lost or duplicated the predicate", homes)
+	}
+}
+
 // TestSubstExprFailsClosed asserts the fusion substitution's safety
 // invariant over every ast.Expr kind (task 231): substExpr either rewrites
 // an expression completely -- no free reference to the inlined alias
