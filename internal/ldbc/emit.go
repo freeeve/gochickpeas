@@ -94,12 +94,17 @@ func newStamp(commit, date, dateTime, subject string, dirty bool) Stamp {
 }
 
 // treeDirty reports whether the working tree has staged, unstaged, or
-// untracked changes -- any of which can alter what a build actually runs
-// (Go compiles untracked .go files too), so all count as source drift
-// from HEAD. A git failure reports not-dirty: the stamp then degrades to
-// the plain commit rather than blocking a run on a git hiccup.
+// untracked changes OUTSIDE bench-out/ -- any of which can alter what a
+// build actually runs (Go compiles untracked .go files too), so all
+// count as source drift from HEAD. bench-out/ is the emission target:
+// a run's own output lands there before the stamp is taken, and
+// counting those writes as drift made a self-emitting sweep label its
+// records `<sha>-dirty` -- an id the downstream canary cannot resolve
+// against any floor band, silently un-gating publication. A git failure
+// reports not-dirty: the stamp then degrades to the plain commit rather
+// than blocking a run on a git hiccup.
 func treeDirty() bool {
-	out, err := exec.Command("git", "status", "--porcelain").Output()
+	out, err := exec.Command("git", "status", "--porcelain", "--", ".", ":(exclude)bench-out").Output()
 	return err == nil && len(bytes.TrimSpace(out)) > 0
 }
 
