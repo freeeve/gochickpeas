@@ -3,7 +3,53 @@ package exec
 import (
 	"fmt"
 	"testing"
+
+	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// TestArgminTopKEvictionAndReentry pins the bounded accumulator's safety
+// argument directly: an evicted candidate's stale minimum is irrelevant,
+// and a later better row of the same tuple re-enters on its own key. One
+// asc key, bound 2, single int column doubling as tuple identity.
+func TestArgminTopKEvictionAndReentry(t *testing.T) {
+	offer := func(a *argminTopK, id, key, seq int) {
+		row := []value.Value{value.Int(int64(id))}
+		a.offer(row, []int{0}, []value.Value{value.Int(int64(key))}, seq)
+	}
+	render := func(a *argminTopK) string { return fmt.Sprint(a.sorted()) }
+
+	// Tuple 1 enters (key 10), tuple 2 enters (key 20), tuple 3 beats the
+	// worst (key 15): tuple 2 evicted. A later WORSE row of tuple 2 (key
+	// 30) must not re-enter; a later BETTER row (key 5) must.
+	a := newArgminTopK(2, 1, 1, []bool{false})
+	offer(a, 1, 10, 0)
+	offer(a, 2, 20, 1)
+	offer(a, 3, 15, 2)
+	offer(a, 2, 30, 3)
+	if got := render(a); got != fmt.Sprint([][]value.Value{{value.Int(1)}, {value.Int(3)}}) {
+		t.Fatalf("after worse re-offer: %s, want tuples 1,3", got)
+	}
+	offer(a, 2, 5, 4)
+	if got := render(a); got != fmt.Sprint([][]value.Value{{value.Int(2)}, {value.Int(1)}}) {
+		t.Fatalf("after better re-entry: %s, want tuples 2,1", got)
+	}
+
+	// An improving row of a TRACKED candidate updates in place and the
+	// heap reorders (tuple 1 improves past tuple 2).
+	offer(a, 1, 3, 5)
+	if got := render(a); got != fmt.Sprint([][]value.Value{{value.Int(1)}, {value.Int(2)}}) {
+		t.Fatalf("after tracked improve: %s, want tuples 1,2", got)
+	}
+
+	// Key ties resolve by earlier sequence: a new tuple tying the worst
+	// loses (its seq is larger).
+	b := newArgminTopK(1, 1, 1, []bool{false})
+	offer(b, 7, 10, 0)
+	offer(b, 8, 10, 1)
+	if got := render(b); got != fmt.Sprint([][]value.Value{{value.Int(7)}}) {
+		t.Fatalf("tie at bound: %s, want tuple 7 (earlier seq)", got)
+	}
+}
 
 // TestOrderedDistinctMatchesGeneral is the differential for the
 // aggregate -> identity ORDER BY -> DISTINCT+LIMIT fusion: each fixture

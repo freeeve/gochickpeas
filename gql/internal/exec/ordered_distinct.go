@@ -12,7 +12,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -129,32 +128,18 @@ func tryOrderedDistinctTopK(ctx *eval.Ctx, segs []*plan.Segment, at int, inputs 
 		desc[k] = oproj.OrderBy[k].Desc
 	}
 
-	// Argmin accumulator: one entry per distinct tuple -- the tuple's
-	// values (arena-backed), its best (minimum) key vector, and that
-	// row's sequence (the sort's index tiebreak, so equal keys keep the
-	// earlier row). Tuple identity indexes through the aggregator's own
-	// key machinery -- a packable single value probes the u64 flat map,
-	// everything else the flat byte map -- so the per-distinct-tuple cost
-	// is amortized slab growth, not a Go-map string key per tuple.
-	var idxPacked flatset.U64Map
-	var idxBytes flatset.ByteMap
-	tupleArena := rowArena{width: len(dcols)}
-	var tuples [][]value.Value
-	var keys []value.Value // n*nk flat
-	var seqs []int
+	// Bounded argmin: a tuple only matters if its minimum key vector can
+	// enter the top bound, per-tuple minima only improve, and the bound-th
+	// candidate threshold only tightens -- so a row whose key cannot beat
+	// the threshold for an UNTRACKED tuple can never matter (any later,
+	// better row of that tuple is judged on its own key), and an evicted
+	// candidate's stale minimum is irrelevant (it was already worse than
+	// the threshold a re-entry would have to beat). State is O(bound):
+	// fixed slot arrays, a worst-at-root heap over slots, and a membership
+	// map holding only current candidates.
+	am := newArgminTopK(bound, nk, len(dcols), desc)
 	kbuf := make([]value.Value, nk)
-	var dkey []byte
 	seq := 0
-	newEntry := func(row []value.Value) int {
-		tuple := tupleArena.alloc()
-		for i, c := range dcols {
-			tuple[i] = row[c]
-		}
-		tuples = append(tuples, tuple)
-		keys = append(keys, kbuf...)
-		seqs = append(seqs, seq)
-		return len(tuples) - 1
-	}
 	term.agg.forEachGroup(ctx, &agg.Proj, func(row []value.Value) {
 		for k := range oproj.OrderBy {
 			if ci := colIdx[k]; ci >= 0 {
@@ -163,65 +148,184 @@ func tryOrderedDistinctTopK(ctx *eval.Ctx, segs []*plan.Segment, at int, inputs 
 				kbuf[k] = eval.Eval(ctx, oproj.OrderBy[k].Expr, row, scope)
 			}
 		}
-		before := len(tuples)
-		e := -1
-		if len(dcols) == 1 {
-			if gk, packed := packGroupKey1(row[dcols[0]]); packed {
-				e = idxPacked.GetOrCreate(gk, func() int { return newEntry(row) })
-			}
-		}
-		if e < 0 {
-			dkey = dkey[:0]
-			for _, c := range dcols {
-				dkey = value.AppendKey(dkey, row[c])
-			}
-			e = idxBytes.GetOrCreate(dkey, func() int { return newEntry(row) })
-		}
-		if e < before {
-			// Strictly-smaller keys win; a tie keeps the earlier sequence.
-			for k := range nk {
-				ord := value.OrderCmp(kbuf[k], keys[e*nk+k])
-				if desc[k] {
-					ord = -ord
-				}
-				if ord < 0 {
-					copy(keys[e*nk:(e+1)*nk], kbuf)
-					seqs[e] = seq
-					break
-				} else if ord > 0 {
-					break
-				}
-			}
-		}
+		am.offer(row, dcols, kbuf, seq)
 		seq++
 	})
+	return paginate(am.sorted(), dst.Proj.Skip, dst.Proj.Limit), 3, true
+}
 
-	// Bounded selection over the per-tuple minima under the sort's total
-	// order (keys, then sequence -- sequences are unique, so cmp is total).
-	idx := make([]int, len(tuples))
+// argminTopK is the bounded per-tuple argmin accumulator: at most bound
+// distinct tuples are tracked, each with its best (minimum) key vector
+// and that row's sequence under the sort's total order.
+type argminTopK struct {
+	bound, nk, width int
+	desc             []bool
+	tuples           []value.Value // slot*width flat
+	keys             []value.Value // slot*nk flat
+	seqs             []int
+	heap             []int // heap of slots, worst candidate at root
+	pos              []int // slot -> heap index
+	n                int
+	byPacked         map[uint64]int // packed tuple identity -> slot
+	byBytes          map[string]int
+	slotPacked       []bool // per-slot identity for eviction
+	slotPK           []uint64
+	slotSK           []string
+	dkey             []byte
+}
+
+func newArgminTopK(bound, nk, width int, desc []bool) *argminTopK {
+	return &argminTopK{
+		bound: bound, nk: nk, width: width, desc: desc,
+		tuples:   make([]value.Value, bound*width),
+		keys:     make([]value.Value, bound*nk),
+		seqs:     make([]int, bound),
+		heap:     make([]int, 0, bound),
+		pos:      make([]int, bound),
+		byPacked: map[uint64]int{}, byBytes: map[string]int{},
+		slotPacked: make([]bool, bound),
+		slotPK:     make([]uint64, bound),
+		slotSK:     make([]string, bound),
+	}
+}
+
+// less reports whether (kbuf, seq) sorts strictly before slot's entry.
+func (a *argminTopK) less(kbuf []value.Value, seq, slot int) bool {
+	for k := range a.nk {
+		ord := value.OrderCmp(kbuf[k], a.keys[slot*a.nk+k])
+		if a.desc[k] {
+			ord = -ord
+		}
+		if ord != 0 {
+			return ord < 0
+		}
+	}
+	return seq < a.seqs[slot]
+}
+
+// cmpSlots orders two slots under the same total order.
+func (a *argminTopK) cmpSlots(s1, s2 int) int {
+	if a.less(a.keys[s1*a.nk:(s1+1)*a.nk], a.seqs[s1], s2) {
+		return -1
+	}
+	return 1
+}
+
+// offer routes one group row: an existing candidate improves in place, a
+// new tuple enters when under capacity or beating the worst candidate
+// (which is then evicted, membership and all), anything else is skipped.
+func (a *argminTopK) offer(row []value.Value, dcols []int, kbuf []value.Value, seq int) {
+	if a.bound == 0 {
+		return
+	}
+	packed := false
+	var pk uint64
+	if len(dcols) == 1 {
+		pk, packed = packGroupKey1(row[dcols[0]])
+	}
+	if !packed {
+		a.dkey = a.dkey[:0]
+		for _, c := range dcols {
+			a.dkey = value.AppendKey(a.dkey, row[c])
+		}
+	}
+	slot, tracked := -1, false
+	if packed {
+		slot, tracked = a.byPacked[pk]
+	} else {
+		slot, tracked = a.byBytes[string(a.dkey)]
+	}
+	if tracked {
+		if a.less(kbuf, seq, slot) {
+			copy(a.keys[slot*a.nk:(slot+1)*a.nk], kbuf)
+			a.seqs[slot] = seq
+			a.siftDown(a.pos[slot])
+		}
+		return
+	}
+	if a.n < a.bound {
+		slot = a.n
+		a.n++
+		a.fillSlot(slot, row, dcols, kbuf, seq, packed, pk)
+		a.heap = append(a.heap, slot)
+		a.pos[slot] = len(a.heap) - 1
+		a.siftUp(len(a.heap) - 1)
+		return
+	}
+	worst := a.heap[0]
+	if !a.less(kbuf, seq, worst) {
+		return
+	}
+	if a.slotPacked[worst] {
+		delete(a.byPacked, a.slotPK[worst])
+	} else {
+		delete(a.byBytes, a.slotSK[worst])
+	}
+	a.fillSlot(worst, row, dcols, kbuf, seq, packed, pk)
+	a.siftDown(0)
+}
+
+func (a *argminTopK) fillSlot(slot int, row []value.Value, dcols []int, kbuf []value.Value, seq int, packed bool, pk uint64) {
+	for i, c := range dcols {
+		a.tuples[slot*a.width+i] = row[c]
+	}
+	copy(a.keys[slot*a.nk:(slot+1)*a.nk], kbuf)
+	a.seqs[slot] = seq
+	a.slotPacked[slot] = packed
+	if packed {
+		a.slotPK[slot] = pk
+		a.byPacked[pk] = slot
+	} else {
+		sk := string(a.dkey)
+		a.slotSK[slot] = sk
+		a.byBytes[sk] = slot
+	}
+}
+
+func (a *argminTopK) swap(i, j int) {
+	a.heap[i], a.heap[j] = a.heap[j], a.heap[i]
+	a.pos[a.heap[i]], a.pos[a.heap[j]] = i, j
+}
+
+func (a *argminTopK) siftUp(i int) {
+	for i > 0 {
+		parent := (i - 1) / 2
+		if a.cmpSlots(a.heap[i], a.heap[parent]) <= 0 {
+			return
+		}
+		a.swap(i, parent)
+		i = parent
+	}
+}
+
+func (a *argminTopK) siftDown(i int) {
+	for {
+		l := 2*i + 1
+		if l >= len(a.heap) {
+			return
+		}
+		big := l
+		if r := l + 1; r < len(a.heap) && a.cmpSlots(a.heap[r], a.heap[l]) > 0 {
+			big = r
+		}
+		if a.cmpSlots(a.heap[big], a.heap[i]) <= 0 {
+			return
+		}
+		a.swap(i, big)
+		i = big
+	}
+}
+
+// sorted returns the surviving tuples in final order.
+func (a *argminTopK) sorted() [][]value.Value {
+	idx := make([]int, a.n)
 	for i := range idx {
 		idx[i] = i
 	}
-	cmp := func(a, b int) int {
-		ka, kb := a*nk, b*nk
-		for k := range nk {
-			ord := value.OrderCmp(keys[ka+k], keys[kb+k])
-			if desc[k] {
-				ord = -ord
-			}
-			if ord != 0 {
-				return ord
-			}
-		}
-		return seqs[a] - seqs[b]
+	slices.SortFunc(idx, a.cmpSlots)
+	out := make([][]value.Value, a.n)
+	for i, s := range idx {
+		out[i] = a.tuples[s*a.width : s*a.width+a.width : s*a.width+a.width]
 	}
-	if bound < len(idx) {
-		idx = topKIdx(idx, bound, cmp)
-	}
-	slices.SortFunc(idx, cmp)
-	out := make([][]value.Value, len(idx))
-	for i, j := range idx {
-		out[i] = tuples[j]
-	}
-	return paginate(out, dst.Proj.Skip, dst.Proj.Limit), 3, true
+	return out
 }
