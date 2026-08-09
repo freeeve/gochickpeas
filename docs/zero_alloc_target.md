@@ -25,6 +25,18 @@ techniques land; cite the commit that proved the win.
 4. **Guard behavior with a result-identity oracle.** Fast paths must be
    provably output-identical to the general path; run the oracle after
    every step.
+5. **Census the structure; don't derive its cost from the code.** Make a
+   memo/cache report its own numbers at teardown (keys, stored entries,
+   hits) -- an allocation total says HOW MANY, only the structure's
+   numbers say WHICH, and they surface facts no reading produces (the
+   rustychickpeas tail-memo pass made four confident wrong attributions
+   from the build loop before `comps == keys` ended it in one step;
+   their 4916766/b7544f3). Our counter oracles (semijoinSetBuilds,
+   colAggFired, topkPayloadBuilds, interpPinned) are this discipline in
+   test form. Corollary from the same pass: a futility/eviction
+   heuristic must measure YIELD, not hits -- a memo with one entry per
+   key looks productive by hit count while amortizing nothing. (Audited
+   2026-08-08: no hit-based futility heuristic exists in this engine.)
 
 ## Where Go allocates, and what to do about it
 
@@ -57,6 +69,17 @@ lookups). Cures, roughly in order of effort:
 - **Dense slabs over a known index**: if the key universe is small and
   enumerable up front, index it once (sorted keys, position = dense
   index) and count into `[]int64` slabs merged by vector add.
+- **The probe path owns nothing.** A cache read more often than written
+  must build its key in reused scratch and probe without allocating;
+  owning (copying) the key is an insert-path cost only. The `m[string(b)]`
+  read elision covers exactly the single-byte-slice-key case -- a struct
+  key, a `Sprintf`-assembled key, or probing `map[[N]byte]V` through a
+  slice all allocate per probe, invisibly (rustychickpeas measured 1.00
+  alloc/row from exactly this on their tail memo, 4916766). Audited here
+  2026-08-08: the hot probes are already in this shape -- hash-join
+  `tables[string(keyBuf)]` (reused scratch, copy paid on insert only),
+  `constCalls` keyed by AST pointer, `ByteMap`/`U64Map` probing raw
+  bytes/ints through flat tables.
 - **Map-of-bucket-slices → intrusive chains behind a flat probe table**:
   `m[k] = append(m[k], idx)` pays a first-append allocation per distinct
   key plus a growth ladder per bucket. Give each stored row a `next
