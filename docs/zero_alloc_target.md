@@ -45,6 +45,15 @@ techniques land; cite the commit that proved the win.
    their fifth wrong code-shape attribution in that arc, our
    mutation-of-an-untraveled-branch in task 254 is the same failure
    from the test side).
+7. **Audit a differential battery PER FIXTURE against the injection, not
+   as a whole.** A battery "fails under injection" while individual
+   fixtures pass vacuously: a small LIMIT over a stable top can retain
+   identical rows with the streamed path broken (both engines hit this
+   independently on the same day -- their tie-heavy guard, our
+   wrapper-key LIMIT 4 fixture, fixed in 5ca0a6c by widening the bound
+   until the injected fault intersects the retained set). List which
+   fixtures diverge under the injection; a fixture that cannot fail
+   guards nothing.
 
 ## Where Go allocates, and what to do about it
 
