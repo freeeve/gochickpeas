@@ -92,10 +92,11 @@ func TestFusionSubstArms(t *testing.T) {
 	g := buildFixture(t)
 	// The fused alias flows through CASE / IN / list / IS NULL / label
 	// tests; a Prop on a renamed bare variable rewrites; ORDER BY keys
-	// substitute too.
+	// substitute too. The aggregate lives in the terminal RETURN, so the
+	// trailing-projection fusion collapses the whole part to one segment.
 	p := mustPlan(t, g, "MATCH (m:Message) RETURN m AS msg, m.len AS l NEXT RETURN msg.len AS ml, CASE WHEN l IN [10, 20] THEN 1 ELSE 0 END AS flag, count(*) AS n ORDER BY ml")
-	if got := len(p.Branches[0]); got != 2 {
-		t.Fatalf("segments = %d, want the rename fused into the aggregate", got)
+	if got := len(p.Branches[0]); got != 1 {
+		t.Fatalf("segments = %d, want the rename fused into the terminal aggregate", got)
 	}
 	// A Prop over a computed (non-variable) alias abandons the fusion.
 	p = mustPlan(t, g, "MATCH (m:Message) RETURN {k: m.len} AS obj NEXT RETURN obj.k AS v, count(*) AS n NEXT RETURN v, n")

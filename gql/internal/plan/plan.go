@@ -98,7 +98,8 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	// distinct relationships (ISO GQL's DIFFERENT EDGES default).
 	scope := uint32(0)
 
-	for _, clause := range fuseProjectionBeforeAggregate(part.Clauses) {
+	clauses, retProj := fuseTrailingProjectionIntoRet(fuseProjectionBeforeAggregate(part.Clauses), part.Ret)
+	for _, clause := range clauses {
 		switch c := clause.(type) {
 		case *ast.Match:
 			// Comma-separated patterns bind sequentially; the clause WHERE
@@ -133,7 +134,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 			segments = append(segments, seg)
 		}
 	}
-	seg, err := buildSegment(cur, part.Ret, nil, inCols, g, pc)
+	seg, err := buildSegment(cur, retProj, nil, inCols, g, pc)
 	if err != nil {
 		return nil, nil, err
 	}

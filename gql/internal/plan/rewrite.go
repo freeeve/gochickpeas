@@ -239,6 +239,33 @@ func inlineProjection(proj *ast.Projection, where ast.Expr, subst map[string]ast
 	return &ast.With{Proj: out, Where: outWhere}, true
 }
 
+// fuseTrailingProjectionIntoRet folds a final pure-projection boundary
+// into an AGGREGATING terminal RETURN -- the case the clause-list fusion
+// cannot see, because the terminal projection is not a clause. Same
+// license as the clause fusion (plain 1:1 map, total substitution), same
+// fail-open posture. Returns the possibly-shortened clause list and the
+// projection to plan the terminal segment with; the caller's part is
+// never mutated (the adaptive sibling rebuild re-plans the same AST).
+func fuseTrailingProjectionIntoRet(clauses []ast.Clause, ret ast.Projection) ([]ast.Clause, ast.Projection) {
+	n := len(clauses)
+	if n == 0 || !projectionIsAggregated(&ret) {
+		return clauses, ret
+	}
+	w, ok := clauses[n-1].(*ast.With)
+	if !ok || w.Where != nil {
+		return clauses, ret
+	}
+	subst, pure := pureProjectionSubst(&w.Proj)
+	if !pure {
+		return clauses, ret
+	}
+	fused, okf := inlineProjection(&ret, nil, subst)
+	if !okf {
+		return clauses, ret
+	}
+	return clauses[:n-1], fused.Proj
+}
+
 // fuseProjectionBeforeAggregate fuses a pure-projection boundary followed
 // by an aggregating boundary into the aggregate, so the streaming
 // aggregator folds matched rows without materializing the projected set.

@@ -408,6 +408,92 @@ func conjunctHomes(p *Plan) (specs, filters int) {
 	return specs, filters
 }
 
+// TestFuseTrailingProjectionIntoRet drives the terminal-RETURN arm of the
+// fusion: a pure projection boundary directly before an aggregating final
+// RETURN folds into it, substituting item, ORDER BY, and alias references,
+// without mutating the caller's part (the adaptive sibling rebuild re-plans
+// the same AST).
+func TestFuseTrailingProjectionIntoRet(t *testing.T) {
+	q, err := parser.Parse("MATCH (n:N) RETURN n.flag AS f, n.size AS s NEXT RETURN f, count(s) AS c ORDER BY f DESC LIMIT 5")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	part := q.Parts[0]
+	clauses, ret := fuseTrailingProjectionIntoRet(part.Clauses, part.Ret)
+	if len(clauses) != len(part.Clauses)-1 {
+		t.Fatalf("terminal fusion did not fire: %d clauses -> %d", len(part.Clauses), len(clauses))
+	}
+	byAlias := map[string]ast.Expr{}
+	for _, it := range ret.Items {
+		byAlias[it.Alias] = it.Expr
+	}
+	if p, isProp := byAlias["f"].(*ast.Prop); !isProp || p.Var != "n" || p.Key != "flag" {
+		t.Fatalf("fused item f = %+v, want Prop(n.flag)", byAlias["f"])
+	}
+	fn, isFunc := byAlias["c"].(*ast.Func)
+	if !isFunc || len(fn.Args) != 1 {
+		t.Fatalf("fused item c = %+v, want count(...)", byAlias["c"])
+	}
+	if p, isProp := fn.Args[0].(*ast.Prop); !isProp || p.Var != "n" || p.Key != "size" {
+		t.Fatalf("aggregate arg = %+v, want Prop(n.size)", fn.Args[0])
+	}
+	if len(ret.OrderBy) != 1 {
+		t.Fatalf("ORDER BY lost: %+v", ret.OrderBy)
+	}
+	if p, isProp := ret.OrderBy[0].Expr.(*ast.Prop); !isProp || p.Var != "n" || p.Key != "flag" {
+		t.Fatalf("ORDER BY key = %+v, want Prop(n.flag)", ret.OrderBy[0].Expr)
+	}
+	if !ret.OrderBy[0].Desc || ret.Limit == nil {
+		t.Fatalf("ORDER BY/LIMIT modifiers lost: %+v limit=%v", ret.OrderBy[0], ret.Limit)
+	}
+	// Non-destructive: the part's own Ret still references the aliases.
+	for _, it := range part.Ret.Items {
+		if it.Alias == "c" {
+			if v, isVar := it.Expr.(*ast.Func).Args[0].(*ast.Var); !isVar || v.Name != "s" {
+				t.Fatalf("part.Ret was mutated: count arg = %+v", it.Expr.(*ast.Func).Args[0])
+			}
+		}
+	}
+}
+
+// TestFuseTrailingProjectionIntoRetDeclines pins the guard conditions: no
+// fusion for a non-aggregating RETURN, a star boundary, a filtered boundary,
+// or an impure (ordered) boundary. Each must return the input unchanged.
+func TestFuseTrailingProjectionIntoRetDeclines(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+	}{
+		{"non-aggregating ret", "MATCH (n:N) RETURN n.flag AS f NEXT RETURN f"},
+		{"star boundary", "MATCH (n:N) RETURN * NEXT RETURN count(n) AS c"},
+		{"ordered boundary", "MATCH (n:N) RETURN n.flag AS f ORDER BY f NEXT RETURN count(f) AS c"},
+		{"limited boundary", "MATCH (n:N) RETURN n.flag AS f LIMIT 3 NEXT RETURN count(f) AS c"},
+	} {
+		q, err := parser.Parse(tc.query)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		part := q.Parts[0]
+		clauses, ret := fuseTrailingProjectionIntoRet(part.Clauses, part.Ret)
+		if len(clauses) != len(part.Clauses) {
+			t.Errorf("%s: fusion fired (%d clauses -> %d), must decline", tc.name, len(part.Clauses), len(clauses))
+		}
+		if len(ret.Items) != len(part.Ret.Items) {
+			t.Errorf("%s: ret rewritten despite decline", tc.name)
+		}
+	}
+	// A filtered boundary (With.Where != nil) has no surface form ending in
+	// NEXT here, so build it directly.
+	w := &ast.With{
+		Proj:  ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Prop{Var: "n", Key: "flag"}, Alias: "f"}}},
+		Where: &ast.IsNull{Expr: &ast.Var{Name: "f"}, Negated: true},
+	}
+	ret := ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Func{Name: "count", Args: []ast.Expr{&ast.Var{Name: "f"}}}, Alias: "c"}}}
+	clauses, _ := fuseTrailingProjectionIntoRet([]ast.Clause{w}, ret)
+	if len(clauses) != 1 {
+		t.Error("filtered boundary: fusion fired, must decline (the filter would be dropped)")
+	}
+}
+
 // TestSubstExprFailsClosed asserts the fusion substitution's safety
 // invariant over every ast.Expr kind (task 231): substExpr either rewrites
 // an expression completely -- no free reference to the inlined alias

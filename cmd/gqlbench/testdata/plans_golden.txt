@@ -158,9 +158,7 @@ Segment 1
 Segment 2
   Argument (person)
   Expand (person)-[:KNOWS]-(friend)
-  Project [person, score, friendScore]
-Segment 3
-  Aggregate (group=[person.id, score]; sum(friendScore))
+  Aggregate (group=[person.id, score]; sum(100 * COUNT {…} + COUNT {…}))
   OrderBy [score + friendsScore DESC, person.id]
   Limit 100
 
