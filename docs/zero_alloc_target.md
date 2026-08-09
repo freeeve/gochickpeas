@@ -110,6 +110,15 @@ lookups). Cures, roughly in order of effort:
 - **Tiny-slice arguments**: `f([]T{x})` allocates per call. Keep a
   `[1]T` field on the (single-owner, non-concurrent) struct and pass
   `buf[:]` (76f64a2).
+- **`append(s[:0], make([]T, n)...)` is the zero-alloc grow-and-zero
+  reset**, not an allocation: the compiler's extend-slice optimization
+  zeroes in place without materializing the temp (verified by
+  measurement on genMatches' entry buffers -- <0.5 allocs/row over
+  2,000 per-row calls, pinned by
+  TestGenMatchesEntryScratchDoesNotAllocPerRow). The Rust analog
+  (fresh Vec per call) IS a per-call allocation, so cross-engine ports
+  of this shape must not assume the trap transfers -- nor "fix" the Go
+  idiom into an equivalent by hand.
 - **Per-node scratch on compiled trees**: a tree evaluated sequentially
   and never shared across goroutines can carry its own argument buffer --
   but only after auditing that no callee *retains* the slice (20fb310).

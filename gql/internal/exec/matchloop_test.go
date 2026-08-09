@@ -1,13 +1,63 @@
 package exec
 
 import (
+	"runtime"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 )
+
+// TestGenMatchesEntryScratchDoesNotAllocPerRow pins the
+// once-per-call-is-per-row trap: a chained MATCH stage calls genMatches
+// once per pushed row, so its entry-time level buffers (pos, uniqPushed,
+// swept) must reset by reuse, not by make -- the pre-fix form cost three
+// allocations per incoming row. 2,000 rows through a second stage must
+// stay far under one alloc per row for the whole execution.
+func TestGenMatchesEntryScratchDoesNotAllocPerRow(t *testing.T) {
+	const nRows = 2000
+	b := chickpeas.NewBuilder(nRows+8, nRows+8)
+	for i := 0; i < nRows; i++ {
+		a, err := b.AddNode("A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := b.AddNode("C")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.AddRel(a, c, "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(b.Finalize())
+	ctx := &eval.Ctx{G: g}
+	q, err := parser.Parse("MATCH (a:A) MATCH (a)-[:R]->(c:C) RETURN count(*) AS n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() {
+		if _, err := Execute(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run() // warm: lazy caches, scratch growth
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	run()
+	runtime.ReadMemStats(&after)
+	if allocs := after.Mallocs - before.Mallocs; allocs > nRows/2 {
+		t.Fatalf("warm run allocated %d times over %d chained rows -- entry scratch is allocating per row", allocs, nRows)
+	}
+}
 
 // capabilityGraph builds two disjoint R edges (0->1, 2->3) so R is
 // functional outgoing (each source has at most one) but not a collapsible
