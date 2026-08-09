@@ -37,6 +37,14 @@ techniques land; cite the commit that proved the win.
    heuristic must measure YIELD, not hits -- a memo with one entry per
    key looks productive by hit count while amortizing nothing. (Audited
    2026-08-08: no hit-based futility heuristic exists in this engine.)
+6. **Census the PATH before the payload: a zero delta means you changed
+   unreachable code.** When a measured fix produces exactly no change,
+   the narrow reading is that the workload runs a different branch --
+   one print per candidate path settles it in a run (rustychickpeas
+   3d4aba7 landed a real sort fix in a sort the queries never executed;
+   their fifth wrong code-shape attribution in that arc, our
+   mutation-of-an-untraveled-branch in task 254 is the same failure
+   from the test side).
 
 ## Where Go allocates, and what to do about it
 
