@@ -32,17 +32,24 @@ type rowSink interface {
 const arenaChunkValues = 16384
 
 // rowArena bump-allocates fixed-width rows out of large chunks, so
-// retaining n rows costs n/chunk allocations instead of n.
+// retaining n rows costs n/chunk allocations instead of n. A sink that
+// knows its retention is bounded sets chunkValues so a small bound does
+// not pay a full-size chunk.
 type rowArena struct {
-	width int
-	chunk []value.Value
-	off   int
+	width       int
+	chunkValues int // chunk size in values; 0 means arenaChunkValues
+	chunk       []value.Value
+	off         int
 }
 
 // alloc returns the next zeroed width-wide row.
 func (a *rowArena) alloc() []value.Value {
 	if a.off+a.width > len(a.chunk) {
-		n := max(arenaChunkValues, a.width)
+		cv := a.chunkValues
+		if cv == 0 {
+			cv = arenaChunkValues
+		}
+		n := max(cv, a.width)
 		a.chunk = make([]value.Value, n)
 		a.off = 0
 	}

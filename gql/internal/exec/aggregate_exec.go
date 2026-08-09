@@ -7,6 +7,7 @@ package exec
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -14,6 +15,15 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
+)
+
+// aggTopkBuilds counts group rows materialized on the aggregated bounded
+// ORDER BY + LIMIT path (the streaming-selection analogue of
+// topkPayloadBuilds); disableAggTopk pins differential tests to the
+// materialize-everything-then-sort path.
+var (
+	aggTopkBuilds  int
+	disableAggTopk bool
 )
 
 // update routes one matched row into its group. Bare-variable key tuples
@@ -132,51 +142,114 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	for i, p := range proj.Post {
 		postC[i] = compileEval(ctx, p.Expr, postSlots)
 	}
+	stride := nCols + proj.NHidden
+	// The streamed path only pays off when groups can actually be
+	// rejected; at nGroups <= bound it would build every row anyway, plus
+	// heap bookkeeping the plain sort does not have.
+	if bound := orderBound(proj); bound >= 0 && bound < a.nGroups && len(proj.OrderBy) > 0 && !proj.Distinct && !disableAggTopk {
+		return a.finalizeTopK(ctx, proj, slots, postC, postSlots, nCols, stride, bound)
+	}
 	// One arena backs every output row instead of a make per group: a
 	// grouping over a million groups then pays one large allocation plus its
 	// row-header slice, not a million small ones. Each row is a stride
 	// window (nCols visible columns + the hidden accumulator slots the
 	// post-wrappers read); only the visible prefix is published.
-	stride := nCols + proj.NHidden
 	arena := make([]value.Value, a.nGroups*stride)
 	out := make([][]value.Value, 0, a.nGroups)
 	for idx := 0; idx < a.nGroups; idx++ {
 		row := arena[idx*stride : idx*stride+stride : idx*stride+stride]
-		keys := a.keysOf(idx)
-		for k, gi := range proj.GroupIdx {
-			row[gi] = keys[k]
-		}
-		states := a.statesOf(idx)
-		var mm []value.Value
-		if a.hasMinMax {
-			mm = a.mmOf(idx)
-		}
-		var items [][]value.Value
-		if a.hasCollect {
-			items = a.itemsOf(idx)
-		}
-		for j := range proj.Aggs {
-			switch a.kinds[j] {
-			case plan.AggMin, plan.AggMax:
-				// A null slot means no non-null arg was seen -> Null.
-				row[proj.Aggs[j].OutIdx] = mm[j]
-			case plan.AggCollect:
-				row[proj.Aggs[j].OutIdx] = value.List(items[j])
-			case plan.AggPercentileCont, plan.AggPercentileDisc:
-				row[proj.Aggs[j].OutIdx] = percentileOf(ctx, a.pctC[j], items[j], a.kinds[j] == plan.AggPercentileCont)
-			default:
-				row[proj.Aggs[j].OutIdx] = states[j].finalize()
-			}
-		}
-		for i, p := range proj.Post {
-			row[p.Col] = postC[i].Eval(ctx, row, postSlots)
-		}
+		a.emitGroup(ctx, proj, idx, row, postC, postSlots)
 		out = append(out, row[:nCols])
 	}
 	if len(proj.OrderBy) > 0 {
 		out = sortRowsByOrder(ctx, proj, slots, func(int) []value.Value { return nil }, 0, out)
 	}
 	return paginate(out, proj.Skip, proj.Limit)
+}
+
+// emitGroup assembles group idx's output row into row (stride wide: the
+// visible columns plus the hidden accumulator slots the post-aggregation
+// wrappers read).
+func (a *aggregator) emitGroup(ctx *eval.Ctx, proj *plan.ProjPlan, idx int, row []value.Value, postC []RowEval, postSlots map[string]int) {
+	keys := a.keysOf(idx)
+	for k, gi := range proj.GroupIdx {
+		row[gi] = keys[k]
+	}
+	states := a.statesOf(idx)
+	var mm []value.Value
+	if a.hasMinMax {
+		mm = a.mmOf(idx)
+	}
+	var items [][]value.Value
+	if a.hasCollect {
+		items = a.itemsOf(idx)
+	}
+	for j := range proj.Aggs {
+		switch a.kinds[j] {
+		case plan.AggMin, plan.AggMax:
+			// A null slot means no non-null arg was seen -> Null.
+			row[proj.Aggs[j].OutIdx] = mm[j]
+		case plan.AggCollect:
+			row[proj.Aggs[j].OutIdx] = value.List(items[j])
+		case plan.AggPercentileCont, plan.AggPercentileDisc:
+			row[proj.Aggs[j].OutIdx] = percentileOf(ctx, a.pctC[j], items[j], a.kinds[j] == plan.AggPercentileCont)
+		default:
+			row[proj.Aggs[j].OutIdx] = states[j].finalize()
+		}
+	}
+	for i, p := range proj.Post {
+		row[p.Col] = postC[i].Eval(ctx, row, postSlots)
+	}
+}
+
+// finalizeTopK is finalize's bounded ORDER BY + LIMIT path: each group
+// finalizes into a reused stride-wide scratch, its key vector is
+// evaluated exactly as sortRowsByOrder would (output column, else the
+// key expression over the finalized row under the column scope), and
+// only rows the bounded accumulator would admit are copied out -- so at
+// most bound group rows materialize instead of all of them, and the
+// full-width sort decoration never exists. Selection equals
+// sort-then-truncate by topKRows's total order (keys, then group
+// arrival, matching the sort's index tiebreak).
+func (a *aggregator) finalizeTopK(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, postC []RowEval, postSlots map[string]int, nCols, stride, bound int) [][]value.Value {
+	nk := len(proj.OrderBy)
+	colIdx := make([]int, nk)
+	for k := range proj.OrderBy {
+		colIdx[k] = plan.OrderColIndex(proj.OrderBy[k].Expr, proj.Columns, proj.Returns)
+	}
+	scope := make(map[string]int, len(slots)+len(proj.Columns))
+	maps.Copy(scope, slots)
+	for i, c := range proj.Columns {
+		scope[c] = i
+	}
+	topk := newTopKRows(bound, nk, proj.OrderBy)
+	scratch := make([]value.Value, stride)
+	kbuf := make([]value.Value, nk)
+	// Retention is bounded (plus eviction turnover), so size chunks to the
+	// bound instead of paying a full-size chunk for a small LIMIT.
+	arena := rowArena{width: nCols, chunkValues: min(arenaChunkValues, max(64, 2*bound)*nCols)}
+	for idx := 0; idx < a.nGroups; idx++ {
+		clear(scratch)
+		a.emitGroup(ctx, proj, idx, scratch, postC, postSlots)
+		for k := range proj.OrderBy {
+			if ci := colIdx[k]; ci >= 0 {
+				kbuf[k] = scratch[ci]
+			} else {
+				kbuf[k] = eval.Eval(ctx, proj.OrderBy[k].Expr, scratch[:nCols], scope)
+			}
+		}
+		if !topk.wouldAccept(kbuf) {
+			topk.seq++ // rejected offers still order future arrivals
+			continue
+		}
+		aggTopkBuilds++
+		out := arena.alloc()
+		copy(out, scratch[:nCols])
+		if !topk.offer(kbuf, out) {
+			arena.rollback()
+		}
+	}
+	return paginate(topk.sorted(), proj.Skip, proj.Limit)
 }
 
 // hiddenAggName is the rewritten hidden-slot variable a post-aggregation

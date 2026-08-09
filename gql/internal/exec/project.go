@@ -271,6 +271,14 @@ func newTopKRows(bound, nk int, order []ast.SortItem) *topKRows {
 	for i := range order {
 		t.desc[i] = order[i].Desc
 	}
+	// The heap fills to bound and stays there; presizing (capped, so a
+	// huge LIMIT over few offers does not overcommit) removes the append
+	// regrowth of the three parallel arrays.
+	if pre := min(bound, 1024); pre > 0 {
+		t.keys = make([]value.Value, 0, pre*nk)
+		t.outs = make([][]value.Value, 0, pre)
+		t.seqs = make([]int, 0, pre)
+	}
 	return t
 }
 

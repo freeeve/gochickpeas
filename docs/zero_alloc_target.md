@@ -219,6 +219,25 @@ generic structure only; declines DISTINCT boundaries (would change
 count(*)) and two-level aggregation (ff0d73f + the star/fixpoint
 follow-up).
 
+### 9. Stream finalized aggregate groups through the bounded top-k
+
+When the aggregating boundary ITSELF carries ORDER BY + LIMIT, finalize
+does not need to materialize one row per group and sort: each group
+finalizes into a reused stride-wide scratch, its ORDER BY key vector
+evaluates from the scratch, and only rows the bounded heap would admit
+are copied out (wouldAccept before copy, the task 257 gate pattern). At
+most bound rows exist instead of nGroups, and the sort's full-width key
+decoration never exists. Two sizing lessons from the A/B rounds: (a) a
+bounded sink must right-size its arena chunks (rowArena.chunkValues) --
+a fixed 16K-value chunk for a LIMIT 100 sink REGRESSED bytes on cells
+with few groups until sized to the bound; (b) presize the heap's
+parallel arrays to the bound (capped) or append regrowth shows up as a
+constant ~20 allocs/run. Value-driven engagement gate, not a plan gate:
+nGroups > bound, known only at finalize. Many-groups + small LIMIT
+(expand join, group per person, LIMIT 10, sf1): 4.29 MB -> 2.13 MB per
+run (-50%); cells whose ordered aggregate has few groups are neutral by
+the gate.
+
 ## Anti-patterns and honest labels
 
 - **Don't move cost--label it.** Reusing scratch across calls is a real
