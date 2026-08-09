@@ -456,6 +456,64 @@ func TestFuseTrailingProjectionIntoRet(t *testing.T) {
 	}
 }
 
+// TestFuseProjectionLetChainClauseLevel pins the clause-level fixpoint: a
+// chain of LET boundaries before an aggregating mid-query boundary folds
+// completely, not just the boundary adjacent to the aggregate.
+func TestFuseProjectionLetChainClauseLevel(t *testing.T) {
+	q, err := parser.Parse("MATCH (n:N) LET a = n.k LET b = a LET c = n.j RETURN b, count(c) AS m NEXT RETURN b, m")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	clauses := fuseProjectionBeforeAggregate(q.Parts[0].Clauses)
+	if len(clauses) != len(q.Parts[0].Clauses)-3 {
+		t.Fatalf("LET chain did not fully fold: %d clauses -> %d", len(q.Parts[0].Clauses), len(clauses))
+	}
+	agg, isWith := clauses[len(clauses)-1].(*ast.With)
+	if !isWith || !projectionIsAggregated(&agg.Proj) {
+		t.Fatalf("last clause = %T, want the fused aggregating With", clauses[len(clauses)-1])
+	}
+	for _, it := range agg.Proj.Items {
+		switch it.Alias {
+		case "b":
+			if p, isProp := it.Expr.(*ast.Prop); !isProp || p.Var != "n" || p.Key != "k" {
+				t.Fatalf("chained alias b = %+v, want Prop(n.k)", it.Expr)
+			}
+		case "m":
+			if p, isProp := it.Expr.(*ast.Func).Args[0].(*ast.Prop); !isProp || p.Var != "n" || p.Key != "j" {
+				t.Fatalf("aggregate arg = %+v, want Prop(n.j)", it.Expr.(*ast.Func).Args[0])
+			}
+		}
+	}
+}
+
+// TestFuseTrailingProjectionLetChain pins the star arm and the fixpoint:
+// LET lowers to a star projection plus computed aliases, and chained LETs
+// stack as successive pure boundaries that all fold into an aggregating
+// terminal RETURN.
+func TestFuseTrailingProjectionLetChain(t *testing.T) {
+	q, err := parser.Parse("MATCH (n:N) LET f = n.flag LET g = f LET h = n.size RETURN g, count(h) AS c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	part := q.Parts[0]
+	clauses, ret := fuseTrailingProjectionIntoRet(part.Clauses, part.Ret)
+	if len(clauses) != len(part.Clauses)-3 {
+		t.Fatalf("LET chain did not fully fold: %d clauses -> %d", len(part.Clauses), len(clauses))
+	}
+	byAlias := map[string]ast.Expr{}
+	for _, it := range ret.Items {
+		byAlias[it.Alias] = it.Expr
+	}
+	// g -> f (second boundary) -> n.flag (first). One fold per iteration.
+	if p, isProp := byAlias["g"].(*ast.Prop); !isProp || p.Var != "n" || p.Key != "flag" {
+		t.Fatalf("chained alias g = %+v, want Prop(n.flag)", byAlias["g"])
+	}
+	fn := byAlias["c"].(*ast.Func)
+	if p, isProp := fn.Args[0].(*ast.Prop); !isProp || p.Var != "n" || p.Key != "size" {
+		t.Fatalf("aggregate arg = %+v, want Prop(n.size)", fn.Args[0])
+	}
+}
+
 // TestFuseTrailingProjectionIntoRetDeclines pins the guard conditions: no
 // fusion for a non-aggregating RETURN, a star boundary, a filtered boundary,
 // or an impure (ordered) boundary. Each must return the input unchanged.
@@ -464,9 +522,10 @@ func TestFuseTrailingProjectionIntoRetDeclines(t *testing.T) {
 		name, query string
 	}{
 		{"non-aggregating ret", "MATCH (n:N) RETURN n.flag AS f NEXT RETURN f"},
-		{"star boundary", "MATCH (n:N) RETURN * NEXT RETURN count(n) AS c"},
+		{"distinct boundary", "MATCH (n:N) RETURN DISTINCT n.flag AS f NEXT RETURN f, count(*) AS c"},
 		{"ordered boundary", "MATCH (n:N) RETURN n.flag AS f ORDER BY f NEXT RETURN count(f) AS c"},
 		{"limited boundary", "MATCH (n:N) RETURN n.flag AS f LIMIT 3 NEXT RETURN count(f) AS c"},
+		{"ordered star boundary", "MATCH (n:N) ORDER BY n.flag LIMIT 3 RETURN count(n) AS c"},
 	} {
 		q, err := parser.Parse(tc.query)
 		if err != nil {

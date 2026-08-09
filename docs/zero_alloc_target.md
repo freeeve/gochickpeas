@@ -202,6 +202,23 @@ Compressed/structured containers (bitmaps, sorted indexes) often pay
 per-insert container management. Collect keys into a plain slice, sort,
 construct once (the `nodeset.Of` fix inside 1b861e0: −63% on its caller).
 
+### 8. Fold projection boundaries into aggregates at plan level
+
+The cheapest materialization is the one the plan never emits: a pure 1:1
+projection boundary (LET, RETURN...NEXT) directly before an aggregating
+projection contributes nothing but a materialized intermediate table --
+substitute its aliases into the aggregate and drop the segment. Two
+reachability traps made the pass fire on almost nothing until fixed
+(mirroring rustychickpeas): star projections were excluded even though
+LET lowers to `*` + computed aliases (starred columns pass through and
+contribute no substitution entry), and the terminal RETURN sits outside
+the clause list, so the most common shape of all -- a binding right
+before the query's own aggregate -- was structurally unreachable. Both
+arms iterate to a fixpoint so chained LETs fold completely. Fires on
+generic structure only; declines DISTINCT boundaries (would change
+count(*)) and two-level aggregation (ff0d73f + the star/fixpoint
+follow-up).
+
 ## Anti-patterns and honest labels
 
 - **Don't move cost--label it.** Reusing scratch across calls is a real

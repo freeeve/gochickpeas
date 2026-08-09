@@ -14,10 +14,14 @@ import (
 // projection contributes when fused into the next clause: an entry per
 // computed or renamed column, keyed by alias. Identity pass-throughs
 // contribute nothing. ok=false unless the projection is a plain 1:1 map
-// (no * / DISTINCT / ORDER BY / OFFSET / LIMIT, no aggregate, every item a
-// bare variable or explicitly aliased, no duplicate output name).
+// (no DISTINCT / ORDER BY / OFFSET / LIMIT, no aggregate, every item a
+// bare variable or explicitly aliased, no duplicate output name). A star
+// projection qualifies: LET lowers to `*` plus computed aliases, the
+// starred columns pass through contributing no entry, and the binder
+// rejects an item referencing a sibling alias from the same projection,
+// so substituting each alias with its definition is exact.
 func pureProjectionSubst(proj *ast.Projection) (map[string]ast.Expr, bool) {
-	if proj.Star || proj.Distinct || len(proj.OrderBy) > 0 || proj.Skip != nil || proj.Limit != nil {
+	if proj.Distinct || len(proj.OrderBy) > 0 || proj.Skip != nil || proj.Limit != nil {
 		return nil, false
 	}
 	subst := map[string]ast.Expr{}
@@ -246,32 +250,48 @@ func inlineProjection(proj *ast.Projection, where ast.Expr, subst map[string]ast
 // fail-open posture. Returns the possibly-shortened clause list and the
 // projection to plan the terminal segment with; the caller's part is
 // never mutated (the adaptive sibling rebuild re-plans the same AST).
+// Iterates to a fixpoint: chained LETs stack as successive pure
+// boundaries, each of which folds in turn.
 func fuseTrailingProjectionIntoRet(clauses []ast.Clause, ret ast.Projection) ([]ast.Clause, ast.Projection) {
-	n := len(clauses)
-	if n == 0 || !projectionIsAggregated(&ret) {
-		return clauses, ret
+	for {
+		n := len(clauses)
+		if n == 0 || !projectionIsAggregated(&ret) {
+			return clauses, ret
+		}
+		w, ok := clauses[n-1].(*ast.With)
+		if !ok || w.Where != nil {
+			return clauses, ret
+		}
+		subst, pure := pureProjectionSubst(&w.Proj)
+		if !pure {
+			return clauses, ret
+		}
+		fused, okf := inlineProjection(&ret, nil, subst)
+		if !okf {
+			return clauses, ret
+		}
+		clauses, ret = clauses[:n-1], fused.Proj
 	}
-	w, ok := clauses[n-1].(*ast.With)
-	if !ok || w.Where != nil {
-		return clauses, ret
-	}
-	subst, pure := pureProjectionSubst(&w.Proj)
-	if !pure {
-		return clauses, ret
-	}
-	fused, okf := inlineProjection(&ret, nil, subst)
-	if !okf {
-		return clauses, ret
-	}
-	return clauses[:n-1], fused.Proj
 }
 
 // fuseProjectionBeforeAggregate fuses a pure-projection boundary followed
 // by an aggregating boundary into the aggregate, so the streaming
 // aggregator folds matched rows without materializing the projected set.
 // Conservative: fires only when the projection is a plain 1:1 map and
-// every inlined reference is safely substitutable.
+// every inlined reference is safely substitutable. Iterates to a
+// fixpoint so chained LET boundaries all fold, innermost first.
 func fuseProjectionBeforeAggregate(clauses []ast.Clause) []ast.Clause {
+	for {
+		fused := fuseProjectionBeforeAggregateOnce(clauses)
+		if len(fused) == len(clauses) {
+			return fused
+		}
+		clauses = fused
+	}
+}
+
+// fuseProjectionBeforeAggregateOnce is one left-to-right fusion sweep.
+func fuseProjectionBeforeAggregateOnce(clauses []ast.Clause) []ast.Clause {
 	out := make([]ast.Clause, 0, len(clauses))
 	for i := 0; i < len(clauses); i++ {
 		w, ok := clauses[i].(*ast.With)
