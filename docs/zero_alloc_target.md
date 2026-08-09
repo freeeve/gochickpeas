@@ -47,13 +47,19 @@ techniques land; cite the commit that proved the win.
    from the test side).
 7. **Audit a differential battery PER FIXTURE against the injection, not
    as a whole.** A battery "fails under injection" while individual
-   fixtures pass vacuously: a small LIMIT over a stable top can retain
-   identical rows with the streamed path broken (both engines hit this
-   independently on the same day -- their tie-heavy guard, our
-   wrapper-key LIMIT 4 fixture, fixed in 5ca0a6c by widening the bound
-   until the injected fault intersects the retained set). List which
-   fixtures diverge under the injection; a fixture that cannot fail
-   guards nothing.
+   fixtures pass vacuously, and two distinct mechanisms produce that
+   (one found in each engine on the same day): (a) the retained set is
+   stable under the fault -- small bounds, ties that keep the same top;
+   fixed by widening the bound until the fault intersects the retained
+   set (our wrapper-key LIMIT 4 fixture, 5ca0a6c); (b) the fixture's
+   key shares a period with the injection stride, so the fault lands
+   entirely outside the retained set at ANY bound -- widening cannot
+   fix it, the key or the stride must change (rustychickpeas' (p*7+m)%3
+   key against drop-every-third, their 7c85bca; the tell was every top
+   row in one residue class). Listing which fixtures diverge under the
+   injection catches both without knowing which one you have; a fixture
+   that cannot fail guards nothing. Write the expected diverge set into
+   the test header so adding a fixture forces a re-run.
 
 ## Where Go allocates, and what to do about it
 

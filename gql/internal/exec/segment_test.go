@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -97,5 +98,71 @@ func TestAggregateSegmentPostWhere(t *testing.T) {
 	rows = run("MATCH (a:A) RETURN a.v AS v, collect(a.v) AS all NEXT FILTER v IN all RETURN v")
 	if len(rows) != 3 {
 		t.Fatalf("membership-filtered groups = %d, want 3", len(rows))
+	}
+}
+
+// TestIdentityPassthroughMatchesGeneral is the differential for the
+// pass-through boundary fast path: each fixture runs with the identity
+// path and pinned to the general copy-through pipeline
+// (disableIdentPassthrough), and the ordered row lists must match.
+//
+// Injection-audit protocol (task 276's two degeneracy modes): re-apply a
+// drop-every-third-row injection inside the fast path and check EVERY
+// engaged fixture diverges -- a fixture can guard nothing either because
+// its retained set is stable under the fault (fix: widen the bound) or
+// because its keys share a period with the injection stride (fix: change
+// the key or the stride). Expected under that injection: all fixtures
+// with engage=true diverge. Re-run the audit when adding a fixture.
+func TestIdentityPassthroughMatchesGeneral(t *testing.T) {
+	g := colAggFixture(t)
+	// A streamable boundary fuses into its producer's segment run, so a
+	// lone no-stage segment -- the fast path's habitat -- arises when a
+	// NON-streamable boundary follows another non-streamable one. The
+	// aggregate-then-ORDER BY shapes below are exactly BI/Q4's ordering
+	// stage; the trailing identity RETURN of a query is the other
+	// single-segment run and also engages.
+	queries := []struct {
+		q      string
+		engage bool
+	}{
+		// Identity re-emit with ORDER BY after an aggregated boundary
+		// (the Q4-class ordering stage).
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN l, n ORDER BY n DESC, l NEXT RETURN l, n ORDER BY l LIMIT 500`, true},
+		// Standalone ORDER BY statement (star boundary) + pagination.
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT ORDER BY n, l SKIP 3 LIMIT 7 RETURN l, n ORDER BY l`, true},
+		// Rename-only boundary: values are the input rows verbatim.
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN l AS a, n AS c ORDER BY c DESC, a NEXT RETURN a, c ORDER BY a`, true},
+		// ORDER BY key expression over a column (not a bare column read).
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN l, n ORDER BY l % 7, n, l NEXT RETURN l, n ORDER BY l`, true},
+		// All-streamable query: every boundary fuses into one segment run,
+		// so no lone no-stage segment exists and the fast path never runs
+		// (streaming already avoids the materialization it would skip).
+		{`MATCH (m:Message) RETURN m.length AS l, m.flag AS f NEXT RETURN l, f`, false},
+		// Reordered columns are NOT identity: general path, still correct.
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN n, l ORDER BY l`, false},
+		// Computed column declines.
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN n + 1 AS n1 ORDER BY n1`, false},
+		// DISTINCT declines.
+		{`MATCH (m:Message) RETURN m.length AS l, count(*) AS n NEXT RETURN DISTINCT l ORDER BY l`, false},
+	}
+	disableColAgg = true
+	defer func() { disableColAgg = false }()
+	for i, tc := range queries {
+		before := identPassthroughs
+		fast := runOrdered(t, g, tc.q)
+		fired := identPassthroughs != before
+		disableIdentPassthrough = true
+		baseline := identPassthroughs
+		general := runOrdered(t, g, tc.q)
+		disableIdentPassthrough = false
+		if identPassthroughs != baseline {
+			t.Fatalf("query %d: disabled path still passed through (switch dead)", i)
+		}
+		if fmt.Sprint(fast) != fmt.Sprint(general) {
+			t.Errorf("query %d diverged:\nfast:    %v\ngeneral: %v", i, fast, general)
+		}
+		if fired != tc.engage {
+			t.Errorf("query %d: passthrough engagement = %v, want %v (vacuity guard)", i, fired, tc.engage)
+		}
 	}
 }

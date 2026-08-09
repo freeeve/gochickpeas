@@ -7,6 +7,8 @@
 package exec
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/explain"
@@ -29,6 +31,38 @@ type stageProfCell struct {
 	single *uint64
 }
 
+// identPassthroughs counts pass-through boundary executions (the
+// engagement oracle for the identity fast path); disableIdentPassthrough
+// pins differential tests to the general copy-through pipeline.
+var (
+	identPassthroughs       int
+	disableIdentPassthrough bool
+)
+
+// identityBoundary reports whether seg is a pure pass-through boundary:
+// no stages, non-aggregated, no DISTINCT, and output column i is a bare
+// read of input slot i for every i -- so the output rows ARE the input
+// rows, and ORDER BY / pagination / the boundary filter can run on them
+// directly instead of copying each row through the projection arena.
+func identityBoundary(seg *plan.Segment) bool {
+	if len(seg.Stages) != 0 || seg.Proj.Aggregated || seg.Proj.Distinct {
+		return false
+	}
+	if len(seg.Proj.Returns) != seg.RowWidth {
+		return false
+	}
+	for i, r := range seg.Proj.Returns {
+		v, ok := r.Expr.(*ast.Var)
+		if !ok {
+			return false
+		}
+		if s, bound := seg.Slots[v.Name]; !bound || s != i {
+			return false
+		}
+	}
+	return true
+}
+
 // runSegment runs one segment over its input rows, recording per-operator
 // produced-row counts into prof when profiling (nil = off).
 func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *explain.SegProf) [][]value.Value {
@@ -39,6 +73,35 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 		if out, n, ok := tryColumnarAggChain(ctx, []*plan.Segment{seg}, 0, inputs); ok && n == 1 {
 			return out
 		}
+	}
+	// Pass-through boundary: the inputs are the previous boundary's
+	// materialized rows (stable -- nothing downstream mutates them), so an
+	// identity projection re-emitting them row by row through the arena is
+	// pure copy cost. Sort/paginate/filter the input rows themselves.
+	if identityBoundary(seg) && !disableIdentPassthrough &&
+		(len(inputs) == 0 || len(inputs[0]) == seg.RowWidth) {
+		identPassthroughs++
+		out := inputs
+		if len(seg.Proj.OrderBy) > 0 {
+			out = sortRowsByOrder(ctx, &seg.Proj, seg.Slots, func(int) []value.Value { return nil }, 0, out)
+		}
+		out = paginate(out, seg.Proj.Skip, seg.Proj.Limit)
+		if prof != nil {
+			prof.ProjRows = uint64(len(out))
+		}
+		if seg.PostWhere != nil {
+			// applyPostWhere compacts in place; when out still aliases the
+			// caller's inputs (no sort made a fresh slice), compact a copy.
+			if len(seg.Proj.OrderBy) == 0 {
+				out = slices.Clone(out)
+			}
+			applyPostWhere(ctx, seg, &out)
+			if prof != nil {
+				n := uint64(len(out))
+				prof.PostWhereRows = &n
+			}
+		}
+		return out
 	}
 	bound := segmentBoundSlots(seg)
 	var sample []value.Value
