@@ -118,17 +118,12 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 	}
 }
 
-// finalize emits one row per group (a zeroed row for a keyless aggregate
-// over no input), applies the nested-aggregate scalar wrappers over the
-// hidden slots, then orders and paginates.
-func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) [][]value.Value {
-	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
-		a.appendGroup(nil)
-	}
+// postCompile builds the post-aggregation wrapper scope and compiled
+// evaluators: wrappers read the hidden accumulator slots as __agg{k} and
+// the grouping-key columns by name (the Rust engine's tasks/150); both
+// are filled before the wrappers run.
+func (a *aggregator) postCompile(ctx *eval.Ctx, proj *plan.ProjPlan) (map[string]int, []RowEval) {
 	nCols := len(proj.Returns)
-	// Wrappers read the hidden accumulator slots as __agg{k} and the
-	// grouping-key columns by name (the Rust engine's tasks/150); both are
-	// filled before the wrappers run.
 	postSlots := make(map[string]int, proj.NHidden+len(proj.GroupIdx))
 	for k := 0; k < proj.NHidden; k++ {
 		postSlots[hiddenAggName(k)] = nCols + k
@@ -142,6 +137,38 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	for i, p := range proj.Post {
 		postC[i] = compileEval(ctx, p.Expr, postSlots)
 	}
+	return postSlots, postC
+}
+
+// forEachGroup finalizes every group into a reused stride-wide scratch
+// and hands the visible prefix to fn -- the streaming form of finalize
+// for consumers that retain nothing per group (a keyless aggregate over
+// no input still emits its zeroed row). The row is only valid for the
+// duration of the call.
+func (a *aggregator) forEachGroup(ctx *eval.Ctx, proj *plan.ProjPlan, fn func(row []value.Value)) {
+	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
+		a.appendGroup(nil)
+	}
+	nCols := len(proj.Returns)
+	postSlots, postC := a.postCompile(ctx, proj)
+	stride := nCols + proj.NHidden
+	scratch := make([]value.Value, stride)
+	for idx := 0; idx < a.nGroups; idx++ {
+		clear(scratch)
+		a.emitGroup(ctx, proj, idx, scratch, postC, postSlots)
+		fn(scratch[:nCols])
+	}
+}
+
+// finalize emits one row per group (a zeroed row for a keyless aggregate
+// over no input), applies the nested-aggregate scalar wrappers over the
+// hidden slots, then orders and paginates.
+func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) [][]value.Value {
+	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
+		a.appendGroup(nil)
+	}
+	nCols := len(proj.Returns)
+	postSlots, postC := a.postCompile(ctx, proj)
 	stride := nCols + proj.NHidden
 	// The streamed path only pays off when groups can actually be
 	// rejected; at nGroups <= bound it would build every row anyway, plus

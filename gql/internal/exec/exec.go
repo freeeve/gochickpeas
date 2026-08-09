@@ -56,6 +56,13 @@ func runBranch(ctx *eval.Ctx, segments []*plan.Segment) [][]value.Value {
 				continue
 			}
 		}
+		// An aggregate whose ordering and DISTINCT+LIMIT live on the two
+		// following boundaries fuses to a streamed argmin selection.
+		if out, n, ok := tryOrderedDistinctTopK(ctx, segments, i, rows); ok {
+			rows = out
+			i += n
+			continue
+		}
 		j := i
 		// Runs never stream INTO a chain head: the fused pass needs its
 		// materialized seed rows.

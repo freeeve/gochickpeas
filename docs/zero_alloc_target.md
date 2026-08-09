@@ -253,6 +253,26 @@ nGroups > bound, known only at finalize. Many-groups + small LIMIT
 run (-50%); cells whose ordered aggregate has few groups are neutral by
 the gate.
 
+### 10. Ordered DISTINCT+LIMIT over an aggregate is a grouped argmin
+
+[aggregating boundary] -> [identity ORDER BY boundary] -> [DISTINCT
+column-subset + LIMIT] does not need the sort at all: DISTINCT keeps
+each tuple's FIRST row under the total order, so each tuple's effective
+position is the MINIMUM of its rows' key vectors, and the answer is a
+bounded selection over those minima. Stream the aggregate's finalized
+groups (the #9 scratch) through a per-tuple argmin, then top-k the
+minima -- the full group-row materialization, the sort decoration, and
+the sort itself never exist. Two costs to keep flat: back tuple values
+with a rowArena, and index tuple identity through the flat maps
+(packGroupKey1 -> U64Map for a packable single value, ByteMap
+otherwise) -- a Go map with string keys costs ~2 allocs per distinct
+tuple, which on BI/Q4 was a 44x allocation regression (189k/run) until
+the flat maps replaced it. Q4: 617.7 -> 339.8 MB/run (-45% on top of
+the #9+passthrough state; 1,132.9 MB two days of levers ago), allocs
++84 over baseline (amortized slab growth). Argmin tie keeps the earlier
+group sequence, matching the sort's index tiebreak, so results are
+byte-identical to sort-then-dedup-then-truncate.
+
 ## Anti-patterns and honest labels
 
 - **Don't move cost--label it.** Reusing scratch across calls is a real
