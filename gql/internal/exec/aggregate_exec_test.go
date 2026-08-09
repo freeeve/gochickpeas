@@ -125,8 +125,12 @@ func TestAggTopKMatchesSort(t *testing.T) {
 		`MATCH (m:Message) RETURN m.length AS l, count(m) AS n ORDER BY l LIMIT 7`,
 		// Non-column key expression (evaluates over the finalized row).
 		`MATCH (m:Message) RETURN m.length AS l, count(m) AS n ORDER BY l % 7, n DESC, l LIMIT 6`,
-		// Post-aggregation wrapper column as the key.
-		`MATCH (m:Message) RETURN m.length AS l, sum(m.length) / CAST(count(m) AS FLOAT) AS avgLen ORDER BY avgLen DESC, l LIMIT 4`,
+		// Post-aggregation wrapper column as the key. LIMIT 9 rather than
+		// smaller: the drop-every-third-group injection audit (task 275's
+		// lesson -- verify each fixture against the injection itself)
+		// showed a tighter bound's top rows can all survive the dropped
+		// groups, leaving this fixture unable to catch a broken stream.
+		`MATCH (m:Message) RETURN m.length AS l, sum(m.length) / CAST(count(m) AS FLOAT) AS avgLen ORDER BY avgLen DESC, l LIMIT 9`,
 		// Key ties straddling the boundary: flag has 3 values (true/false/
 		// null) but the CASE key collapses to 2, forcing equal keys at the
 		// cut; arrival order must decide identically both ways.
