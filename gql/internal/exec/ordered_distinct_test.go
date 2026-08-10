@@ -2,10 +2,41 @@ package exec
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/internal/parser"
+	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
+
+// planShape renders a one-line-per-segment sketch of q's plan for
+// engagement-failure diagnostics: when a fixture's mechanism counter
+// reads wrong, the reason is usually a plan property invisible in the
+// query text (rustychickpeas' 289 lesson -- print the plan, not the
+// query).
+func planShape(t *testing.T, g *chickpeas.Snapshot, q string) string {
+	t.Helper()
+	qq, err := parser.Parse(q)
+	if err != nil {
+		return "parse error: " + err.Error()
+	}
+	p, err := plan.Build(qq, graph.New(g))
+	if err != nil {
+		return "plan error: " + err.Error()
+	}
+	var b strings.Builder
+	for bi, segs := range p.Branches {
+		for si, seg := range segs {
+			fmt.Fprintf(&b, "branch %d seg %d: stages=%d agg=%v distinct=%v orderBy=%d limit=%v postWhere=%v\n",
+				bi, si, len(seg.Stages), seg.Proj.Aggregated, seg.Proj.Distinct,
+				len(seg.Proj.OrderBy), seg.Proj.Limit != nil, seg.PostWhere != nil)
+		}
+	}
+	return b.String()
+}
 
 // TestArgminTopKEvictionAndReentry pins the bounded accumulator's safety
 // argument directly: an evicted candidate's stale minimum is irrelevant,
@@ -115,7 +146,8 @@ func TestOrderedDistinctMatchesGeneral(t *testing.T) {
 			t.Errorf("query %d diverged:\nfused:   %v\ngeneral: %v", i, fused, general)
 		}
 		if fired != tc.engage {
-			t.Errorf("query %d: fusion engagement = %v, want %v (vacuity guard)", i, fired, tc.engage)
+			t.Errorf("query %d: fusion engagement = %v, want %v (vacuity guard)\nplan:\n%s",
+				i, fired, tc.engage, planShape(t, g, tc.q))
 		}
 	}
 }

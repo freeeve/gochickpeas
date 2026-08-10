@@ -162,7 +162,8 @@ func TestIdentityPassthroughMatchesGeneral(t *testing.T) {
 			t.Errorf("query %d diverged:\nfast:    %v\ngeneral: %v", i, fast, general)
 		}
 		if fired != tc.engage {
-			t.Errorf("query %d: passthrough engagement = %v, want %v (vacuity guard)", i, fired, tc.engage)
+			t.Errorf("query %d: passthrough engagement = %v, want %v (vacuity guard)\nplan:\n%s",
+				i, fired, tc.engage, planShape(t, g, tc.q))
 		}
 	}
 }

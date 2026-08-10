@@ -167,7 +167,8 @@ func TestAggTopKMatchesSort(t *testing.T) {
 		// bound == 1). Every other shape must engage the streamed path.
 		expectFired := i != 6 && i != 7 && i != 9
 		if fired != expectFired {
-			t.Errorf("query %d: top-k engagement = %v, want %v (vacuity guard)", i, fired, expectFired)
+			t.Errorf("query %d: top-k engagement = %v, want %v (vacuity guard)\nplan:\n%s",
+				i, fired, expectFired, planShape(t, g, q))
 		}
 	}
 }
