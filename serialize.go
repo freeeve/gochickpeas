@@ -125,6 +125,21 @@ func columnToData(c Column) rcpg.ColumnData {
 			out[i] = rcpg.I64Entry{ID: id, Val: col.vals[i]}
 		}
 		return out
+	case sparseI64NarrowCol:
+		out := make(rcpg.SparseI64, len(col.ids))
+		for i, id := range col.ids {
+			out[i] = rcpg.I64Entry{ID: id, Val: col.at(i)}
+		}
+		return out
+	case rankI64NarrowCol:
+		// Like rankI64Col: rank/select is in-memory only, serialized as
+		// the equivalent sparse column.
+		out := make(rcpg.SparseI64, 0, col.n())
+		for pos, v := range col.Entries() {
+			x, _ := v.I64()
+			out = append(out, rcpg.I64Entry{ID: pos, Val: x})
+		}
+		return out
 	case sparseF64Col:
 		out := make(rcpg.SparseF64, len(col.ids))
 		for i, id := range col.ids {
@@ -191,6 +206,9 @@ func dataToColumn(data rcpg.ColumnData) Column {
 		col := sparseI64Col{ids: make([]uint32, len(d)), vals: make([]int64, len(d))}
 		for i, e := range d {
 			col.ids[i], col.vals[i] = e.ID, e.Val
+		}
+		if nv, ok := narrowI64Vals(col.vals); ok {
+			return sparseI64NarrowCol{ids: col.ids, narrowI64Vec: nv}
 		}
 		return col
 	case rcpg.SparseF64:

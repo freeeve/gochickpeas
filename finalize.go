@@ -119,7 +119,13 @@ func columnFromPairsI64(pairs []i64Pair, span int) Column {
 		ids[i], vals[i] = p.id, p.val
 	}
 	if rankSelectWorth(span, len(pairs), 64, 16) {
+		if nv, ok := narrowI64Vals(vals); ok {
+			return rankI64NarrowCol{rankIndex: buildRankIndex(ids, span), narrowI64Vec: nv}
+		}
 		return rankI64Col{rankIndex: buildRankIndex(ids, span), vals: vals}
+	}
+	if nv, ok := narrowI64Vals(vals); ok {
+		return sparseI64NarrowCol{ids: ids, narrowI64Vec: nv}
 	}
 	return sparseI64Col{ids: ids, vals: vals}
 }

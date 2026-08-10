@@ -90,6 +90,89 @@ func TestNarrowI64ColumnClasses(t *testing.T) {
 	}
 }
 
+// TestNarrowI64SparseAndRank pins the narrow value store under the sparse
+// and rank layouts: columnFromPairsI64 narrows their value arrays when the
+// span fits, and Get/Entries/valueAtSlot/serialization read back the exact
+// values the wide layouts would.
+func TestNarrowI64SparseAndRank(t *testing.T) {
+	// Sparse: gappy positions (every 40th) over a wide span defeat the
+	// dense and rank thresholds; values sit in a u16 range.
+	n := narrowI64MinLen + 5
+	ids := make([]uint32, n)
+	pairs := make([]i64Pair, n)
+	for i := range n {
+		ids[i] = uint32(i * 40)
+		pairs[i] = i64Pair{id: ids[i], val: 7_000 + int64(i%900)}
+	}
+	span := int(ids[n-1]) + 1
+	col := columnFromPairsI64(pairs, span)
+	sn, ok := col.(sparseI64NarrowCol)
+	if !ok {
+		t.Fatalf("sparse fixture built %T, want sparseI64NarrowCol", col)
+	}
+	if sn.w != 2 {
+		t.Fatalf("sparse narrow width = %d, want 2", sn.w)
+	}
+	for i := range n {
+		v, present := col.Get(ids[i])
+		if !present {
+			t.Fatalf("sparse Get(%d) absent", ids[i])
+		}
+		if got, _ := v.I64(); got != pairs[i].val {
+			t.Fatalf("sparse Get(%d) = %d, want %d", ids[i], got, pairs[i].val)
+		}
+		sv, present := valueAtSlot(col, uint32(i))
+		if got, _ := sv.I64(); !present || got != pairs[i].val {
+			t.Fatalf("valueAtSlot(%d) = (%d, %v), want (%d, true)", i, got, present, pairs[i].val)
+		}
+	}
+	if _, present := col.Get(1); present {
+		t.Fatal("sparse Get on absent position reported present")
+	}
+	if !isSparse(col) {
+		t.Fatal("sparseI64NarrowCol not classified sparse (posIndex path)")
+	}
+	back := dataToColumn(columnToData(col))
+	if _, ok := back.(sparseI64NarrowCol); !ok {
+		t.Fatalf("sparse round trip lost narrowing: %T", back)
+	}
+	for i := range n {
+		v, _ := back.Get(ids[i])
+		if got, _ := v.I64(); got != pairs[i].val {
+			t.Fatalf("sparse round trip Get(%d) = %d, want %d", ids[i], got, pairs[i].val)
+		}
+	}
+
+	// Rank: the layout needs span >= 1M (rankSelectMinLen) with presence
+	// dense enough that presence bits + values beat sparse pairs
+	// (span <= 64*present); every 8th position over 1.6M qualifies.
+	rn := 200_000
+	rpairs := make([]i64Pair, rn)
+	for i := range rn {
+		rpairs[i] = i64Pair{id: uint32(i * 8), val: int64(i % 250)}
+	}
+	rcol := columnFromPairsI64(rpairs, rn*8)
+	rk, ok := rcol.(rankI64NarrowCol)
+	if !ok {
+		t.Fatalf("rank fixture built %T, want rankI64NarrowCol", rcol)
+	}
+	if rk.w != 1 {
+		t.Fatalf("rank narrow width = %d, want 1", rk.w)
+	}
+	for i := 0; i < rn; i += 97 {
+		v, present := rcol.Get(uint32(i * 8))
+		if !present {
+			t.Fatalf("rank Get(%d) absent", i*8)
+		}
+		if got, _ := v.I64(); got != int64(i%250) {
+			t.Fatalf("rank Get(%d) = %d, want %d", i*8, got, i%250)
+		}
+	}
+	if _, present := rcol.Get(1); present {
+		t.Fatal("rank Get on absent position reported present")
+	}
+}
+
 // TestNarrowI64SerializeRoundTrip pins that a narrowed column serializes
 // width-agnostically (logical values) and re-narrows on load with values
 // intact.
