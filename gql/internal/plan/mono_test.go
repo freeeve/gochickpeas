@@ -338,27 +338,6 @@ func TestCrossSegmentMonoPushdown(t *testing.T) {
 	}
 }
 
-func TestProjectionFusionFires(t *testing.T) {
-	g := buildFixture(t)
-	// RETURN..NEXT (pure, aliased) then RETURN..NEXT (aggregating): the
-	// pure projection inlines into the aggregate, saving a segment.
-	p := mustPlan(t, g, "MATCH (m:Message) RETURN m.len / 50 AS bucket NEXT RETURN bucket, count(*) AS n NEXT RETURN n ORDER BY n")
-	if got := len(p.Branches[0]); got != 2 {
-		t.Fatalf("segments = %d, want 2 (the pure projection fused into the aggregate)", got)
-	}
-	agg := p.Branches[0][0].Proj
-	if !agg.Aggregated {
-		t.Fatal("first segment should aggregate after fusion")
-	}
-	// The group key is the inlined m.len / 50, still named bucket.
-	if agg.Columns[0] != "bucket" {
-		t.Fatalf("columns = %v", agg.Columns)
-	}
-	if _, ok := agg.Returns[0].Expr.(*ast.Binary); !ok {
-		t.Fatalf("group expr = %T, want the inlined division", agg.Returns[0].Expr)
-	}
-}
-
 func TestReorderKeepsCorrelatedWhereAfterBinding(t *testing.T) {
 	g := buildFixture(t)
 	// The selective seek pattern's WHERE correlates on b (bound by the

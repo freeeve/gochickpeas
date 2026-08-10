@@ -50,6 +50,30 @@ func TestFuseProjectionKeepsPostfixPredicate(t *testing.T) {
 	}
 }
 
+// TestProjectionFusionFires drives the clause-level fusion through the
+// full planner (moved from mono_test.go, which it never belonged to): a
+// pure aliased RETURN..NEXT before an aggregating boundary inlines into
+// the aggregate, saving a segment and keeping the alias as the group
+// column name.
+func TestProjectionFusionFires(t *testing.T) {
+	g := buildFixture(t)
+	p := mustPlan(t, g, "MATCH (m:Message) RETURN m.len / 50 AS bucket NEXT RETURN bucket, count(*) AS n NEXT RETURN n ORDER BY n")
+	if got := len(p.Branches[0]); got != 2 {
+		t.Fatalf("segments = %d, want 2 (the pure projection fused into the aggregate)", got)
+	}
+	agg := p.Branches[0][0].Proj
+	if !agg.Aggregated {
+		t.Fatal("first segment should aggregate after fusion")
+	}
+	// The group key is the inlined m.len / 50, still named bucket.
+	if agg.Columns[0] != "bucket" {
+		t.Fatalf("columns = %v", agg.Columns)
+	}
+	if _, ok := agg.Returns[0].Expr.(*ast.Binary); !ok {
+		t.Fatalf("group expr = %T, want the inlined division", agg.Returns[0].Expr)
+	}
+}
+
 // containsAllPred reports whether e contains an all(...) list predicate.
 func containsAllPred(e ast.Expr) bool {
 	if e == nil {
