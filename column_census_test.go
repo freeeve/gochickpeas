@@ -45,6 +45,8 @@ func TestColumnWidthCensus(t *testing.T) {
 			return 2
 		case span <= 0xFFFFFFFF:
 			return 4
+		case span <= 0xFFFFFFFFFFFF:
+			return 6
 		}
 		return 8
 	}
@@ -59,6 +61,12 @@ func TestColumnWidthCensus(t *testing.T) {
 			case sparseI64Col:
 				vals = c.vals
 				extraB = int64(len(c.ids)) * 4
+			case denseI64NarrowCol:
+				// Already narrowed: report its resident size as both
+				// current and target so totals reflect the landed state.
+				rows = append(rows, row{side, name + " (narrow)", c.Len(),
+					c.min, c.min, int64(len(c.b)), int64(len(c.b))})
+				continue
 			default:
 				continue
 			}

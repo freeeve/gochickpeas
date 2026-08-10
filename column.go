@@ -69,9 +69,11 @@ func (c denseI64Col) Len() int     { return len(c) }
 
 // denseI64NarrowCol is a dense integer column whose values fit a narrow
 // byte class after a minimum offset: value = min + delta, deltas stored
-// little-endian at width w in {1, 2, 4}. Chosen at column build by
+// little-endian at width w in {1, 2, 4, 6}. Chosen at column build by
 // narrowI64Column when the range allows; reads stay O(1) and the logical
 // Dtype stays I64 (narrowing is a storage choice, never a type change).
+// The 6-byte class exists for epoch-millis timestamp columns, whose
+// offset spans sit at 37-45 bits -- past u32, far under u64.
 type denseI64NarrowCol struct {
 	min int64
 	w   uint8
@@ -85,8 +87,12 @@ func (c denseI64NarrowCol) at(pos uint32) int64 {
 		return c.min + int64(c.b[pos])
 	case 2:
 		return c.min + int64(binary.LittleEndian.Uint16(c.b[pos*2:]))
+	case 4:
+		return c.min + int64(binary.LittleEndian.Uint32(c.b[pos*4:]))
 	}
-	return c.min + int64(binary.LittleEndian.Uint32(c.b[pos*4:]))
+	i := int(pos) * 6
+	return c.min + int64(uint64(binary.LittleEndian.Uint32(c.b[i:]))|
+		uint64(binary.LittleEndian.Uint16(c.b[i+4:]))<<32)
 }
 
 func (c denseI64NarrowCol) Get(pos uint32) (Value, bool) {
@@ -139,6 +145,8 @@ func narrowI64Column(vals []int64) Column {
 		w = 2
 	case span <= 0xFFFFFFFF:
 		w = 4
+	case span <= 0xFFFFFFFFFFFF:
+		w = 6
 	default:
 		return denseI64Col(vals)
 	}
@@ -150,8 +158,11 @@ func narrowI64Column(vals []int64) Column {
 			b[i] = byte(d)
 		case 2:
 			binary.LittleEndian.PutUint16(b[i*2:], uint16(d))
-		default:
+		case 4:
 			binary.LittleEndian.PutUint32(b[i*4:], uint32(d))
+		default:
+			binary.LittleEndian.PutUint32(b[i*6:], uint32(d))
+			binary.LittleEndian.PutUint16(b[i*6+4:], uint16(d>>32))
 		}
 	}
 	return denseI64NarrowCol{min: mn, w: w, b: b}

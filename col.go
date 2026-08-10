@@ -130,8 +130,11 @@ func (c I64Col) Get(pos uint32) (int64, bool) {
 			return c.nmin + int64(c.narrow[i]), true
 		case 2:
 			return c.nmin + int64(binary.LittleEndian.Uint16(c.narrow[i:])), true
+		case 4:
+			return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
 		}
-		return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
+		return c.nmin + int64(uint64(binary.LittleEndian.Uint32(c.narrow[i:]))|
+			uint64(binary.LittleEndian.Uint16(c.narrow[i+4:]))<<32), true
 	}
 	v, ok := readIndexed(c.col, c.idx, pos)
 	if !ok {

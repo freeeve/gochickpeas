@@ -27,15 +27,18 @@ func TestNarrowI64ColumnClasses(t *testing.T) {
 		{"u8 span", mk(-40, 0xFF), "narrow1"},
 		{"u16 boundary", mk(1_000_000, 0xFFFF), "narrow2"},
 		{"u32 boundary", mk(-2_000_000_000, 0xFFFFFFFF), "narrow4"},
-		{"too wide", mk(0, 0x1_0000_0000), "dense"},
-		{"timestamps stay wide", []int64{1_263_065_046_975, 1_354_157_498_214}, "dense"},
+		{"u48 lower edge", mk(0, 0x1_0000_0000), "narrow6"},
+		{"u48 timestamps", mk(1_263_065_046_975, 91_092_451_239), "narrow6"},
+		{"u48 boundary", mk(-1_000, 0xFFFF_FFFF_FFFF), "narrow6"},
+		{"too wide", mk(0, 0x1_0000_0000_0000), "dense"},
+		{"below threshold stays plain", []int64{1_263_065_046_975, 1_354_157_498_214}, "dense"},
 		{"zero-one flags", mk(0, 1), "narrow1"},
 	}
 	for _, tc := range cases {
 		col := narrowI64Column(tc.vals)
 		class := "dense"
 		if n, ok := col.(denseI64NarrowCol); ok {
-			class = map[uint8]string{1: "narrow1", 2: "narrow2", 4: "narrow4"}[n.w]
+			class = map[uint8]string{1: "narrow1", 2: "narrow2", 4: "narrow4", 6: "narrow6"}[n.w]
 		}
 		if class != tc.wantClass {
 			t.Fatalf("%s: class = %s, want %s", tc.name, class, tc.wantClass)
