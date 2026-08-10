@@ -67,6 +67,18 @@ techniques land; cite the commit that proved the win.
    the path executes; before trusting a fixture, ask what must be EQUAL
    (or otherwise coincide) for the branch to execute and check the
    fixture actually produces that.
+8. **A ladder LOCALIZES; it does not ATTRIBUTE.** Removing a clause and
+   watching the number drop names a rung, not a mechanism: the rung may
+   move the number by CHANGING THE PLAN rather than by doing the work
+   its name suggests. rustychickpeas read a remove-the-DISTINCT delta
+   (388k allocs) as "the DISTINCT's cost"; three matched-shape
+   synthetics missing it by 178x sent them to EXPLAIN, which showed the
+   two rungs were different plans entirely (a decorrelation path vs a
+   group-join). Confirm a ladder attribution with a matched-shape
+   synthetic or a profile of the mechanism itself -- both engines' Q6
+   carry the same surface query with different dominant mechanisms
+   (their pivot decorrelation, our per-group distinct sets), so
+   Q6-lever ports in either direction are category errors.
 
 ## Where Go allocates, and what to do about it
 
