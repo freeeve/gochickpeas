@@ -59,7 +59,14 @@ techniques land; cite the commit that proved the win.
    row in one residue class). Listing which fixtures diverge under the
    injection catches both without knowing which one you have; a fixture
    that cannot fail guards nothing. Write the expected diverge set into
-   the test header so adding a fixture forces a re-run.
+   the test header so adding a fixture forces a re-run. Third mode
+   (rustychickpeas 069140c, found porting #10): the guarded branch is
+   UNREACHABLE BY CONSTRUCTION -- their tie fixture's ORDER BY tuple
+   contained the distinct column, so two tuples could never tie and the
+   tie-handling branch never ran at any bound. Modes (a) and (b) assume
+   the path executes; before trusting a fixture, ask what must be EQUAL
+   (or otherwise coincide) for the branch to execute and check the
+   fixture actually produces that.
 
 ## Where Go allocates, and what to do about it
 
@@ -271,7 +278,13 @@ the flat maps replaced it. Q4: 617.7 -> 339.8 MB/run (-45% on top of
 the #9+passthrough state; 1,132.9 MB two days of levers ago), allocs
 +84 over baseline (amortized slab growth). Argmin tie keeps the earlier
 group sequence, matching the sort's index tiebreak, so results are
-byte-identical to sort-then-dedup-then-truncate.
+byte-identical to sort-then-dedup-then-truncate. Port caveat
+(rustychickpeas 069140c): the BOUNDING argument (minima only improve,
+threshold only tightens, eviction safe) is universal, but the eviction
+COMPARATOR is not -- it must be the exact total order the engine's
+unbounded path finally sorts by. Ours is (keys, arrival sequence);
+theirs breaks ties by key values, and rank-only eviction there admits a
+wrong set whenever more than bound tuples share a rank.
 
 ## Anti-patterns and honest labels
 

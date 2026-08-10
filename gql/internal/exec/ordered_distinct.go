@@ -156,7 +156,11 @@ func tryOrderedDistinctTopK(ctx *eval.Ctx, segs []*plan.Segment, at int, inputs 
 
 // argminTopK is the bounded per-tuple argmin accumulator: at most bound
 // distinct tuples are tracked, each with its best (minimum) key vector
-// and that row's sequence under the sort's total order.
+// and that row's sequence under the sort's total order. The comparator
+// must be EXACTLY the total order the unbounded path sorts by -- here
+// (keys, then group arrival sequence, sortRowsByOrder's index tiebreak);
+// an engine whose sort breaks ties differently must swap the comparator
+// or bounded selection admits a different set than sort-then-truncate.
 type argminTopK struct {
 	bound, nk, width int
 	desc             []bool
