@@ -13,6 +13,13 @@ import (
 // would fit, and the projected saving -- the measured ground for a
 // narrow-column representation decision. Skips unless CENSUS_RCPG is set.
 //
+// The walk MUST enumerate the storage maps (g.columns/g.relColumns), one
+// entry per property key -- never labels: under a type hierarchy a
+// label-based walk counts one shared column once per subtype, and for
+// LDBC the double-counted column (Message.length via Post and Comment)
+// is precisely the largest narrowable one (rustychickpeas hit this
+// porting the method; their first total was 2x on that column).
+//
 //	CENSUS_RCPG=path/to/graph.rcpg go test -run TestColumnWidthCensus -v .
 func TestColumnWidthCensus(t *testing.T) {
 	path := os.Getenv("CENSUS_RCPG")
