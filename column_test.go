@@ -32,13 +32,20 @@ func TestNarrowI64ColumnClasses(t *testing.T) {
 		{"u48 boundary", mk(-1_000, 0xFFFF_FFFF_FFFF), "narrow6"},
 		{"too wide", mk(0, 0x1_0000_0000_0000), "dense"},
 		{"below threshold stays plain", []int64{1_263_065_046_975, 1_354_157_498_214}, "dense"},
-		{"zero-one flags", mk(0, 1), "narrow1"},
+		// Two-valued columns (0/1 flags, or any {min, min+1} pair) pack
+		// to one bit per position.
+		{"zero-one flags", mk(0, 1), "bit"},
+		{"offset two-valued", mk(41, 1), "bit"},
+		{"constant column", mk(7, 0), "bit"},
 	}
 	for _, tc := range cases {
 		col := narrowI64Column(tc.vals)
 		class := "dense"
-		if n, ok := col.(denseI64NarrowCol); ok {
+		switch n := col.(type) {
+		case denseI64NarrowCol:
 			class = map[uint8]string{1: "narrow1", 2: "narrow2", 4: "narrow4", 6: "narrow6"}[n.w]
+		case denseI64BitCol:
+			class = "bit"
 		}
 		if class != tc.wantClass {
 			t.Fatalf("%s: class = %s, want %s", tc.name, class, tc.wantClass)

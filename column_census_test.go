@@ -67,6 +67,11 @@ func TestColumnWidthCensus(t *testing.T) {
 				rows = append(rows, row{side, name + " (narrow)", c.Len(),
 					c.min, c.min, int64(len(c.b)), int64(len(c.b))})
 				continue
+			case denseI64BitCol:
+				bb := int64(c.bits.Len()+7) / 8
+				rows = append(rows, row{side, name + " (bit)", c.Len(),
+					c.min, c.min + 1, bb, bb})
+				continue
 			default:
 				continue
 			}

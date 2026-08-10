@@ -113,6 +113,12 @@ func columnToData(c Column) rcpg.ColumnData {
 			out[i] = col.at(uint32(i))
 		}
 		return out
+	case denseI64BitCol:
+		out := make(rcpg.DenseI64, col.Len())
+		for i := range out {
+			out[i] = col.at(uint32(i))
+		}
+		return out
 	case denseF64Col:
 		return rcpg.DenseF64(col)
 	case denseBoolCol:

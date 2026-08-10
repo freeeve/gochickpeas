@@ -11,6 +11,8 @@ package chickpeas
 import (
 	"encoding/binary"
 	"iter"
+
+	"github.com/freeeve/gochickpeas/internal/bitset"
 )
 
 // narrowI64Vec is the shared narrow value store: value i = min + delta_i.
@@ -118,9 +120,63 @@ func (c denseI64NarrowCol) Entries() iter.Seq2[uint32, Value] {
 func (c denseI64NarrowCol) Dtype() Dtype { return DtypeI64 }
 func (c denseI64NarrowCol) Len() int     { return c.n() }
 
-// narrowI64Column picks the dense storage class: narrow when the span
-// allows, plain []int64 otherwise.
+// denseI64BitCol is the two-valued dense class: a column whose values are
+// all min or min+1 (0/1 flags stored as integers being the archetype)
+// packs to one bit per position. Dtype stays I64 like every narrow class.
+type denseI64BitCol struct {
+	min  int64
+	bits *bitset.Bits
+}
+
+func (c denseI64BitCol) at(pos uint32) int64 {
+	if c.bits.Get(int(pos)) {
+		return c.min + 1
+	}
+	return c.min
+}
+
+func (c denseI64BitCol) Get(pos uint32) (Value, bool) {
+	if int(pos) >= c.bits.Len() {
+		return Value{}, false
+	}
+	return I64Value(c.at(pos)), true
+}
+
+func (c denseI64BitCol) Entries() iter.Seq2[uint32, Value] {
+	return func(yield func(uint32, Value) bool) {
+		for i := range c.bits.Len() {
+			if !yield(uint32(i), I64Value(c.at(uint32(i)))) {
+				return
+			}
+		}
+	}
+}
+
+func (c denseI64BitCol) Dtype() Dtype { return DtypeI64 }
+func (c denseI64BitCol) Len() int     { return c.bits.Len() }
+
+// narrowI64Column picks the dense storage class: one bit per position for
+// a two-valued column, else the narrowest byte class the span allows,
+// else plain []int64.
 func narrowI64Column(vals []int64) Column {
+	if len(vals) >= narrowI64MinLen {
+		mn, mx := vals[0], vals[0]
+		for _, v := range vals {
+			if v < mn {
+				mn = v
+			}
+			if v > mx {
+				mx = v
+			}
+		}
+		if uint64(mx-mn) <= 1 {
+			bits := bitset.New(len(vals))
+			for i, v := range vals {
+				bits.Set(i, v != mn)
+			}
+			return denseI64BitCol{min: mn, bits: bits}
+		}
+	}
 	if nv, ok := narrowI64Vals(vals); ok {
 		return denseI64NarrowCol{nv}
 	}

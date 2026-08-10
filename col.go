@@ -72,6 +72,9 @@ func (c Col) I64() I64Col {
 		r.narrow = d.b
 		r.nw = d.w
 		r.nmin = d.min
+	case denseI64BitCol:
+		r.bits = d.bits
+		r.nmin = d.min
 	}
 	return r
 }
@@ -103,10 +106,12 @@ type I64Col struct {
 	dense denseI64Col
 	// narrow view of a byte-class column (value = nmin + delta at width
 	// nw), kept unpacked here so Get stays a direct decode with no
-	// interface dispatch.
+	// interface dispatch; bits is the two-valued bit class's vector
+	// (value = nmin + bit).
 	narrow []byte
 	nw     uint8
 	nmin   int64
+	bits   *bitset.Bits
 	col    Column
 	idx    posIndex
 }
@@ -135,6 +140,15 @@ func (c I64Col) Get(pos uint32) (int64, bool) {
 		}
 		return c.nmin + int64(uint64(binary.LittleEndian.Uint32(c.narrow[i:]))|
 			uint64(binary.LittleEndian.Uint16(c.narrow[i+4:]))<<32), true
+	}
+	if c.bits != nil {
+		if int(pos) >= c.bits.Len() {
+			return 0, false
+		}
+		if c.bits.Get(int(pos)) {
+			return c.nmin + 1, true
+		}
+		return c.nmin, true
 	}
 	v, ok := readIndexed(c.col, c.idx, pos)
 	if !ok {
