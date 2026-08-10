@@ -78,7 +78,19 @@ techniques land; cite the commit that proved the win.
    synthetic or a profile of the mechanism itself -- both engines' Q6
    carry the same surface query with different dominant mechanisms
    (their pivot decorrelation, our per-group distinct sets), so
-   Q6-lever ports in either direction are category errors.
+   Q6-lever ports in either direction are category errors. Refinement
+   from the same arc (their 489/f75c4a0): CARDINALITY PARITY IS NOT
+   WORKLOAD PARITY when the structure is id-range-sensitive -- a
+   synthetic matching Q6's group/pivot/row/element counts still
+   modelled it 6.7x under, because sparse-set cost scales with how
+   widely the collected ids are SCATTERED and the fixture's narrow id
+   space collapsed every set to a dense container. A matched-shape
+   synthetic must match the id-space structure (width, scatter) of the
+   real workload, or it measures its own layout. Corollary they also
+   paid for: byte-identical A/B legs are a bug in the EXPERIMENT until
+   proven otherwise (their decorrelation flag did not cover the pivot
+   recognizer) -- our engagement-counter + dead-switch guard pairs, one
+   per mechanism, are the test-form defense.
 
 ## Where Go allocates, and what to do about it
 
