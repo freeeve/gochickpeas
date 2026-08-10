@@ -91,6 +91,19 @@ techniques land; cite the commit that proved the win.
    proven otherwise (their decorrelation flag did not cover the pivot
    recognizer) -- our engagement-counter + dead-switch guard pairs, one
    per mechanism, are the test-form defense.
+9. **Upper-bound a layout change with a throwaway hack before pricing
+   it from bytes.** rustychickpeas priced their slab growth churn at
+   memcpy bandwidth (~4% of wall clock) and nearly declined the fix; a
+   two-line deliberately-unshippable pre-reserve hack (never grows,
+   over-allocates wildly, exists only to bound the win) measured
+   1.23-1.38x -- five times the estimate -- and the shipped block
+   layout landed at ~1.17x (their 291). Byte math misses allocator and
+   cache effects; the hack costs minutes and cannot mislead because it
+   is never committed. Corollary already in our practice: the
+   aggregator slabs are the chunked block layout from the start
+   (chunkGroups blocks sized in groups -- the unit callers slice by --
+   so a group's window never straddles a boundary), which is why the
+   churn their fix removed never existed here.
 
 ## Where Go allocates, and what to do about it
 
