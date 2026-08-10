@@ -7,6 +7,7 @@
 package asttest
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -32,6 +33,45 @@ func TestRollCallScannerAgreesWithTable(t *testing.T) {
 	if len(kinds) == 0 {
 		t.Fatal("scanner found no Expr kinds -- the tool is not enforcing anything")
 	}
+}
+
+// TestKindCasesBuildFresh executes every case's builder -- the closures
+// carrying the per-kind construction knowledge -- and pins the builder
+// contract: each call returns a non-nil expression whose concrete type
+// IS the named kind, and successive calls return fresh values (walker
+// tests mutate what they are given, so a shared instance would leak
+// state between cases).
+func TestKindCasesBuildFresh(t *testing.T) {
+	for _, c := range KindCases("n") {
+		e1 := c.Build()
+		if e1 == nil {
+			t.Fatalf("%s: Build returned nil", c.Kind)
+		}
+		ty := reflect.TypeOf(e1)
+		for ty.Kind() == reflect.Pointer {
+			ty = ty.Elem()
+		}
+		if ty.Name() != c.Kind {
+			t.Fatalf("%s: Build returned %T, type name %q", c.Kind, e1, ty.Name())
+		}
+		e2 := c.Build()
+		if reflect.TypeOf(e1).Kind() == reflect.Pointer &&
+			reflect.ValueOf(e1).Pointer() == reflect.ValueOf(e2).Pointer() {
+			t.Fatalf("%s: Build returned the same instance twice, want fresh values", c.Kind)
+		}
+	}
+}
+
+// TestRollCallPassesOnCompleteMap drives RollCall's success path end to
+// end: a complete covered map walks both comparison loops without a
+// failure (the failing directions are pinned through MissingKinds, whose
+// discrimination test below feeds it a deliberately incomplete map).
+func TestRollCallPassesOnCompleteMap(t *testing.T) {
+	full := map[string]bool{}
+	for _, c := range KindCases("n") {
+		full[c.Kind] = true
+	}
+	RollCall(t, full)
 }
 
 // TestMissingKindsDiscriminates writes the wrong reading out explicitly:
