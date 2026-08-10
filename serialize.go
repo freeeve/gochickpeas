@@ -105,6 +105,14 @@ func columnToData(c Column) rcpg.ColumnData {
 	switch col := c.(type) {
 	case denseI64Col:
 		return rcpg.DenseI64(col)
+	case denseI64NarrowCol:
+		// Serialization stays width-agnostic: materialize the logical
+		// values; the reader re-narrows on load.
+		out := make(rcpg.DenseI64, col.Len())
+		for i := range out {
+			out[i] = col.at(uint32(i))
+		}
+		return out
 	case denseF64Col:
 		return rcpg.DenseF64(col)
 	case denseBoolCol:
@@ -172,7 +180,7 @@ func columnToData(c Column) rcpg.ColumnData {
 func dataToColumn(data rcpg.ColumnData) Column {
 	switch d := data.(type) {
 	case rcpg.DenseI64:
-		return denseI64Col(d)
+		return narrowI64Column(d)
 	case rcpg.DenseF64:
 		return denseF64Col(d)
 	case rcpg.DenseBool:

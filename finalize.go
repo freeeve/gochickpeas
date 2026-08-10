@@ -107,11 +107,11 @@ func coversAllPositions[P interface{ pairID() uint32 }](pairs []P, span int) boo
 
 func columnFromPairsI64(pairs []i64Pair, span int) Column {
 	if denseThreshold(len(pairs), span) && coversAllPositions(pairs, span) {
-		col := make(denseI64Col, span)
+		col := make([]int64, span)
 		for _, p := range pairs {
 			col[p.id] = p.val
 		}
-		return col
+		return narrowI64Column(col)
 	}
 	pairs = sortPairsLastWriteWins(pairs, func(p i64Pair) uint32 { return p.id })
 	ids, vals := make([]uint32, len(pairs)), make([]int64, len(pairs))

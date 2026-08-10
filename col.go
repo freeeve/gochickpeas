@@ -6,7 +6,11 @@
 
 package chickpeas
 
-import "github.com/freeeve/gochickpeas/internal/bitset"
+import (
+	"encoding/binary"
+
+	"github.com/freeeve/gochickpeas/internal/bitset"
+)
 
 // posIndex accelerates a sparse column's random reads: a presence bitmap
 // with block ranks resolves pos -> pair slot in O(1) -- one rank read plus
@@ -60,8 +64,16 @@ func (c Col) Column() Column { return c.col }
 // I64 narrows to a typed integer reader; a non-integer column reads back as
 // absent, like a mistyped Prop.
 func (c Col) I64() I64Col {
-	dense, _ := c.col.(denseI64Col)
-	return I64Col{dense: dense, col: c.col, idx: c.idx}
+	r := I64Col{col: c.col, idx: c.idx}
+	switch d := c.col.(type) {
+	case denseI64Col:
+		r.dense = d
+	case denseI64NarrowCol:
+		r.narrow = d.b
+		r.nw = d.w
+		r.nmin = d.min
+	}
+	return r
 }
 
 // F64 narrows to a typed float reader.
@@ -89,8 +101,14 @@ func (c Col) Str() StrCol {
 // I64Col is a resolved integer column reader.
 type I64Col struct {
 	dense denseI64Col
-	col   Column
-	idx   posIndex
+	// narrow view of a byte-class column (value = nmin + delta at width
+	// nw), kept unpacked here so Get stays a direct decode with no
+	// interface dispatch.
+	narrow []byte
+	nw     uint8
+	nmin   int64
+	col    Column
+	idx    posIndex
 }
 
 // Get returns the value at pos (a node id for node columns, a CSR position
@@ -101,6 +119,19 @@ func (c I64Col) Get(pos uint32) (int64, bool) {
 			return c.dense[pos], true
 		}
 		return 0, false
+	}
+	if c.narrow != nil {
+		i := int(pos) * int(c.nw)
+		if i >= len(c.narrow) {
+			return 0, false
+		}
+		switch c.nw {
+		case 1:
+			return c.nmin + int64(c.narrow[i]), true
+		case 2:
+			return c.nmin + int64(binary.LittleEndian.Uint16(c.narrow[i:])), true
+		}
+		return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
 	}
 	v, ok := readIndexed(c.col, c.idx, pos)
 	if !ok {

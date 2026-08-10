@@ -8,6 +8,7 @@
 package chickpeas
 
 import (
+	"encoding/binary"
 	"iter"
 
 	"github.com/freeeve/gochickpeas/internal/bitset"
@@ -65,6 +66,96 @@ func (c denseI64Col) Entries() iter.Seq2[uint32, Value] {
 
 func (c denseI64Col) Dtype() Dtype { return DtypeI64 }
 func (c denseI64Col) Len() int     { return len(c) }
+
+// denseI64NarrowCol is a dense integer column whose values fit a narrow
+// byte class after a minimum offset: value = min + delta, deltas stored
+// little-endian at width w in {1, 2, 4}. Chosen at column build by
+// narrowI64Column when the range allows; reads stay O(1) and the logical
+// Dtype stays I64 (narrowing is a storage choice, never a type change).
+type denseI64NarrowCol struct {
+	min int64
+	w   uint8
+	b   []byte
+}
+
+// at is the raw decoded value at pos (caller bounds-checks).
+func (c denseI64NarrowCol) at(pos uint32) int64 {
+	switch c.w {
+	case 1:
+		return c.min + int64(c.b[pos])
+	case 2:
+		return c.min + int64(binary.LittleEndian.Uint16(c.b[pos*2:]))
+	}
+	return c.min + int64(binary.LittleEndian.Uint32(c.b[pos*4:]))
+}
+
+func (c denseI64NarrowCol) Get(pos uint32) (Value, bool) {
+	if int(pos) >= c.Len() {
+		return Value{}, false
+	}
+	return I64Value(c.at(pos)), true
+}
+
+func (c denseI64NarrowCol) Entries() iter.Seq2[uint32, Value] {
+	return func(yield func(uint32, Value) bool) {
+		for i := range c.Len() {
+			if !yield(uint32(i), I64Value(c.at(uint32(i)))) {
+				return
+			}
+		}
+	}
+}
+
+func (c denseI64NarrowCol) Dtype() Dtype { return DtypeI64 }
+func (c denseI64NarrowCol) Len() int     { return len(c.b) / int(c.w) }
+
+// narrowI64MinLen gates narrowing to columns big enough for the byte
+// savings to matter; below it the extra representation buys nothing.
+const narrowI64MinLen = 1024
+
+// narrowI64Column picks the storage class for a dense integer column:
+// the narrowest byte class whose offset span fits, or the plain []int64
+// when the span needs more than 4 bytes (ids, epoch-millis timestamps).
+// Values read back identically through every class.
+func narrowI64Column(vals []int64) Column {
+	if len(vals) < narrowI64MinLen {
+		return denseI64Col(vals)
+	}
+	mn, mx := vals[0], vals[0]
+	for _, v := range vals {
+		if v < mn {
+			mn = v
+		}
+		if v > mx {
+			mx = v
+		}
+	}
+	span := uint64(mx - mn)
+	var w uint8
+	switch {
+	case span <= 0xFF:
+		w = 1
+	case span <= 0xFFFF:
+		w = 2
+	case span <= 0xFFFFFFFF:
+		w = 4
+	default:
+		return denseI64Col(vals)
+	}
+	b := make([]byte, len(vals)*int(w))
+	for i, v := range vals {
+		d := uint64(v - mn)
+		switch w {
+		case 1:
+			b[i] = byte(d)
+		case 2:
+			binary.LittleEndian.PutUint16(b[i*2:], uint16(d))
+		default:
+			binary.LittleEndian.PutUint32(b[i*4:], uint32(d))
+		}
+	}
+	return denseI64NarrowCol{min: mn, w: w, b: b}
+}
 
 type denseF64Col []float64
 
