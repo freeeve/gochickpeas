@@ -118,8 +118,14 @@ func detectGroupJoin(specs []stageSpec, projAST *ast.Projection, inCols []string
 	for _, c := range inCols {
 		outer[c] = true
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := &specs[i]
+		// A sibling sharing the optional's relationship-uniqueness scope
+		// (comma patterns in one MATCH) excludes its used rels from the
+		// nested walk -- an exclusion the standalone inner cannot see.
+		if s.kind == specMatch && s.scope == sp.scope {
+			return nil
+		}
 		switch s.kind {
 		case specMatch, specShortest:
 			for _, v := range patternVars(s.pattern) {

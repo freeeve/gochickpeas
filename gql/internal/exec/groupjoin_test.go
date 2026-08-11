@@ -102,3 +102,76 @@ func TestGroupJoinExecMatchesNested(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupJoinDeclinesSharedUniqScope pins the detector's uniqueness-scope
+// guard: comma patterns in one OPTIONAL MATCH share a relationship-
+// uniqueness scope, so the nested walk of the last pattern excludes rels the
+// sibling pattern used -- an exclusion the decorrelated standalone inner
+// cannot see. On a single undirected KNOWS edge, the nested count is 0 for
+// both anchors (the sibling consumed the only rel); a decorrelated inner
+// would count 1. The detector must decline the shape entirely.
+func TestGroupJoinDeclinesSharedUniqScope(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 4)
+	for range 2 {
+		if _, err := bld.AddNode("Person"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := bld.AddRel(0, 1, "KNOWS"); err != nil {
+		t.Fatal(err)
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+	q, err := parser.Parse("MATCH (a:Person) OPTIONAL MATCH (a)-[r:KNOWS]-(m), (m)-[s:KNOWS]-(k) RETURN a, count(k) AS c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func(v float64) { plan.GroupJoinMinOuterRows = v }(plan.GroupJoinMinOuterRows)
+	counts := func() map[graph.NodeID]int64 {
+		t.Helper()
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := Execute(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[graph.NodeID]int64{}
+		for _, r := range rows {
+			id, _ := r[0].AsNode()
+			c, _ := r[1].AsInt()
+			out[id] = c
+		}
+		return out
+	}
+	plan.GroupJoinMinOuterRows = 1e18
+	nested := counts()
+	for id, want := range map[graph.NodeID]int64{0: 0, 1: 0} {
+		if nested[id] != want {
+			t.Fatalf("nested count[%d] = %d, want %d (scope must exclude the sibling's rel)", id, nested[id], want)
+		}
+	}
+	plan.GroupJoinMinOuterRows = 0
+	forced := counts()
+	for id, want := range nested {
+		if forced[id] != want {
+			t.Fatalf("forced-floor count[%d] = %d, nested = %d: the rewrite fired on a shared-scope comma pattern", id, forced[id], want)
+		}
+	}
+	// The agreement must come from the guard, not from luck in the inner:
+	// the forced-floor plan must contain no GroupJoinStage.
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, br := range p.Branches {
+		for _, seg := range br {
+			for _, st := range seg.Stages {
+				if _, isGJ := st.(*plan.GroupJoinStage); isGJ {
+					t.Fatal("detector admitted a comma pattern sharing a uniqueness scope")
+				}
+			}
+		}
+	}
+}
