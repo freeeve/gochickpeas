@@ -76,4 +76,29 @@ func TestGroupJoinExecMatchesNested(t *testing.T) {
 			t.Fatalf("count[%d] = %d, want %d", id, nested[id], want)
 		}
 	}
+
+	// Control (ragedb's 295 lesson): the PLAIN match variant must never
+	// gain zero-count rows -- an anchor-derived count that truncates the
+	// pattern would emit one row per Person, reporting 0 for the edgeless
+	// -- and the rewrite knob being forced must not change that, since the
+	// detector admits OPTIONAL only. Anchors without a KNOWS edge produce
+	// NO row here, not a zero.
+	plain, err := parser.Parse("MATCH (a:Person)-[:KNOWS]->(b) RETURN a, count(b) AS c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = plain
+	for _, floor := range []float64{1e18, 0} {
+		plan.GroupJoinMinOuterRows = floor
+		got := counts()
+		if len(got) != 2 {
+			t.Fatalf("plain match (floor=%g): %d rows, want 2 (edgeless anchors must not appear)", floor, len(got))
+		}
+		if got[0] != 2 || got[1] != 1 {
+			t.Fatalf("plain match (floor=%g): counts = %v, want {0:2, 1:1}", floor, got)
+		}
+		if _, invented := got[2]; invented {
+			t.Fatalf("plain match (floor=%g): invented a zero-count row for an edgeless anchor", floor)
+		}
+	}
 }
