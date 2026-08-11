@@ -29,6 +29,74 @@ func TestTotalOrderF64(t *testing.T) {
 	}
 }
 
+// TestOrderCmpTotalOrderLaws asserts antisymmetry and transitivity of
+// OrderCmp exhaustively over a mixed sample including NaN and both
+// infinities (ragedb's 294 lesson: a NaN-broken comparator passes every
+// PAIRWISE check -- cmp(NaN,1)=0 and cmp(NaN,2)=0 each look plausible;
+// only the triple over 1, 2, NaN exposes the intransitivity, and a
+// comparator that is not a total order is undefined behavior under a
+// sort). NaN needs no literal to arrive: overflow arithmetic produces it
+// (1e308*10 -> +Inf; Inf - Inf -> NaN), covered by the derived entries.
+func TestOrderCmpTotalOrderLaws(t *testing.T) {
+	// The overflow route must use runtime variables: Go CONSTANT
+	// arithmetic evaluates in arbitrary precision, so (1e308*10)-(1e308*10)
+	// is exactly 0 at compile time -- the fixture itself would hide the
+	// NaN it exists to produce.
+	big := 1e308
+	inf := big * 10 // overflows to +Inf at runtime
+	overflowNaN := inf - inf
+	sample := []Value{
+		Null(),
+		Bool(false), Bool(true),
+		Int(math.MinInt64), Int(-1), Int(0), Int(1), Int(math.MaxInt64),
+		Float(math.Inf(-1)), Float(-1.5), Float(math.Copysign(0, -1)),
+		Float(0), Float(1.5), Float(inf), Float(math.NaN()), Float(overflowNaN),
+		Str(""), Str("a"), Str("b"),
+		List(nil), List([]Value{Int(1)}), List([]Value{Float(math.NaN())}),
+	}
+	sgn := func(c int) int {
+		if c > 0 {
+			return 1
+		}
+		if c < 0 {
+			return -1
+		}
+		return 0
+	}
+	for i, a := range sample {
+		if OrderCmp(a, a) != 0 {
+			t.Fatalf("sample[%d] not equal to itself", i)
+		}
+		for j, b := range sample {
+			if sgn(OrderCmp(a, b)) != -sgn(OrderCmp(b, a)) {
+				t.Fatalf("antisymmetry broken at sample[%d], sample[%d]", i, j)
+			}
+		}
+	}
+	for i, a := range sample {
+		for j, b := range sample {
+			for k, c := range sample {
+				ab, bc, ac := OrderCmp(a, b), OrderCmp(b, c), OrderCmp(a, c)
+				if ab <= 0 && bc <= 0 && ac > 0 {
+					t.Fatalf("transitivity broken over sample[%d,%d,%d]: %d %d %d", i, j, k, ab, bc, ac)
+				}
+				if ab == 0 && bc == 0 && ac != 0 {
+					t.Fatalf("equivalence not transitive over sample[%d,%d,%d]", i, j, k)
+				}
+			}
+		}
+	}
+	// Control: the SEMANTIC comparator keeps NaN incomparable (the SQL
+	// three-valued relation), never equal-to-everything -- the two
+	// comparators answer different questions and must stay distinct.
+	if _, ok := Compare(Float(overflowNaN), Float(1)); ok {
+		t.Fatal("Compare must report NaN incomparable, not ordered")
+	}
+	if c, ok := Compare(Int(1), Int(2)); !ok || c >= 0 {
+		t.Fatal("ordinary Compare behavior disturbed")
+	}
+}
+
 // TestOrderNumF64 covers the numeric-tier encoding: an Int/Float yields its
 // float value, anything else yields NaN, and it pairs with TotalOrderF64.
 func TestOrderNumF64(t *testing.T) {
