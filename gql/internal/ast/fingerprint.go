@@ -8,6 +8,7 @@ package ast
 import (
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // Fingerprint is the canonical rendering of q.
@@ -109,6 +110,10 @@ func fpClause(b *strings.Builder, c Clause) {
 		}
 		b.WriteByte(']')
 		fpQuery(b, &n.Query)
+	default:
+		// A clause kind with no arm previously wrote NOTHING -- the same
+		// collapse as fpExpr's old "?", one level up.
+		unfingerprintable(b)
 	}
 }
 
@@ -403,6 +408,20 @@ func fpExpr(b *strings.Builder, e Expr) {
 		b.WriteString(strconv.Quote(n.Var))
 		fpLabelExpr(b, n.Expr)
 	default:
-		b.WriteString("?")
+		unfingerprintable(b)
 	}
 }
+
+// unfingerprintable poisons the key for a node kind this walk does not
+// know. A collapsed constant marker would let two DIFFERENT queries share
+// a cache key and serve each other's plans -- a wrong answer enabled by a
+// degenerate fingerprint -- so the marker is unique per occurrence: an
+// unfingerprintable query simply never hits the cache. The NUL prefix
+// cannot occur in legitimate fingerprint output (all dynamic strings pass
+// through strconv.Quote), which is what the kind roll-call test keys on.
+func unfingerprintable(b *strings.Builder) {
+	b.WriteString("\x00unfp")
+	b.WriteString(strconv.FormatUint(unfpSeq.Add(1), 10))
+}
+
+var unfpSeq atomic.Uint64
