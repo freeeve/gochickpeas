@@ -41,3 +41,32 @@ func TestFingerprintCoversEveryExprKind(t *testing.T) {
 		t.Fatal("no kinds fingerprinted -- the roll call is not enforcing anything")
 	}
 }
+
+// TestFingerprintSeesInlinePatternWhere pins that the cache key encodes
+// the inline pattern predicates (ragedb's 296 rule): desugar clears these
+// fields before the cache fingerprints today, so the key is currently
+// order-dependent-correct -- this test makes it correct regardless of
+// pipeline order, since two queries differing only in an inline WHERE
+// must never share a plan.
+func TestFingerprintSeesInlinePatternWhere(t *testing.T) {
+	gt := &ast.Binary{Op: ast.OpGt, LHS: &ast.Prop{Var: "r", Key: "w"}, RHS: &ast.Lit{Value: ast.IntLit(1)}}
+	mk := func(relWhere, nodeWhere ast.Expr) *ast.Query {
+		return &ast.Query{Parts: []ast.QueryPart{{
+			Clauses: []ast.Clause{&ast.Match{Patterns: []ast.Pattern{{
+				Start: ast.NodePat{Var: "a", Where: nodeWhere},
+				Hops: []ast.PatternHop{{
+					Rel:  ast.RelPat{Var: "r", Dir: ast.DirOut, Types: []string{"R"}, Where: relWhere},
+					Node: ast.NodePat{Var: "b"},
+				}},
+			}}}},
+			Ret: ast.Projection{Items: []ast.ReturnItem{{Expr: &ast.Var{Name: "a"}, Alias: "a"}}},
+		}}}
+	}
+	plain := ast.Fingerprint(mk(nil, nil))
+	if withRel := ast.Fingerprint(mk(gt, nil)); withRel == plain {
+		t.Fatal("rel inline WHERE dropped from the fingerprint: filtered and unfiltered queries share a cache key")
+	}
+	if withNode := ast.Fingerprint(mk(nil, gt)); withNode == plain {
+		t.Fatal("node inline WHERE dropped from the fingerprint")
+	}
+}

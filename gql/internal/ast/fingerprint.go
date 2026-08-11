@@ -183,6 +183,14 @@ func fpNodePat(b *strings.Builder, n *NodePat) {
 		b.WriteString(strconv.Quote(n.PropExprs[i].Key))
 		fpExpr(b, n.PropExprs[i].Val)
 	}
+	if n.Where != nil {
+		// Encoded even though desugar clears it before the cache
+		// fingerprints: the key must not depend on pipeline order, and a
+		// dropped row-selecting field would let two different queries
+		// share a plan.
+		b.WriteByte('w')
+		fpExpr(b, n.Where)
+	}
 }
 
 func fpRelPat(b *strings.Builder, r *RelPat) {
@@ -209,6 +217,10 @@ func fpRelPat(b *strings.Builder, r *RelPat) {
 	for i := range r.PropExprs {
 		b.WriteString(strconv.Quote(r.PropExprs[i].Key))
 		fpExpr(b, r.PropExprs[i].Val)
+	}
+	if r.Where != nil {
+		b.WriteByte('w')
+		fpExpr(b, r.Where)
 	}
 }
 

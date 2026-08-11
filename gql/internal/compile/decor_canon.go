@@ -73,6 +73,14 @@ func canonPattern(sb *strings.Builder, p *ast.Pattern, sub map[string]string) bo
 		if h.Rel.Length != nil {
 			return false // decor never admits these; fail closed anyway
 		}
+		if h.Rel.Where != nil {
+			// Desugar conjoins the inline predicate onto the clause WHERE
+			// and clears this field, so it should never be seen here --
+			// but an equivalence used to ERASE an operand must refuse any
+			// row-selecting field it does not compare (two patterns
+			// differing only in an inline WHERE are not interchangeable).
+			return false
+		}
 		sb.WriteByte('-')
 		sb.WriteByte(byte('0' + int(h.Rel.Dir)))
 		canonVar(sb, h.Rel.Var, sub)
@@ -102,6 +110,9 @@ func canonNode(sb *strings.Builder, n *ast.NodePat, sub map[string]string) bool 
 	}
 	if len(n.PropExprs) > 0 {
 		return false
+	}
+	if n.Where != nil {
+		return false // inline node predicate: same fail-closed rule as rels
 	}
 	for _, pe := range n.Props {
 		sb.WriteByte('{')

@@ -282,4 +282,21 @@ func TestDecorCanonInjectivePairs(t *testing.T) {
 	if c1 == "" || c1 != c2 {
 		t.Fatalf("endpoint renames must share one canon: %q vs %q", c1, c2)
 	}
+
+	// Inline pattern predicates refuse canonicalization outright (ragedb's
+	// 296 rule: an equivalence that gates an ERASE must refuse any
+	// row-selecting field it does not compare). Desugar clears these
+	// fields before compile, so a non-nil Where here means the pipeline
+	// order broke -- a filtered and an unfiltered pattern must never share
+	// a canon.
+	gt := &ast.Binary{Op: ast.OpGt, LHS: &ast.Prop{Var: "r", Key: "w"}, RHS: &ast.Lit{Value: ast.IntLit(1)}}
+	relWhere := &ast.Pattern{Start: ast.NodePat{Var: "a"},
+		Hops: []ast.PatternHop{{Rel: ast.RelPat{Var: "r", Dir: ast.DirOut, Types: []string{"R"}, Where: gt}, Node: ast.NodePat{Var: "g"}}}}
+	if decorCanon(relWhere, nil, "a", "g") != "" {
+		t.Fatal("a rel inline WHERE must refuse canonicalization, not be dropped")
+	}
+	nodeWhere := &ast.Pattern{Start: ast.NodePat{Var: "a", Where: gt}}
+	if decorCanon(nodeWhere, nil, "a", "") != "" {
+		t.Fatal("a node inline WHERE must refuse canonicalization, not be dropped")
+	}
 }
