@@ -117,6 +117,44 @@ func TestVarLenRelConjunctPlacement(t *testing.T) {
 	}
 }
 
+// TestVarLenRelListInConjunct pins the cIn-path twin of the size(e) case
+// (task 299): a membership conjunct over a named variable-length rel
+// LIST is non-slow even without any function involved, so only the
+// tracked rel slot places it correctly -- untracked, NOT (r IN e)
+// evaluates over a null e, folds to null, and silently drops every row.
+// Same-MATCH rel uniqueness makes r IN e itself always false here, so
+// the negated form must keep every (r, e) pair.
+func TestVarLenRelListInConjunct(t *testing.T) {
+	bld := chickpeas.NewBuilder(4, 4)
+	for range 3 {
+		if _, err := bld.AddNode("X"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, e := range [][2]int{{0, 1}, {1, 2}} {
+		if _, err := bld.AddRel(graph.NodeID(e[0]), graph.NodeID(e[1]), "R"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(bld.Finalize())
+	ctx := &eval.Ctx{G: g}
+	q, err := parser.Parse("MATCH (a:X)-[r:R]->(m:X)-[e:R]->{1,1}(b:X) WHERE NOT (r IN e) RETURN a, b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("NOT (r IN e) kept %d rows, want 1 (uniqueness already excludes r from e)", len(rows))
+	}
+}
+
 // TestSlotAgrees covers the batch-constant predicate: an empty or single-row
 // batch is vacuously constant, equal values agree, a differing value breaks
 // it, and out-of-range reads disqualify unless padNull treats them as Null.

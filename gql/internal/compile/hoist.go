@@ -259,11 +259,20 @@ func slotsOf(c cnode, out *[]int, hasSlow, hasWalk *bool) {
 		}
 	case *cFunc:
 		// Resolved scalar functions are pure over their arguments (the
-		// graph-less ApplyFunc), so a function conjunct places at the
-		// level its argument slots bind instead of pinning to the last
-		// op -- a mid-pattern predicate then prunes before the walk fans
-		// out. Sound only while the level map tracks every relationship
-		// slot, including a variable-length expand's list slot.
+		// FuncOp purity contract: deterministic, graph-less, no ambient
+		// state), so a function conjunct places at the level its argument
+		// slots bind instead of pinning to the last op -- a mid-pattern
+		// predicate then prunes before the walk fans out. Sound only
+		// while the level map tracks every relationship slot, including
+		// a variable-length expand's list slot. NOTE this arm's verdict
+		// also feeds two EVALUATE-ONCE decisions, not just placement:
+		// the const IN-list membership bake (allConst below) and the
+		// carried-list hoist (hoistCarried) -- both unsound for a
+		// volatile function, which reads no slots and so passes every
+		// slot-based test vacuously. The purity contract on FuncOp
+		// (funcop.go) is what keeps volatile functions out of this arm
+		// entirely; a change admitting one must revisit all three
+		// consumers plus foldFunc.
 		for _, a := range n.args {
 			slotsOf(a, out, hasSlow, hasWalk)
 		}

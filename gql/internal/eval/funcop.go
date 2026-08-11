@@ -8,6 +8,17 @@ import "strings"
 
 // FuncOp is a resolved scalar function; the compiled path carries this
 // instead of the name string so per-row evaluation skips name dispatch.
+//
+// Purity contract: every FuncOp must be a pure function of its argument
+// values -- deterministic, graph-less, no ambient state (no randomness,
+// no clock). Constant folding, IN-list membership baking, carried-list
+// hoisting, and pushdown placement all evaluate a resolved function
+// fewer times than once-per-row on the strength of this contract, and
+// none of them re-checks it. A volatile function (rand, a statement
+// clock) must NOT be registered here: left unresolved, the compiler's
+// interpreter fallback keeps it out of every one of those paths. The
+// determinism roll call in funcop_test.go enforces the contract
+// behaviorally for each registered op.
 type FuncOp uint8
 
 // Resolved scalar functions.
@@ -63,6 +74,10 @@ const (
 	FuncElementID
 	FuncNormalize
 	FuncIsNormalized
+
+	// funcOpCount bounds op enumeration (the purity roll call walks every
+	// registered op); new ops go above this line.
+	funcOpCount
 )
 
 // ResolveFuncOp resolves a scalar-function name (case-insensitive); ok is
