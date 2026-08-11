@@ -257,9 +257,19 @@ func slotsOf(c cnode, out *[]int, hasSlow, hasWalk *bool) {
 		} else {
 			*hasSlow = true
 		}
+	case *cFunc:
+		// Resolved scalar functions are pure over their arguments (the
+		// graph-less ApplyFunc), so a function conjunct places at the
+		// level its argument slots bind instead of pinning to the last
+		// op -- a mid-pattern predicate then prunes before the walk fans
+		// out. Sound only while the level map tracks every relationship
+		// slot, including a variable-length expand's list slot.
+		for _, a := range n.args {
+			slotsOf(a, out, hasSlow, hasWalk)
+		}
 	default:
-		// cFunc keeps conservative last-level placement (its args may read
-		// var-length rel slots not tracked for pushdown); cSlow likewise.
+		// cSlow (an uncompilable expression with unknown reads) and any
+		// future node kind keep conservative last-level placement.
 		*hasSlow = true
 	}
 }

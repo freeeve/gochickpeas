@@ -333,10 +333,13 @@ func slotOf(op *plan.BindOp) int {
 	return op.To
 }
 
-// relSlotOf is the slot a single traversed relationship binds to (a named
-// fixed-length expand); NoSlot otherwise.
+// relSlotOf is the slot an op's relationship binding occupies -- a named
+// fixed-length expand's single relationship or a named variable-length
+// expand's relationship list; NoSlot otherwise. Pushdown placement keys
+// on this: a conjunct reading a relationship slot missing from the level
+// map would land where the slot is still null and silently drop rows.
 func relSlotOf(op *plan.BindOp) int {
-	if op.Kind == plan.OpExpand {
+	if op.Kind == plan.OpExpand || op.Kind == plan.OpVarExpand {
 		return op.RelSlot
 	}
 	return plan.NoSlot

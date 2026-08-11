@@ -145,12 +145,15 @@ func TestBaseScanKind(t *testing.T) {
 // reports its rel slot, while every other op kind (including a var-expand,
 // whose per-trail rel list is not a single bound slot) reports NoSlot.
 func TestRelSlotOf(t *testing.T) {
-	if got := relSlotOf(&plan.BindOp{Kind: plan.OpExpand, RelSlot: 4}); got != 4 {
-		t.Fatalf("relSlotOf(expand) = %d, want 4", got)
-	}
-	for _, k := range []plan.OpKind{plan.OpScan, plan.OpVarExpand} {
-		if got := relSlotOf(&plan.BindOp{Kind: k, RelSlot: 4}); got != plan.NoSlot {
-			t.Fatalf("relSlotOf(kind %v) = %d, want NoSlot", k, got)
+	// Both expand kinds report their relationship slot -- the var-length
+	// LIST slot must be tracked for pushdown placement, or a conjunct
+	// reading it lands where the slot is still null (task 298).
+	for _, k := range []plan.OpKind{plan.OpExpand, plan.OpVarExpand} {
+		if got := relSlotOf(&plan.BindOp{Kind: k, RelSlot: 4}); got != 4 {
+			t.Fatalf("relSlotOf(kind %v) = %d, want 4", k, got)
 		}
+	}
+	if got := relSlotOf(&plan.BindOp{Kind: plan.OpScan, RelSlot: 4}); got != plan.NoSlot {
+		t.Fatalf("relSlotOf(scan) = %d, want NoSlot", got)
 	}
 }

@@ -174,10 +174,18 @@ func TestSubqueryMemoAndSlots(t *testing.T) {
 	if slow || !walk || len(refs) != 1 || refs[0] != 0 {
 		t.Fatalf("subquery pushdown refs = %v slow = %v walk = %v", refs, slow, walk)
 	}
-	// A function keeps last-level placement.
+	// A resolved scalar function is pure over its arguments, so it pushes
+	// down to their slots instead of pinning to the last level -- the
+	// placement half of the predicate-placement fix (task 298).
 	refs, slow, walk = Slots(New(ctx, exprOf(t, "size(a)"), slots, g))
+	if slow || walk || len(refs) != 1 || refs[0] != 0 {
+		t.Fatalf("function pushdown refs = %v slow = %v walk = %v", refs, slow, walk)
+	}
+	// An unresolved function stays interpreter-backed with unknown reads,
+	// keeping conservative last-level placement.
+	refs, slow, walk = Slots(New(ctx, &ast.Func{Name: "nosuchfn", Args: []ast.Expr{&ast.Var{Name: "a"}}}, slots, g))
 	if !slow {
-		t.Fatalf("function is slow, refs = %v walk = %v", refs, walk)
+		t.Fatalf("unresolved function must stay slow, refs = %v walk = %v", refs, walk)
 	}
 }
 
