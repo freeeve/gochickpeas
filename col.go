@@ -69,12 +69,9 @@ func (c Col) I64() I64Col {
 	case denseI64Col:
 		r.dense = d
 	case denseI64NarrowCol:
-		r.narrow = d.b
-		r.nw = d.w
-		r.nmin = d.min
+		r.nv = &i64NarrowView{narrow: d.b, w: d.w, min: d.min}
 	case denseI64BitCol:
-		r.bits = d.bits
-		r.nmin = d.min
+		r.nv = &i64NarrowView{bits: d.bits, min: d.min}
 	}
 	return r
 }
@@ -101,19 +98,29 @@ func (c Col) Str() StrCol {
 	return StrCol{dense: dense, col: c.col, idx: c.idx}
 }
 
+// i64NarrowView is the unpacked read state for the narrow and bit
+// storage classes, held behind one pointer so I64Col itself stays small:
+// Get has a value receiver, so every field added to I64Col is copied on
+// every call -- unpacking these six words inline made each read pay a
+// duffcopy that cost more than the decode it saved (task 300).
+type i64NarrowView struct {
+	// narrow is the byte-class delta vector (value = min + delta at
+	// width w); bits is the two-valued bit class's vector (value =
+	// min + bit).
+	narrow []byte
+	w      uint8
+	min    int64
+	bits   *bitset.Bits
+}
+
 // I64Col is a resolved integer column reader.
 type I64Col struct {
 	dense denseI64Col
-	// narrow view of a byte-class column (value = nmin + delta at width
-	// nw), kept unpacked here so Get stays a direct decode with no
-	// interface dispatch; bits is the two-valued bit class's vector
-	// (value = nmin + bit).
-	narrow []byte
-	nw     uint8
-	nmin   int64
-	bits   *bitset.Bits
-	col    Column
-	idx    posIndex
+	// nv is the narrow/bit-class read state (nil for other layouts),
+	// one pointer so the value receiver stays cheap to copy.
+	nv  *i64NarrowView
+	col Column
+	idx posIndex
 }
 
 // Get returns the value at pos (a node id for node columns, a CSR position
@@ -125,36 +132,57 @@ func (c I64Col) Get(pos uint32) (int64, bool) {
 		}
 		return 0, false
 	}
-	if c.narrow != nil {
-		i := int(pos) * int(c.nw)
-		if i >= len(c.narrow) {
-			return 0, false
-		}
-		switch c.nw {
-		case 1:
-			return c.nmin + int64(c.narrow[i]), true
-		case 2:
-			return c.nmin + int64(binary.LittleEndian.Uint16(c.narrow[i:])), true
-		case 4:
-			return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
-		}
-		return c.nmin + int64(uint64(binary.LittleEndian.Uint32(c.narrow[i:]))|
-			uint64(binary.LittleEndian.Uint16(c.narrow[i+4:]))<<32), true
-	}
-	if c.bits != nil {
-		if int(pos) >= c.bits.Len() {
-			return 0, false
-		}
-		if c.bits.Get(int(pos)) {
-			return c.nmin + 1, true
-		}
-		return c.nmin, true
+	if c.nv != nil {
+		return c.nv.get(pos)
 	}
 	v, ok := readIndexed(c.col, c.idx, pos)
 	if !ok {
 		return 0, false
 	}
 	return v.I64()
+}
+
+// get decodes pos from the narrow byte classes; the bit class splits out
+// so this stays inlinable into Get -- the split plus the u48 single-load
+// keeps a narrow read one call level flatter than the fallback path. The
+// u48 arm bounds on i+8 against the 2-byte-padded buffer -- exact, since
+// a valid slot satisfies i <= len-8 and the first out-of-range slot lands
+// at i = len-2; narrower widths divide the unpadded length evenly.
+func (v *i64NarrowView) get(pos uint32) (int64, bool) {
+	if v.narrow == nil {
+		return v.getBits(pos)
+	}
+	i := int(pos) * int(v.w)
+	switch v.w {
+	case 1:
+		if i < len(v.narrow) {
+			return v.min + int64(v.narrow[i]), true
+		}
+	case 2:
+		if i+2 <= len(v.narrow) {
+			return v.min + int64(binary.LittleEndian.Uint16(v.narrow[i:])), true
+		}
+	case 4:
+		if i+4 <= len(v.narrow) {
+			return v.min + int64(binary.LittleEndian.Uint32(v.narrow[i:])), true
+		}
+	default:
+		if i+8 <= len(v.narrow) {
+			return v.min + int64(binary.LittleEndian.Uint64(v.narrow[i:])&narrowU48Mask), true
+		}
+	}
+	return 0, false
+}
+
+// getBits decodes pos from the two-valued bit class.
+func (v *i64NarrowView) getBits(pos uint32) (int64, bool) {
+	if int(pos) >= v.bits.Len() {
+		return 0, false
+	}
+	if v.bits.Get(int(pos)) {
+		return v.min + 1, true
+	}
+	return v.min, true
 }
 
 // Slice is the dense value slice indexed directly by position; ok is false
