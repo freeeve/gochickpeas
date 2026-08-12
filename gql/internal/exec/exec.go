@@ -4,8 +4,10 @@ package exec
 
 import (
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/compile"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/explain"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
@@ -14,11 +16,34 @@ import (
 // plan construct the planner produces is executable as of M19, so
 // execution is infallible once a plan builds.
 func Execute(ctx *eval.Ctx, p *plan.Plan) ([][]value.Value, error) {
+	installCompileWhere(ctx)
 	acc := runBranch(ctx, p.Branches[0])
 	for i, op := range p.Union {
 		combineUnion(&acc, runBranch(ctx, p.Branches[i+1]), op)
 	}
 	return acc, nil
+}
+
+// installCompileWhere hands the eval-side subquery walk a compiler for
+// its WHERE filters: eval cannot import compile (compile imports eval),
+// so the executor -- which reaches both -- bridges them. Idempotent; the
+// interpreted path stays authoritative under ForceInterp and on
+// non-native graphs, mirroring compileEval's own gate.
+func installCompileWhere(ctx *eval.Ctx) {
+	if ctx.CompileWhere != nil || ctx.ForceInterp {
+		return
+	}
+	n, ok := ctx.G.(graph.Native)
+	if !ok {
+		return
+	}
+	snap := n.Snapshot()
+	ctx.CompileWhere = func(e ast.Expr, slots map[string]int) func(*eval.Ctx, []value.Value) value.Value {
+		c := compile.New(ctx, e, slots, snap)
+		return func(ec *eval.Ctx, row []value.Value) value.Value {
+			return c.Eval(ec, row, slots)
+		}
+	}
 }
 
 // ExecuteProfiled runs the plan while recording how many rows each
@@ -27,6 +52,7 @@ func Execute(ctx *eval.Ctx, p *plan.Plan) ([][]value.Value, error) {
 // operator cardinalities, not the result set; each branch's final rows
 // are discarded (the union combine is not a profiled operator).
 func ExecuteProfiled(ctx *eval.Ctx, p *plan.Plan) *explain.Profile {
+	installCompileWhere(ctx)
 	prof := &explain.Profile{}
 	for _, segments := range p.Branches {
 		rows := [][]value.Value{nil}

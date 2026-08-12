@@ -30,6 +30,14 @@ type Ctx struct {
 	// and is reused across that call's candidates (replaces the Rust
 	// thread-local epoch).
 	MatchEpoch uint64
+	// CompileWhere, when set, compiles a subquery WHERE against the
+	// walk's inner slot map and returns a per-row evaluator; nil (or
+	// ForceInterp) keeps the interpreted path. The executor layer
+	// installs it -- it can reach the compiler without an import cycle
+	// -- so a subquery's filter runs the same compiled machinery as a
+	// stage filter instead of re-interpreting the AST (and re-evaluating
+	// its constant subexpressions) once per candidate.
+	CompileWhere func(e ast.Expr, slots map[string]int) func(*Ctx, []value.Value) value.Value
 	// subqShapes caches each subquery pattern's DFS shape and scratch for
 	// this execution (params are fixed per Ctx, so the memoized level-0
 	// scan stays valid; a fresh Ctx per run keeps prepared-plan reuse

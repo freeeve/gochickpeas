@@ -58,6 +58,11 @@ type subqueryShape struct {
 	// labels and literal props only); scan0Done marks it filled.
 	scan0     []graph.NodeID
 	scan0Done bool
+	// whereFn is the compiled per-row WHERE evaluator (Ctx.CompileWhere),
+	// cached per shape; whereFor guards against a shape being reused with
+	// a different WHERE expression.
+	whereFn  func(*Ctx, []value.Value) value.Value
+	whereFor ast.Expr
 	// matchers lazily holds each hop's pre-resolved rel matcher, so the
 	// per-candidate seam calls skip name resolution.
 	matchers []*graph.RelMatcher
@@ -220,16 +225,40 @@ func hasKey(m map[string]int, k string) bool {
 // fixed-length pattern (quantifiers are treated as one hop).
 func SubqueryCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []value.Value, outerSlots map[string]int, stopAtFirst bool) int {
 	s := subqueryShapeFor(ctx, outerSlots, outerRow, pattern, true)
+	wf := s.whereEval(ctx, where)
 	total := 0
 	s.dfs(ctx, 0, func() bool {
-		ok := where == nil || Eval(ctx, where, s.row, s.slots).IsTruthy()
-		if ok {
+		if wf == nil || wf(ctx, s.row).IsTruthy() {
 			total++
 		}
 		return stopAtFirst && total > 0
 	})
 	return total
 }
+
+// whereEval resolves the walk's WHERE evaluator: compiled once per shape
+// through Ctx.CompileWhere when the executor installed it, else the
+// per-row interpreter. subqWhereCompiles is the engagement oracle.
+func (s *subqueryShape) whereEval(ctx *Ctx, where ast.Expr) func(*Ctx, []value.Value) value.Value {
+	if where == nil {
+		return nil
+	}
+	if ctx.CompileWhere == nil || ctx.ForceInterp {
+		return func(c *Ctx, row []value.Value) value.Value { return Eval(c, where, row, s.slots) }
+	}
+	if s.whereFn == nil || s.whereFor != where {
+		s.whereFn = ctx.CompileWhere(where, s.slots)
+		s.whereFor = where
+		subqWhereCompiles++
+	}
+	return s.whereFn
+}
+
+// subqWhereCompiles counts compiled subquery WHERE builds -- the
+// engagement oracle: a walk over N candidates must compile its WHERE
+// exactly once per shape, not per row; 0 across a filtered subquery
+// means every candidate paid the interpreter.
+var subqWhereCompiles int
 
 // SubqueryGroupCount evaluates a correlated subquery ONCE with the group
 // variable left free, returning the match count bucketed by the node the
@@ -267,8 +296,9 @@ func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow
 	if !ok {
 		return out
 	}
+	wf := s.whereEval(ctx, where)
 	s.dfs(ctx, 0, func() bool {
-		if where == nil || Eval(ctx, where, s.row, s.slots).IsTruthy() {
+		if wf == nil || wf(ctx, s.row).IsTruthy() {
 			if gid, ok := s.row[gslot].AsNode(); ok {
 				out[gid]++
 			}
@@ -284,9 +314,10 @@ func evalPatternComp(ctx *Ctx, e *ast.PatternComp, row []value.Value, slots map[
 	// Collecting walk: list element order is enumeration order, so the
 	// unanchored seed reversal must not fire here.
 	s := subqueryShapeFor(ctx, slots, row, e.Pattern, false)
+	wf := s.whereEval(ctx, e.Where)
 	out := []value.Value{}
 	s.dfs(ctx, 0, func() bool {
-		if e.Where == nil || Eval(ctx, e.Where, s.row, s.slots).IsTruthy() {
+		if wf == nil || wf(ctx, s.row).IsTruthy() {
 			out = append(out, Eval(ctx, e.Proj, s.row, s.slots))
 		}
 		return false

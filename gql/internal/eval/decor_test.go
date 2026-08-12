@@ -155,3 +155,51 @@ func TestSubqueryGroupCountParallelEdges(t *testing.T) {
 		t.Fatalf("decorrelated count = %d, naive = %d (parallel-edge multiplicity must match)", got, naive)
 	}
 }
+
+// TestSubqueryWhereCompileSeam pins the Ctx.CompileWhere contract (task
+// 205 round 6): when the executor installs a WHERE compiler, the walk
+// evaluates its filter through it with identical results to the
+// interpreted path, compiling once per cached shape rather than once per
+// row -- and ForceInterp bypasses it entirely.
+func TestSubqueryWhereCompileSeam(t *testing.T) {
+	ctx, tag, persons := decorFixture(t)
+	slots := map[string]int{"t": 0, "p": 1}
+	pat, where := countSub(t, "COUNT { MATCH (t)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(p) WHERE m.ts > 100 AND m.ts < 200 }")
+	perRow := []value.Value{value.Node(tag), value.Node(persons[0])}
+
+	interp := SubqueryCount(ctx, pat, where, perRow, slots, false)
+
+	// A counting compiler that delegates to the interpreter: the seam's
+	// contract is WHO evaluates and HOW OFTEN it compiles, not the
+	// evaluation result.
+	compiles, rowEvals := 0, 0
+	ctx2, _, _ := decorFixture(t)
+	ctx2.CompileWhere = func(e ast.Expr, s map[string]int) func(*Ctx, []value.Value) value.Value {
+		compiles++
+		return func(c *Ctx, row []value.Value) value.Value {
+			rowEvals++
+			return Eval(c, e, row, s)
+		}
+	}
+	for range 3 {
+		if got := SubqueryCount(ctx2, pat, where, perRow, slots, false); got != interp {
+			t.Fatalf("compiled-seam count = %d, interpreted = %d", got, interp)
+		}
+	}
+	if compiles != 1 {
+		t.Fatalf("WHERE compiled %d times across 3 calls on one cached shape, want 1", compiles)
+	}
+	if rowEvals == 0 {
+		t.Fatal("the installed evaluator never ran -- the seam is vacuous")
+	}
+
+	// ForceInterp must bypass the installed compiler.
+	ctx2.ForceInterp = true
+	before := compiles
+	if got := SubqueryCount(ctx2, pat, where, perRow, slots, false); got != interp {
+		t.Fatalf("ForceInterp count = %d, want %d", got, interp)
+	}
+	if compiles != before {
+		t.Fatal("ForceInterp still consulted the installed compiler")
+	}
+}
