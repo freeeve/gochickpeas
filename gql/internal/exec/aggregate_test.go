@@ -252,3 +252,55 @@ func TestAggregatorSlabKinds(t *testing.T) {
 		t.Fatalf("collect(v) = %v, want a 3-element list", r[3])
 	}
 }
+
+// TestAggregatorTierBoundary drives an aggregate across every geometric
+// slab seam (task 205 round 5): the first chunks grow per tierGroups and
+// later chunks hold chunkGroups, so a group count crossing the seams must
+// keep every window -- keys, states, distinct sets, and min/max -- intact
+// on all sides.
+func TestAggregatorTierBoundary(t *testing.T) {
+	const groups = 2800 // past tierBounds[2] = 2688, into the uniform chunks
+	bld := chickpeas.NewBuilder(2*groups, 0)
+	for gi := range groups {
+		for j := range 2 {
+			id, err := bld.AddNode("X")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := bld.SetProp(id, "g", int64(gi)); err != nil {
+				t.Fatal(err)
+			}
+			if err := bld.SetProp(id, "v", int64(gi*10+j)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	g := graph.New(bld.Finalize())
+	q, err := parser.Parse("MATCH (n:X) RETURN n.g AS gk, count(n) AS c, min(n.v) AS mn, count(DISTINCT n.v) AS d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(&eval.Ctx{G: g}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != groups {
+		t.Fatalf("%d groups, want %d", len(rows), groups)
+	}
+	for _, r := range rows {
+		gk, _ := r[0].AsInt()
+		if c, _ := r[1].AsInt(); c != 2 {
+			t.Fatalf("group %d: count = %d, want 2", gk, c)
+		}
+		if mn, _ := r[2].AsInt(); mn != gk*10 {
+			t.Fatalf("group %d: min = %d, want %d", gk, mn, gk*10)
+		}
+		if d, _ := r[3].AsInt(); d != 2 {
+			t.Fatalf("group %d: distinct = %d, want 2", gk, d)
+		}
+	}
+}

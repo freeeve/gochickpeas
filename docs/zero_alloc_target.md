@@ -323,6 +323,23 @@ unbounded path finally sorts by. Ours is (keys, arrival sequence);
 theirs breaks ties by key values, and rank-only eviction there admits a
 wrong set whenever more than bound tuples share a rank.
 
+### 11. Geometric first chunks for slab accumulators
+
+A slab-chunked accumulator (the aggregator's per-group windows) that
+allocates fixed full-size chunks pays the whole first chunk on its first
+element: a 218-group aggregate allocated 0.63 MB of slab capacity per
+run against ~20 KB of live use (BI Q8, measured by the base-diff
+protocol above). Grow the first chunks geometrically (128, 512, 2048,
+then the uniform 4096) and keep the O(1) index->window mapping with a
+three-comparison prefix switch; a large aggregate pays at most the
+extra seams, a small one allocates proportionally to what it groups.
+Q8's appendGroup: 643 KB -> 100 KB per run. Wall was FLAT there -- the
+query is subquery-eval-bound -- so this entry is an allocation win with
+the honest label, not a latency claim; the same measurement showed the
+madvise CPU share was cross-thread scavenger work that best-of wall
+never saw. Proving commit: the aggregate slab-tier change (task 205
+round 5).
+
 ## Anti-patterns and honest labels
 
 - **Don't move cost--label it.** Reusing scratch across calls is a real

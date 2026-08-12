@@ -299,35 +299,70 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 // partial chunk of waste.
 const chunkGroups = 4096
 
+// tierGroups are the geometric sizes of the first slab chunks: most
+// aggregates group into tens-to-hundreds of rows, and a full-size first
+// slab dominated whole-query allocation on small aggregates (task 205
+// round 5: Q8's 218-group aggregate paid 0.63 MB of slab capacity per
+// run). A large aggregate pays at most these three extra chunk seams.
+var tierGroups = [3]int{128, 512, 2048}
+
+// tierBounds are tierGroups' cumulative ends: the group index where each
+// later chunk starts.
+var tierBounds = [3]int{128, 640, 2688}
+
+// chunkCap is chunk c's size in groups.
+func chunkCap(c int) int {
+	if c < len(tierGroups) {
+		return tierGroups[c]
+	}
+	return chunkGroups
+}
+
+// chunkWindow maps a group index to its slab chunk and in-chunk group
+// offset: the first chunks grow geometrically per tierGroups, every
+// later chunk holds chunkGroups.
+func chunkWindow(idx int) (c, w int) {
+	switch {
+	case idx < tierBounds[0]:
+		return 0, idx
+	case idx < tierBounds[1]:
+		return 1, idx - tierBounds[0]
+	case idx < tierBounds[2]:
+		return 2, idx - tierBounds[1]
+	}
+	r := idx - tierBounds[2]
+	return 3 + r/chunkGroups, r % chunkGroups
+}
+
 // keysOf/statesOf/seenOf are a group's slab windows.
 func (a *aggregator) keysOf(idx int) []value.Value {
 	k := len(a.groupC)
-	w := (idx % chunkGroups) * k
-	return a.keysChunks[idx/chunkGroups][w : w+k]
+	c, w := chunkWindow(idx)
+	return a.keysChunks[c][w*k : (w+1)*k]
 }
 
 func (a *aggregator) statesOf(idx int) []aggState {
 	s := len(a.aggC)
-	w := (idx % chunkGroups) * s
-	return a.stateChunks[idx/chunkGroups][w : w+s]
+	c, w := chunkWindow(idx)
+	return a.stateChunks[c][w*s : (w+1)*s]
 }
 
 func (a *aggregator) seenOf(idx int) []distinctSet {
 	s := len(a.aggC)
-	w := (idx % chunkGroups) * s
-	return a.seenChunks[idx/chunkGroups][w : w+s]
+	c, w := chunkWindow(idx)
+	return a.seenChunks[c][w*s : (w+1)*s]
 }
 
 func (a *aggregator) mmOf(idx int) []value.Value {
 	s := len(a.aggC)
-	w := (idx % chunkGroups) * s
-	return a.mmChunks[idx/chunkGroups][w : w+s]
+	c, w := chunkWindow(idx)
+	return a.mmChunks[c][w*s : (w+1)*s]
 }
 
 func (a *aggregator) itemsOf(idx int) [][]value.Value {
 	s := len(a.aggC)
-	w := (idx % chunkGroups) * s
-	return a.itemsChunks[idx/chunkGroups][w : w+s]
+	c, w := chunkWindow(idx)
+	return a.itemsChunks[c][w*s : (w+1)*s]
 }
 
 // appendGroup claims the next slab windows for a new group, copying its
@@ -335,11 +370,13 @@ func (a *aggregator) itemsOf(idx int) [][]value.Value {
 func (a *aggregator) appendGroup(keys []value.Value) int {
 	idx := a.nGroups
 	a.nGroups++
-	if idx%chunkGroups == 0 {
-		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, chunkGroups*len(a.groupC)))
-		a.stateChunks = append(a.stateChunks, make([]aggState, 0, chunkGroups*len(a.aggC)))
+	c, w := chunkWindow(idx)
+	if w == 0 {
+		n := chunkCap(c)
+		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
+		a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
 		if a.hasDistinct {
-			seen := make([]distinctSet, chunkGroups*len(a.aggC))
+			seen := make([]distinctSet, n*len(a.aggC))
 			for i := range seen {
 				seen[i].nodes.Rec = &a.rec
 				seen[i].rels.Rec = &a.rec
@@ -347,13 +384,12 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 			a.seenChunks = append(a.seenChunks, seen)
 		}
 		if a.hasMinMax {
-			a.mmChunks = append(a.mmChunks, make([]value.Value, chunkGroups*len(a.aggC)))
+			a.mmChunks = append(a.mmChunks, make([]value.Value, n*len(a.aggC)))
 		}
 		if a.hasCollect {
-			a.itemsChunks = append(a.itemsChunks, make([][]value.Value, chunkGroups*len(a.aggC)))
+			a.itemsChunks = append(a.itemsChunks, make([][]value.Value, n*len(a.aggC)))
 		}
 	}
-	c := idx / chunkGroups
 	a.keysChunks[c] = append(a.keysChunks[c], keys...)
 	for _, k := range a.kinds {
 		a.stateChunks[c] = append(a.stateChunks[c], aggState{kind: k})
