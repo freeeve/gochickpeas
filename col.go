@@ -126,20 +126,30 @@ func (c I64Col) Get(pos uint32) (int64, bool) {
 		return 0, false
 	}
 	if c.narrow != nil {
+		// The u48 arm bounds on i+8 against the 2-byte-padded buffer --
+		// exact, since a valid slot satisfies i <= len-8 and the first
+		// out-of-range slot lands at i = len-2. Narrower widths divide
+		// the unpadded length evenly, so the plain check is exact there.
 		i := int(pos) * int(c.nw)
-		if i >= len(c.narrow) {
-			return 0, false
-		}
 		switch c.nw {
 		case 1:
-			return c.nmin + int64(c.narrow[i]), true
+			if i < len(c.narrow) {
+				return c.nmin + int64(c.narrow[i]), true
+			}
 		case 2:
-			return c.nmin + int64(binary.LittleEndian.Uint16(c.narrow[i:])), true
+			if i+2 <= len(c.narrow) {
+				return c.nmin + int64(binary.LittleEndian.Uint16(c.narrow[i:])), true
+			}
 		case 4:
-			return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
+			if i+4 <= len(c.narrow) {
+				return c.nmin + int64(binary.LittleEndian.Uint32(c.narrow[i:])), true
+			}
+		default:
+			if i+8 <= len(c.narrow) {
+				return c.nmin + int64(binary.LittleEndian.Uint64(c.narrow[i:])&narrowU48Mask), true
+			}
 		}
-		return c.nmin + int64(uint64(binary.LittleEndian.Uint32(c.narrow[i:]))|
-			uint64(binary.LittleEndian.Uint16(c.narrow[i+4:]))<<32), true
+		return 0, false
 	}
 	if c.bits != nil {
 		if int(pos) >= c.bits.Len() {

@@ -25,7 +25,11 @@ type narrowI64Vec struct {
 // n is the element count.
 func (v narrowI64Vec) n() int { return len(v.b) / int(v.w) }
 
-// at is the decoded value at slot i (caller bounds-checks).
+// at is the decoded value at slot i (caller bounds-checks). The u48
+// class reads one unaligned 8-byte load masked to 48 bits -- the buffer
+// carries a 2-byte pad so the load never runs off the end; two narrow
+// loads plus a shift-combine measurably taxed per-candidate reads in
+// microsecond-scale kernels (task 300).
 func (v narrowI64Vec) at(i int) int64 {
 	switch v.w {
 	case 1:
@@ -35,10 +39,11 @@ func (v narrowI64Vec) at(i int) int64 {
 	case 4:
 		return v.min + int64(binary.LittleEndian.Uint32(v.b[i*4:]))
 	}
-	j := i * 6
-	return v.min + int64(uint64(binary.LittleEndian.Uint32(v.b[j:]))|
-		uint64(binary.LittleEndian.Uint16(v.b[j+4:]))<<32)
+	return v.min + int64(binary.LittleEndian.Uint64(v.b[i*6:])&narrowU48Mask)
 }
+
+// narrowU48Mask keeps the low 48 bits of the padded 8-byte u48 load.
+const narrowU48Mask = 0xFFFFFFFFFFFF
 
 // narrowI64MinLen gates narrowing to columns big enough for the byte
 // savings to matter; below it the extra representation buys nothing.
@@ -74,7 +79,14 @@ func narrowI64Vals(vals []int64) (narrowI64Vec, bool) {
 	default:
 		return narrowI64Vec{}, false
 	}
-	b := make([]byte, len(vals)*int(w))
+	// The u48 buffer carries a 2-byte pad so at() can decode with one
+	// 8-byte load; n() = len/w is unaffected (2 < w) and the pad is
+	// never addressed as an element.
+	pad := 0
+	if w == 6 {
+		pad = 2
+	}
+	b := make([]byte, len(vals)*int(w)+pad)
 	for i, v := range vals {
 		d := uint64(v - mn)
 		switch w {
