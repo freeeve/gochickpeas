@@ -205,6 +205,20 @@ func New(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot)
 	return newCompiled(comp(ctx, e, slots, g), g)
 }
 
+// ConstValue reports the expression's compile-time constant value: the
+// bottom-up literal folding is the one authority on constness (a slot or
+// property read never folds), so ok=false exactly when evaluation could
+// depend on a row. slots must be the caller's real slot map -- with an
+// empty map an unbound name folds to a null LITERAL, which would launder
+// row-dependent expressions (coalesce(m.ts, d) folds to d) into
+// constants.
+func ConstValue(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot) (value.Value, bool) {
+	if lit, ok := comp(ctx, e, slots, g).(*cLit); ok {
+		return lit.v, true
+	}
+	return value.Value{}, false
+}
+
 func comp(ctx *eval.Ctx, e ast.Expr, slots map[string]int, g *chickpeas.Snapshot) cnode {
 	switch n := e.(type) {
 	case *ast.Lit:

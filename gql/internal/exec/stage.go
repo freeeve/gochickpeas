@@ -114,6 +114,7 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	isCarried := func(s int) bool { return !isBound(s) }
 	var conjs []ast.Expr
 	plan.SplitAnd(stage.Where, &conjs)
+	conjs = rewriteDateEqRanges(ctx, conjs, slots)
 	for _, c := range conjs {
 		cc := hoistEval(ctx, compileEval(ctx, c, slots), isConst, isCarried, sample, slots)
 		var refs []int
