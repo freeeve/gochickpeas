@@ -93,7 +93,30 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 	// rows share the backing arrays.
 	type pairKey struct{ a, b graph.NodeID }
 	paths := map[pairKey]*nodesRels{}
+	// The weighted form batches per SOURCE: one multi-target Dijkstra
+	// settles every distinct target the stage's rows request from that
+	// source (terminating at the farthest requested target), and each row
+	// reads its pair off the memo -- a stage of s sources over s*t rows
+	// runs s searches instead of s*t.
 	var ws wpScratch
+	if pw != nil {
+		srcTargets := map[graph.NodeID][]graph.NodeID{}
+		for _, row := range rows {
+			if a, ok1 := row[sp.From].AsNode(); ok1 {
+				if b, ok2 := row[sp.To].AsNode(); ok2 {
+					if _, seen := paths[pairKey{a, b}]; !seen {
+						paths[pairKey{a, b}] = nil // claimed; filled below
+						srcTargets[a] = append(srcTargets[a], b)
+					}
+				}
+			}
+		}
+		for a, targets := range srcTargets {
+			for b, p := range weightedShortestPaths(ctx, a, targets, sp, rm, hop, pw, &ws) {
+				paths[pairKey{a, b}] = p
+			}
+		}
+	}
 	for _, row := range rows {
 		var path nodesRels
 		found := false
@@ -101,7 +124,7 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 			if b, ok2 := row[sp.To].AsNode(); ok2 {
 				switch {
 				case pw != nil:
-					if p := weightedShortestPath(ctx, a, b, sp, rm, hop, pw, &ws); p != nil {
+					if p := paths[pairKey{a, b}]; p != nil {
 						path, found = *p, true
 					}
 				case srcFreq[a] >= 2:

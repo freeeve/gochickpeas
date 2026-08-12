@@ -210,9 +210,30 @@ type wpScratch struct {
 var weightedSearches int
 
 func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight, ws *wpScratch) *nodesRels {
+	return weightedShortestPaths(ctx, a, []graph.NodeID{b}, sp, rm, hop, w, ws)[b]
+}
+
+// weightedShortestPaths is the multi-target form: ONE search from a
+// settles every requested target, terminating when the last one pops --
+// a stage whose rows share a source pays one component-bounded Dijkstra
+// instead of one per row. Optimal per target by the same argument as the
+// single-target early exit: the heap pops states in cost order, so the
+// FIRST pop of any state at a target is that target's minimum cost (over
+// every admissible hop count when a hop cap keys states by (node, hops)).
+// Absent map entries mean no path.
+func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight, ws *wpScratch) map[graph.NodeID]*nodesRels {
 	weightedSearches++
-	if a == b {
-		return &nodesRels{nodes: []graph.NodeID{a}}
+	out := make(map[graph.NodeID]*nodesRels, len(targets))
+	remaining := map[graph.NodeID]bool{}
+	for _, b := range targets {
+		if b == a {
+			out[a] = &nodesRels{nodes: []graph.NodeID{a}}
+			continue
+		}
+		remaining[b] = true
+	}
+	if len(remaining) == 0 {
+		return out
 	}
 	unbounded := sp.Max == nil
 	cap := uint64(ctx.G.NodeCount())
@@ -241,7 +262,8 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 		if d, ok := dist[k]; ok && st.cost > d {
 			continue
 		}
-		if st.node == b {
+		if remaining[st.node] {
+			delete(remaining, st.node)
 			var nodes []graph.NodeID
 			var rels []uint32
 			nodes = append(nodes, st.node)
@@ -256,7 +278,10 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 			for i, j := 0, len(rels)-1; i < j; i, j = i+1, j-1 {
 				rels[i], rels[j] = rels[j], rels[i]
 			}
-			return &nodesRels{nodes: nodes, rels: rels}
+			out[st.node] = &nodesRels{nodes: nodes, rels: rels}
+			if len(remaining) == 0 {
+				return out
+			}
 		}
 		if st.hops >= cap {
 			continue
@@ -280,5 +305,5 @@ func weightedShortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm
 			}
 		}
 	}
-	return nil
+	return out
 }

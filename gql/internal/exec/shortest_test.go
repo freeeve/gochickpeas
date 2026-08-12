@@ -455,3 +455,41 @@ func TestPathFromParents(t *testing.T) {
 		t.Fatalf("unreachable b = %v, want nil", got)
 	}
 }
+
+// TestWeightedSharedSourceBatch pins the per-source batching (task 205
+// round 7): rows sharing a source run ONE multi-target Dijkstra, and
+// every row still gets its own pair's minimum-cost path -- including the
+// detour case (0->1 direct costs 10, via 2 costs 2) and an unreachable
+// target under an OPTIONAL stage.
+func TestWeightedSharedSourceBatch(t *testing.T) {
+	ctx := weightedGraph(t)
+	sp := &plan.SpStage{
+		PathSlot: 2, From: 0, To: 1, Optional: true,
+		Dir: graph.Outgoing, Types: []string{"R"},
+		Weight: &ast.CostSpec{Kind: ast.CostProperty, Prop: "w"},
+	}
+	before := weightedSearches
+	rows := runSPStage(ctx, sp, [][]value.Value{
+		{value.Node(0), value.Node(1), value.Null()},
+		{value.Node(0), value.Node(2), value.Null()},
+		{value.Node(1), value.Node(0), value.Null()}, // unreachable (edges point away)
+	})
+	if n := weightedSearches - before; n != 2 {
+		t.Fatalf("ran %d weighted searches for 3 rows over 2 sources, want 2 (one per source)", n)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (optional keeps the unreachable row)", len(rows))
+	}
+	// 0->1 must take the min-cost detour through 2 (cost 2), not the
+	// direct cost-10 edge.
+	nodes, _, ok := rows[0][2].AsPath()
+	if !ok || len(nodes) != 3 || nodes[1] != 2 {
+		t.Fatalf("0->1 path = %v (ok=%v), want the 0-2-1 detour", nodes, ok)
+	}
+	if nodes, _, ok := rows[1][2].AsPath(); !ok || len(nodes) != 2 {
+		t.Fatalf("0->2 path = %v (ok=%v), want the direct edge", nodes, ok)
+	}
+	if !rows[2][2].IsNull() {
+		t.Fatalf("1->0 must null-fill under OPTIONAL, got %v", rows[2][2])
+	}
+}
