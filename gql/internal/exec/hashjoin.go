@@ -288,7 +288,7 @@ func (h *hashJoinSink) build(row []value.Value) *hjTable {
 	}
 	var sink rowSink = bs
 	for i := len(h.hj.Build) - 1; i >= 0; i-- {
-		sink = buildStageSink(h.ctx, h.seg, h.hj.Build[i], sink, func(s int) bool { return ext[s] }, seed, nil, benv)
+		sink = buildStageSink(h.ctx, h.seg, h.hj.Build[i], sink, func(s int) bool { return ext[s] }, func(int) bool { return false }, seed, nil, benv)
 	}
 	sink.push(seed)
 	sink.close()

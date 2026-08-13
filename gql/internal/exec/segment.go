@@ -118,6 +118,13 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 		}
 		return slotAgrees(s, inputs, true)
 	}
+	// uniformIn drops constIn's bound-slot exclusion: a slot every seeded
+	// input agrees on stays uniform through rebinds and arg re-scans
+	// (neither changes a bound value), which is what the chain absorber's
+	// tail needs -- its into-bound target IS "bound" by the tail itself.
+	uniformIn := func(s int) bool {
+		return s >= 0 && len(inputs) > 0 && slotAgrees(s, inputs, true)
+	}
 
 	var term terminal
 	if seg.Proj.Aggregated {
@@ -137,7 +144,7 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 		if prof != nil {
 			cell = &profCells[i]
 		}
-		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, sample, cell, uniq)
+		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, uniformIn, sample, cell, uniq)
 	}
 
 	buf := make([]value.Value, seg.RowWidth)
@@ -171,7 +178,7 @@ func runSegment(ctx *eval.Ctx, seg *plan.Segment, inputs [][]value.Value, prof *
 
 // buildStageSink wires one stage into the chain as a row sink feeding
 // next, registering its PROFILE counter when cell is non-nil.
-func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSink, constIn func(int) bool, sample []value.Value, cell *stageProfCell, uniq *uniqEnv) rowSink {
+func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSink, constIn, uniformIn func(int) bool, sample []value.Value, cell *stageProfCell, uniq *uniqEnv) rowSink {
 	single := func() *uint64 {
 		if cell == nil {
 			return nil
@@ -182,7 +189,7 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 	switch s := st.(type) {
 	case *plan.MatchStage:
 		ms := &matchSink{
-			ctx: ctx, stage: s, comp: compileStage(ctx, s, seg.Slots, constIn, sample),
+			ctx: ctx, stage: s, comp: compileStage(ctx, s, seg.Slots, constIn, uniformIn, sample, seg.Proj.Distinct),
 			slots: seg.Slots, buf: make([]value.Value, seg.RowWidth), next: next, uniq: uniq,
 		}
 		ms.emitFn = ms.emit
@@ -365,11 +372,11 @@ func (p *passthroughSink) close() { p.next.close() }
 
 // buildChain wires a segment's stages onto term, returning the head sink
 // (no PROFILE cells: streaming runs are unprofiled by construction).
-func buildChain(ctx *eval.Ctx, seg *plan.Segment, term rowSink, constIn func(int) bool, sample []value.Value) rowSink {
+func buildChain(ctx *eval.Ctx, seg *plan.Segment, term rowSink, constIn, uniformIn func(int) bool, sample []value.Value) rowSink {
 	uniq := &uniqEnv{}
 	sink := term
 	for i := len(seg.Stages) - 1; i >= 0; i-- {
-		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, sample, nil, uniq)
+		sink = buildStageSink(ctx, seg, seg.Stages[i], sink, constIn, uniformIn, sample, nil, uniq)
 	}
 	return sink
 }
@@ -393,11 +400,12 @@ func runSegmentRun(ctx *eval.Ctx, segs []*plan.Segment, inputs [][]value.Value) 
 	} else {
 		term = newProjSink(ctx, &last.Proj, last.Slots, last.RowWidth)
 	}
-	head := buildChain(ctx, last, term, never, nil)
+	head := buildChain(ctx, last, term, never, never, nil)
 	for k := len(segs) - 2; k >= 0; k-- {
 		seg := segs[k]
 		pt := newPassthroughSink(ctx, seg, segs[k+1].RowWidth, head)
 		constIn := never
+		uniformIn := never
 		var sample []value.Value
 		if k == 0 {
 			bound := segmentBoundSlots(seg)
@@ -411,8 +419,11 @@ func runSegmentRun(ctx *eval.Ctx, segs []*plan.Segment, inputs [][]value.Value) 
 				}
 				return slotAgrees(s, inputs, true)
 			}
+			uniformIn = func(s int) bool {
+				return s >= 0 && len(inputs) > 0 && slotAgrees(s, inputs, true)
+			}
 		}
-		head = buildChain(ctx, seg, pt, constIn, sample)
+		head = buildChain(ctx, seg, pt, constIn, uniformIn, sample)
 	}
 	buf := make([]value.Value, segs[0].RowWidth)
 	for _, in := range inputs {

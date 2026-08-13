@@ -98,7 +98,10 @@ func tryOrderedDistinctTopK(ctx *eval.Ctx, segs []*plan.Segment, at int, inputs 
 		}
 		return slotAgrees(s, inputs, true)
 	}
-	head := buildChain(ctx, agg, term, constIn, sample)
+	uniformIn := func(s int) bool {
+		return s >= 0 && len(inputs) > 0 && slotAgrees(s, inputs, true)
+	}
+	head := buildChain(ctx, agg, term, constIn, uniformIn, sample)
 	buf := make([]value.Value, agg.RowWidth)
 	for _, in := range inputs {
 		clear(buf)

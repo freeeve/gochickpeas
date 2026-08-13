@@ -16,6 +16,14 @@ import (
 // each level's bucket split into specialized per-candidate predicates
 // (levelPreds) and general row evaluations (levelFilters).
 type stageComp struct {
+	// ops are the stage's EXEC ops -- stage.Ops unless a constant-anchored
+	// chain was absorbed (semired.go); profMap maps exec indices back to
+	// original op indices for PROFILE alignment (nil when identical).
+	ops     []plan.BindOp
+	profMap []int
+	// gates test carried-in slots against absorbed-chain membership sets
+	// once per input row (semired.go).
+	gates        []memberGate
 	matchers     []*graph.NodeMatcher
 	relMatchers  []*graph.RelMatcher
 	levelFilters [][]RowEval
@@ -33,21 +41,30 @@ type stageComp struct {
 // property keys, rel types, params) so the per-candidate work is bitmap
 // contains + column reads. constIn reports segment-wide hoisting-constant
 // slots; sample is a seeded input row carrying their values.
-func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) *stageComp {
-	filters, preds, batch := buildLevelFilters(ctx, stage, slots, constIn, sample)
+func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn, uniformIn func(int) bool, sample []value.Value, segDistinct bool) *stageComp {
+	ops := stage.Ops
+	var profMap []int
+	var gates []memberGate
+	if ab := absorbConstChains(ctx, stage, slots, uniformIn, sample, segDistinct); ab != nil {
+		ops, profMap, gates = ab.ops, ab.profMap, ab.gates
+	}
+	filters, preds, batch := buildLevelFilters(ctx, stage, ops, slots, constIn, sample)
 	sc := &stageComp{
-		matchers:     make([]*graph.NodeMatcher, len(stage.Ops)),
-		relMatchers:  make([]*graph.RelMatcher, len(stage.Ops)),
+		ops:          ops,
+		profMap:      profMap,
+		gates:        gates,
+		matchers:     make([]*graph.NodeMatcher, len(ops)),
+		relMatchers:  make([]*graph.RelMatcher, len(ops)),
 		levelFilters: filters,
 		levelPreds:   preds,
 		levelBatch:   batch,
-		hopGates:     buildHopGates(ctx, stage.Ops),
-		semijoins:    buildSemijoins(stage.Ops),
+		hopGates:     buildHopGates(ctx, ops),
+		semijoins:    buildSemijoins(ops),
 	}
-	sc.seedRel = make([][][]*graph.RelMatcher, len(stage.Ops))
-	sc.seedNode = make([][][]*graph.NodeMatcher, len(stage.Ops))
-	for i := range stage.Ops {
-		op := &stage.Ops[i]
+	sc.seedRel = make([][][]*graph.RelMatcher, len(ops))
+	sc.seedNode = make([][][]*graph.NodeMatcher, len(ops))
+	for i := range ops {
+		op := &ops[i]
 		props := make([]graph.PropSpec, len(op.Props))
 		for j, p := range op.Props {
 			props[j] = graph.PropSpec{Key: p.Key, Val: eval.LitValue(ctx, p.Val)}
@@ -80,8 +97,8 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 // (compile.CandidateBatch: one columnar pass over the whole candidate
 // buffer) or the preds buckets (compile.CandidatePred: per-candidate
 // closure) instead of the general row evaluation.
-func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, constIn func(int) bool, sample []value.Value) ([][]RowEval, [][]compile.CandPred, [][]compile.CandBatch) {
-	n := max(len(stage.Ops), 1)
+func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, ops []plan.BindOp, slots map[string]int, constIn func(int) bool, sample []value.Value) ([][]RowEval, [][]compile.CandPred, [][]compile.CandBatch) {
+	n := max(len(ops), 1)
 	buckets := make([][]RowEval, n)
 	preds := make([][]compile.CandPred, n)
 	batch := make([][]compile.CandBatch, n)
@@ -94,9 +111,9 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 	if stage.PathBind != nil {
 		return buckets, preds, batch
 	}
-	slotLevel := make(map[int]int, len(stage.Ops))
-	for i := range stage.Ops {
-		op := &stage.Ops[i]
+	slotLevel := make(map[int]int, len(ops))
+	for i := range ops {
+		op := &ops[i]
 		if _, seen := slotLevel[slotOf(op)]; !seen {
 			slotLevel[slotOf(op)] = i
 		}
@@ -141,7 +158,7 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 			// the walk that fans out).
 			if hasWalk {
 				for level+1 < n {
-					next := &stage.Ops[level+1]
+					next := &ops[level+1]
 					if next.Kind == plan.OpExpand && next.Rebind {
 						level++
 						continue
@@ -151,16 +168,16 @@ func buildLevelFilters(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]i
 			}
 		}
 		lvl := min(level, n-1)
-		if bare, isCompiled := cc.(*compile.Compiled); isCompiled && lvl < len(stage.Ops) {
+		if bare, isCompiled := cc.(*compile.Compiled); isCompiled && lvl < len(ops) {
 			// A uniqueness-tracked level never fill-sweeps, so its
 			// conjuncts stay per-candidate (CandidatePred below).
-			if stage.Ops[lvl].Uniq == nil {
-				if b, ok := compile.CandidateBatch(bare, slotOf(&stage.Ops[lvl])); ok {
+			if ops[lvl].Uniq == nil {
+				if b, ok := compile.CandidateBatch(bare, slotOf(&ops[lvl])); ok {
 					batch[lvl] = append(batch[lvl], b)
 					continue
 				}
 			}
-			if p, ok := compile.CandidatePred(bare, slotOf(&stage.Ops[lvl]), slots); ok {
+			if p, ok := compile.CandidatePred(bare, slotOf(&ops[lvl]), slots); ok {
 				preds[lvl] = append(preds[lvl], p)
 				continue
 			}

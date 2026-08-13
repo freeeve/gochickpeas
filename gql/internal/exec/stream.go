@@ -83,6 +83,7 @@ type matchSink struct {
 	scratch     genScratch
 	next        rowSink
 	opRows      []uint64
+	profScratch []uint64
 	fired       bool
 	pathFilters []RowEval
 	// uniq is the segment chain's shared used-relationship env: chained
@@ -95,11 +96,20 @@ type matchSink struct {
 }
 
 func (m *matchSink) push(row []value.Value) bool {
+	// Absorbed-chain gates on carried slots: a failing row cannot match
+	// the stage (the absorber refuses OPTIONAL stages, so dropping is
+	// exact).
+	for i := range m.comp.gates {
+		if !m.comp.gates[i].pass(row) {
+			return true
+		}
+	}
 	copy(m.buf, row)
 	if m.stage.Optional {
 		copy(m.orig, row)
 		m.fired = false
-		more := genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
+		more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.profRows())
+		m.scatterProf()
 		if more && !m.fired {
 			// The re-emitted row takes the path assembly and post-path
 			// WHERE too, exactly like the former batch bindPaths pass.
@@ -107,7 +117,36 @@ func (m *matchSink) push(row []value.Value) bool {
 		}
 		return more
 	}
-	return genMatches(m.ctx, m.stage.Ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.opRows)
+	more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.profRows())
+	m.scatterProf()
+	return more
+}
+
+// profRows is the opRows slice genMatches writes: the stage's own when
+// exec ops match the plan's, else a scratch sized to the exec ops that
+// scatterProf redistributes -- PROFILE lines index ORIGINAL operators,
+// and an absorbed chain's ops must report 0, not another op's count.
+func (m *matchSink) profRows() []uint64 {
+	if m.opRows == nil || m.comp.profMap == nil {
+		return m.opRows
+	}
+	if m.profScratch == nil {
+		m.profScratch = make([]uint64, len(m.comp.ops)+1)
+	}
+	clear(m.profScratch)
+	return m.profScratch
+}
+
+// scatterProf folds a scratch profile back onto the original op lines.
+func (m *matchSink) scatterProf() {
+	if m.opRows == nil || m.comp.profMap == nil {
+		return
+	}
+	for e, orig := range m.comp.profMap {
+		m.opRows[orig] += m.profScratch[e]
+	}
+	// The trailing stage-WHERE tally.
+	m.opRows[len(m.opRows)-1] += m.profScratch[len(m.profScratch)-1]
 }
 
 // emit forwards one bound match. The OPTIONAL no-match probe counts every
