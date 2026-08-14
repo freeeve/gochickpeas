@@ -191,6 +191,67 @@ func (c I64Col) Slice() ([]int64, bool) {
 	return c.dense, c.dense != nil
 }
 
+// GetMany reads the values at ids into vals with a presence mask -- the
+// bulk form of Get for candidate-batch sweeps: the representation switch
+// and the receiver hoist out of the loop, so a chunk pays one dispatch
+// instead of a call chain per id. vals and present must be at least
+// len(ids) long.
+func (c I64Col) GetMany(ids []uint32, vals []int64, present []bool) {
+	switch {
+	case c.dense != nil:
+		d := c.dense
+		for i, id := range ids {
+			if int(id) < len(d) {
+				vals[i], present[i] = d[id], true
+			} else {
+				present[i] = false
+			}
+		}
+	case c.nv != nil && c.nv.narrow != nil:
+		v, b, mn := c.nv, c.nv.narrow, c.nv.min
+		switch v.w {
+		case 1:
+			for i, id := range ids {
+				if int(id) < len(b) {
+					vals[i], present[i] = mn+int64(b[id]), true
+				} else {
+					present[i] = false
+				}
+			}
+		case 2:
+			for i, id := range ids {
+				if j := int(id) * 2; j+2 <= len(b) {
+					vals[i], present[i] = mn+int64(binary.LittleEndian.Uint16(b[j:])), true
+				} else {
+					present[i] = false
+				}
+			}
+		case 4:
+			for i, id := range ids {
+				if j := int(id) * 4; j+4 <= len(b) {
+					vals[i], present[i] = mn+int64(binary.LittleEndian.Uint32(b[j:])), true
+				} else {
+					present[i] = false
+				}
+			}
+		default:
+			// u48: the buffer carries a 2-byte pad, so the padded 8-byte
+			// masked load bounds exactly like Get's arm.
+			for i, id := range ids {
+				if j := int(id) * 6; j+8 <= len(b) {
+					vals[i], present[i] = mn+int64(binary.LittleEndian.Uint64(b[j:])&narrowU48Mask), true
+				} else {
+					present[i] = false
+				}
+			}
+		}
+	default:
+		for i, id := range ids {
+			vals[i], present[i] = c.Get(id)
+		}
+	}
+}
+
 // SliceRange is the dense-speed window of a column whose presence is one
 // contiguous position run: values read as vals[pos-start], and a
 // position outside [start, start+len) is absent. LDBC-shaped loaders

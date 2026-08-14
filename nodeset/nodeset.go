@@ -153,3 +153,20 @@ func (s *Set) AndNot(other *Set) *Set {
 func (s *Set) Equals(other *Set) bool {
 	return s.bm.Equals(other.bm)
 }
+
+// IterChunks walks the set in ascending order one buf-sized chunk at a
+// time, reusing buf; yield returning false stops the walk. The chunk
+// form lets batch consumers sweep columnar predicates over many ids per
+// dispatch instead of paying a closure per id.
+func (s *Set) IterChunks(buf []uint32, yield func([]uint32) bool) {
+	it := s.bm.ManyIterator()
+	for {
+		n := it.NextMany(buf)
+		if n == 0 {
+			return
+		}
+		if !yield(buf[:n]) {
+			return
+		}
+	}
+}

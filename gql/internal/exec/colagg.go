@@ -107,14 +107,20 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 	never := func(int) bool { return false }
 	ctx.MatchEpoch++
 
-	// Filters: every WHERE conjunct of the scan stage must specialize to
-	// a per-candidate predicate.
+	// Filters: every WHERE conjunct of the scan stage must specialize --
+	// i64-column-vs-constant conjuncts to bulk IntSweeps (one column
+	// dispatch per chunk), everything else to a per-candidate predicate.
+	var sweeps []compile.IntSweep
 	var preds []compile.CandPred
 	if ms.Where != nil {
 		var conjs []ast.Expr
 		plan.SplitAnd(ms.Where, &conjs)
 		for _, c := range conjs {
 			cc := compile.HoistCarriedIn(compile.HoistConstIn(ctx, compile.New(ctx, c, head.Slots, g), isConst, scratch, head.Slots), never)
+			if sw, ok := compile.CandidateIntSweep(cc, vSlot); ok {
+				sweeps = append(sweeps, sw)
+				continue
+			}
 			p, ok := compile.CandidatePred(cc, vSlot, head.Slots)
 			if !ok {
 				return nil, 0, false
@@ -258,6 +264,26 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		}
 	}
 	if hasLabel {
+		// Chunked candidate walk: sweeps bulk-filter each id chunk (one
+		// column dispatch per conjunct per chunk), then survivors run
+		// the per-candidate predicates and accumulate.
+		const sweepChunk = 4096
+		vbuf := make([]int64, sweepChunk)
+		pbuf := make([]bool, sweepChunk)
+		kbuf := make([]bool, sweepChunk)
+		runChunk := func(chunk []uint32) {
+			for i := range chunk {
+				kbuf[i] = true
+			}
+			for _, sw := range sweeps {
+				sw(chunk, vbuf[:len(chunk)], pbuf[:len(chunk)], kbuf[:len(chunk)])
+			}
+			for i, id := range chunk {
+				if kbuf[i] {
+					scan(id)
+				}
+			}
+		}
 		// A selective range conjunct flips the enumeration: instead of
 		// every labeled node testing every predicate, walk the range
 		// index's window (exact count, no estimate) and test label
@@ -267,6 +293,13 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		// a superset reduction), so results are identical either way.
 		if win := colAggRangeWindow(env, ms.Where, vName, g); win != nil && len(win) < ids.Len()/4 {
 			dense := g.LabelDense(op.Source.Label)
+			idbuf := make([]uint32, 0, sweepChunk)
+			flush := func() {
+				if len(idbuf) > 0 {
+					runChunk(idbuf)
+					idbuf = idbuf[:0]
+				}
+			}
 			for _, id := range win {
 				in := false
 				if dense != nil {
@@ -276,13 +309,18 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 					in = ids.Contains(id)
 				}
 				if in {
-					scan(id)
+					if idbuf = append(idbuf, id); len(idbuf) == sweepChunk {
+						flush()
+					}
 				}
 			}
+			flush()
 		} else {
-			for id := range ids.Iter() {
-				scan(id)
-			}
+			cbuf := make([]uint32, sweepChunk)
+			ids.IterChunks(cbuf, func(chunk []uint32) bool {
+				runChunk(chunk)
+				return true
+			})
 		}
 	}
 

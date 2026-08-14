@@ -132,3 +132,44 @@ func BenchmarkI64ColGetNarrowU48(b *testing.B) {
 	}
 	_ = sink
 }
+
+// TestI64ColGetMany pins the bulk read against per-id Get on every
+// storage class (dense, each narrow width, bit, sparse fallback),
+// including out-of-range ids.
+func TestI64ColGetMany(t *testing.T) {
+	build := func(vals []int64) I64Col { return Col{col: narrowI64Column(vals)}.I64() }
+	spans := map[string][]int64{
+		"u8":  {5, 200, 5},
+		"u16": {1000, 60000, 1000},
+		"u32": {0, 1 << 30, 7},
+		"u48": {1_263_065_046_975, 1_263_065_046_975 + (1 << 40), 1_263_065_046_975},
+		"bit": {7, 8, 7},
+	}
+	for name, seed := range spans {
+		t.Run(name, func(t *testing.T) {
+			vals := make([]int64, narrowI64MinLen+3)
+			for i := range vals {
+				vals[i] = seed[i%len(seed)]
+			}
+			col := build(vals)
+			ids := []uint32{0, 1, uint32(len(vals) - 1), uint32(len(vals)), 999999, 2}
+			got := make([]int64, len(ids))
+			ok := make([]bool, len(ids))
+			col.GetMany(ids, got, ok)
+			for i, id := range ids {
+				wv, wok := col.Get(id)
+				if ok[i] != wok || (wok && got[i] != wv) {
+					t.Fatalf("%s id %d: GetMany = (%d,%v), Get = (%d,%v)", name, id, got[i], ok[i], wv, wok)
+				}
+			}
+		})
+	}
+	// Dense plain column (below the narrowing threshold).
+	dense := Col{col: denseI64Col([]int64{1, 2, 3})}.I64()
+	got := make([]int64, 2)
+	ok := make([]bool, 2)
+	dense.GetMany([]uint32{2, 5}, got, ok)
+	if !ok[0] || got[0] != 3 || ok[1] {
+		t.Fatalf("dense GetMany = %v %v", got, ok)
+	}
+}

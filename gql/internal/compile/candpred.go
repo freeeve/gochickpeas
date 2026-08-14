@@ -370,3 +370,55 @@ func cmpFloat(a, b float64) (int, bool) {
 	}
 	return 0, false
 }
+
+// IntSweep bulk-filters a candidate chunk over an i64 NODE column
+// against a folded constant: one GetMany then a hoisted compare loop --
+// the batch form of the cCmpPropConst per-candidate predicate for
+// columns the windowed CandidateBatch cannot serve (narrow storage
+// classes) and constants it declines (temporals, which fold to their
+// epoch millis and compare through the exact int order, per constI64Val).
+// vals/present are caller scratch of at least len(ids); keep is the
+// running mask. Candidates must be node ids, the same contract as
+// CandidateBatch.
+type IntSweep func(ids []uint32, vals []int64, present, keep []bool)
+
+// CandidateIntSweep specializes a compiled conjunct to an IntSweep;
+// ok=false leaves the caller on the per-candidate path.
+func CandidateIntSweep(c *Compiled, slot int) (IntSweep, bool) {
+	n, ok := c.c.(*cCmpPropConst)
+	if !ok || n.prop.slot != slot {
+		return nil, false
+	}
+	col := n.prop.reader.node
+	if col.kind != colI64 {
+		return nil, false
+	}
+	k, exact, kok := constI64Val(n.c)
+	if !kok {
+		return nil, false
+	}
+	r := col.i64
+	keep := opKeep(n.op)
+	rev := n.rev
+	return func(ids []uint32, vals []int64, present, keepM []bool) {
+		r.GetMany(ids, vals, present)
+		for i := range ids {
+			if !keepM[i] || !present[i] {
+				keepM[i] = false
+				continue
+			}
+			lo, ro := vals[i], k
+			if rev {
+				lo, ro = ro, lo
+			}
+			var o int
+			comparable := true
+			if exact {
+				o = cmpI64(lo, ro)
+			} else {
+				o, comparable = cmpFloat(float64(lo), float64(ro))
+			}
+			keepM[i] = comparable && keep(o)
+		}
+	}, true
+}
