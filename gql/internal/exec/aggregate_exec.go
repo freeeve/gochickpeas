@@ -174,7 +174,9 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	// rejected; at nGroups <= bound it would build every row anyway, plus
 	// heap bookkeeping the plain sort does not have.
 	if bound := orderBound(proj); bound >= 0 && bound < a.nGroups && len(proj.OrderBy) > 0 && !proj.Distinct && !disableAggTopk {
-		return a.finalizeTopK(ctx, proj, slots, postC, postSlots, nCols, stride, bound)
+		out := a.finalizeTopK(ctx, proj, slots, postC, postSlots, nCols, stride, bound)
+		a.releaseSlabs()
+		return out
 	}
 	// One arena backs every output row instead of a make per group: a
 	// grouping over a million groups then pays one large allocation plus its
@@ -191,6 +193,7 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	if len(proj.OrderBy) > 0 {
 		out = sortRowsByOrder(ctx, proj, slots, func(int) []value.Value { return nil }, 0, out)
 	}
+	a.releaseSlabs()
 	return paginate(out, proj.Skip, proj.Limit)
 }
 

@@ -8,6 +8,8 @@ package exec
 
 import (
 	"math"
+	"os"
+	"sync"
 
 	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -198,6 +200,9 @@ type aggregator struct {
 	aggC   []RowEval // nil entry = count(*)
 	index  flatset.ByteMap
 	indexI flatset.U64Map
+	// pooled is the adopted cross-run slab scratch (nil outside the
+	// GOCHICKPEAS_SCRATCH_POOL prototype).
+	pooled *aggSlabScratch
 	// keySlots holds each group key's row slot when EVERY key is a bare
 	// variable reference (and the tuple is short enough to pack), else
 	// nil. A bare variable's evaluation is exactly the row slot's value,
@@ -291,6 +296,7 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 			a.pctC = append(a.pctC, nil)
 		}
 	}
+	a.borrowSlabs()
 	return a
 }
 
@@ -365,6 +371,55 @@ func (a *aggregator) itemsOf(idx int) [][]value.Value {
 	return a.itemsChunks[c][w*s : (w+1)*s]
 }
 
+// aggSlabScratch is the cross-run reusable slab storage (task 150's
+// measurement prototype, env-gated by GOCHICKPEAS_SCRATCH_POOL=1): the
+// key/state chunk backing arrays and the integer group index survive
+// between executions through a pressure-aware sync.Pool; distinct
+// tables, min/max and collect windows stay per-run, so the measured
+// ceiling covers the slab+index component only. Reuse is safe because
+// emitted rows copy value structs out of the slab windows, never alias
+// them.
+type aggSlabScratch struct {
+	keys   [][]value.Value
+	states [][]aggState
+	indexI flatset.U64Map
+}
+
+var aggSlabPool sync.Pool
+
+var scratchPoolOn = os.Getenv("GOCHICKPEAS_SCRATCH_POOL") == "1"
+
+// borrowSlabs adopts pooled slab storage; appendGroup reuses its chunks
+// in place of fresh allocations.
+func (a *aggregator) borrowSlabs() {
+	if !scratchPoolOn {
+		return
+	}
+	if s, ok := aggSlabPool.Get().(*aggSlabScratch); ok && s != nil {
+		a.pooled = s
+		a.indexI = s.indexI
+	}
+}
+
+// releaseSlabs returns the slab storage (as grown by this run) to the
+// pool with the index reset; called after finalize has copied every
+// emitted row out of the windows.
+func (a *aggregator) releaseSlabs() {
+	if !scratchPoolOn || a.keysChunks == nil {
+		return
+	}
+	s := a.pooled
+	if s == nil {
+		s = &aggSlabScratch{}
+	}
+	s.keys, s.states = a.keysChunks, a.stateChunks
+	s.indexI = a.indexI
+	s.indexI.Reset()
+	a.pooled = nil
+	a.keysChunks, a.stateChunks = nil, nil
+	aggSlabPool.Put(s)
+}
+
 // appendGroup claims the next slab windows for a new group, copying its
 // key tuple in.
 func (a *aggregator) appendGroup(keys []value.Value) int {
@@ -373,8 +428,13 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 	c, w := chunkWindow(idx)
 	if w == 0 {
 		n := chunkCap(c)
-		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
-		a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
+		if p := a.pooled; p != nil && c < len(p.keys) {
+			a.keysChunks = append(a.keysChunks, p.keys[c][:0])
+			a.stateChunks = append(a.stateChunks, p.states[c][:0])
+		} else {
+			a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
+			a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
+		}
 		if a.hasDistinct {
 			seen := make([]distinctSet, n*len(a.aggC))
 			for i := range seen {
