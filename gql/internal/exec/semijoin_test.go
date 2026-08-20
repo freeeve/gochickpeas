@@ -143,3 +143,35 @@ func TestSemijoinLookaheadPrune(t *testing.T) {
 		t.Fatalf("count = %d, want 10 (one good y per x)", pruned)
 	}
 }
+
+// TestSemijoinCacheImpliesRebind pins the invariant the lookahead prune's
+// soundness rests on (task 305 exchange): buildSemijoins is the semijoin
+// cache's ONLY creator, and it marks exactly the bound-target rebind
+// shape -- so cache existence implies the op's To slot is already bound,
+// and reading row[To] at fill time can never see an unbound slot. The
+// sibling engine's port broke precisely because its cache had three
+// creators and existence did not carry this precondition; a second
+// creator added here must fail this roll call and re-derive the
+// lookahead's guard.
+func TestSemijoinCacheImpliesRebind(t *testing.T) {
+	ops := []plan.BindOp{
+		{Kind: plan.OpScan, Slot: 0},
+		{Kind: plan.OpExpand, From: 0, To: 1},                                        // fresh bind: no cache
+		{Kind: plan.OpExpand, From: 1, To: 2, Rebind: true, RelSlot: 3},              // named rel: no cache
+		{Kind: plan.OpVarExpand, From: 1, To: 4, Rebind: true, RelSlot: plan.NoSlot}, // var-length: no cache
+		{Kind: plan.OpExpand, From: 2, To: 0, Rebind: true, RelSlot: plan.NoSlot},    // the semijoin shape
+	}
+	semis := buildSemijoins(ops)
+	if len(semis) != len(ops) {
+		t.Fatalf("semijoins length %d, want %d", len(semis), len(ops))
+	}
+	for i, s := range semis {
+		want := ops[i].Kind == plan.OpExpand && ops[i].Rebind && ops[i].RelSlot == plan.NoSlot
+		if (s != nil) != want {
+			t.Fatalf("op %d: cache presence %v, want %v -- cache existence must imply the bound-target rebind shape", i, s != nil, want)
+		}
+		if s != nil && !ops[i].Rebind {
+			t.Fatalf("op %d: cache on a non-rebind op -- the lookahead's row[To] read would be unsound", i)
+		}
+	}
+}
