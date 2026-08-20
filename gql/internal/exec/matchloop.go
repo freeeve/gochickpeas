@@ -135,6 +135,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 	row := base
 
 	levelCandidates(ctx, &ops[0], sc, 0, row, uniq, scratch)
+	pruneSemijoinLookahead(ctx, ops, sc, 0, row, scratch)
 	scratch.swept[0] = sweepLevel(ctx, &ops[0], sc, 0, row, scratch, opRows)
 	cur := 0
 	for {
@@ -238,6 +239,7 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			} else {
 				cur++
 				levelCandidates(ctx, &ops[cur], sc, cur, row, uniq, scratch)
+				pruneSemijoinLookahead(ctx, ops, sc, cur, row, scratch)
 				scratch.swept[cur] = sweepLevel(ctx, &ops[cur], sc, cur, row, scratch, opRows)
 				scratch.pos[cur] = 0
 			}

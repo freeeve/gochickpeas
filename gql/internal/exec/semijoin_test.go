@@ -73,3 +73,73 @@ func TestSemijoinConstantTargetBuildsOnce(t *testing.T) {
 		t.Fatalf("semijoin set builds = %d, want 1 (constant anchor: materialize the neighborhood once, membership per row; 0 means no semijoin planned, >1 means the memo is dead)", builds)
 	}
 }
+
+// TestSemijoinLookaheadPrune pins the fill-time lookahead (task 205
+// round 12): a level whose NEXT op is a rebind semijoin over a bound
+// target sweeps doomed candidates out of its buffer before they bind --
+// engagement counted, results identical to the un-pruned walk, and the
+// prune must not disturb the semijoin's own multiplicity semantics.
+func TestSemijoinLookaheadPrune(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 128)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := b.AddNode("Anchor")
+	must(err)
+	for i := 0; i < 10; i++ {
+		x, err := b.AddNode("P")
+		must(err)
+		good, err := b.AddNode("P")
+		must(err)
+		bad, err := b.AddNode("P")
+		must(err)
+		_, err = b.AddRel(x, a, "R3")
+		must(err)
+		_, err = b.AddRel(x, good, "R1")
+		must(err)
+		_, err = b.AddRel(x, bad, "R1")
+		must(err)
+		_, err = b.AddRel(good, a, "R2")
+		must(err)
+	}
+	g := b.Finalize()
+	// A cycle inside one pattern puts the closing rebind adjacent to the
+	// y-level in one stage: y-candidates sweep against a's R2 reverse
+	// set at fill, and each x's dead-end y (no R2 edge) never binds.
+	q := "MATCH (a:Anchor)<-[:R3]-(x:P)-[:R1]->(y:P)-[:R2]->(a) RETURN count(*) AS n"
+	run := func() int64 {
+		qq, err := parser.Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := plan.Build(qq, graph.New(g))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := Execute(&eval.Ctx{G: graph.New(g)}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1", len(rows))
+		}
+		n, _ := rows[0][0].AsInt()
+		return n
+	}
+	before := semijoinLookaheadPrunes
+	pruned := run()
+	if semijoinLookaheadPrunes == before {
+		t.Fatal("the lookahead never pruned on a qualifying shape")
+	}
+	disableSemijoinLookahead = true
+	defer func() { disableSemijoinLookahead = false }()
+	if general := run(); general != pruned {
+		t.Fatalf("pruned walk counted %d, general %d", pruned, general)
+	}
+	if pruned != 10 {
+		t.Fatalf("count = %d, want 10 (one good y per x)", pruned)
+	}
+}

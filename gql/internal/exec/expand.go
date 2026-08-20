@@ -152,6 +152,17 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm
 	if !ok1 || !ok2 {
 		return
 	}
+	set := semiSetFor(ctx, op, m, rm, cache, target, buf)
+	if i, found := slices.BinarySearch(set, uint32(fromID)); found {
+		for j := i; j < len(set) && set[j] == uint32(fromID); j++ {
+			*out = append(*out, target)
+		}
+	}
+}
+
+// semiSetFor resolves (building and memoizing on first sight) the
+// target's reverse-neighbor membership set for one semijoin op.
+func semiSetFor(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm *graph.RelMatcher, cache semiCache, target graph.NodeID, buf *[]graph.NodeID) []uint32 {
 	set, ok := cache[target]
 	if !ok {
 		if ctx.G.NodeMatcherAccepts(m, target) {
@@ -160,10 +171,65 @@ func semijoinCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, rm
 		}
 		cache[target] = set
 	}
-	if i, found := slices.BinarySearch(set, uint32(fromID)); found {
-		for j := i; j < len(set) && set[j] == uint32(fromID); j++ {
-			*out = append(*out, target)
+	return set
+}
+
+// semijoinLookaheadPrunes counts fill-time lookahead sweeps that removed
+// at least one candidate -- the engagement oracle: a level followed by a
+// rebind semijoin over a bound target must prune doomed candidates
+// BEFORE they bind, not enumerate rows the next level then discards.
+var semijoinLookaheadPrunes int
+
+// disableSemijoinLookahead pins result identity in tests: the un-pruned
+// enumeration must produce exactly the rows the pruned walk does.
+var disableSemijoinLookahead bool
+
+// pruneSemijoinLookahead sweeps a freshly filled node-candidate level
+// against the NEXT op's semijoin membership: a candidate with no
+// qualifying relationship to the (already bound) target cannot survive
+// the next level, so it never binds -- the pruned subtree produced no
+// rows, and its relationship-uniqueness pushes were scoped to that
+// subtree, so removal is invisible to every other candidate. Var-length
+// levels keep their fill (their parallel per-trail buffers don't
+// compact); the semijoin level itself still runs, serving multiplicity
+// and profile exactly as before over the survivors.
+func pruneSemijoinLookahead(ctx *eval.Ctx, ops []plan.BindOp, sc *stageComp, cur int, row []value.Value, scratch *genScratch) {
+	nxt := cur + 1
+	if disableSemijoinLookahead || nxt >= len(ops) || sc.semijoins[nxt] == nil {
+		return
+	}
+	op := &ops[cur]
+	if op.Kind == plan.OpVarExpand {
+		return
+	}
+	next := &ops[nxt]
+	if next.From != slotOf(op) {
+		return
+	}
+	target, ok := row[next.To].AsNode()
+	if !ok {
+		return
+	}
+	set := semiSetFor(ctx, next, sc.matchers[nxt], sc.relMatchers[nxt], sc.semijoins[nxt], target, &scratch.semiBuf)
+	cand := scratch.cand[cur]
+	rel := scratch.candRel[cur]
+	hasRel := len(rel) == len(cand) && len(rel) > 0
+	w := 0
+	for i, id := range cand {
+		if _, found := slices.BinarySearch(set, uint32(id)); found {
+			cand[w] = id
+			if hasRel {
+				rel[w] = rel[i]
+			}
+			w++
 		}
+	}
+	if w < len(cand) {
+		semijoinLookaheadPrunes++
+	}
+	scratch.cand[cur] = cand[:w]
+	if hasRel {
+		scratch.candRel[cur] = rel[:w]
 	}
 }
 
