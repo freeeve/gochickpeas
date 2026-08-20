@@ -77,6 +77,16 @@ func dateEqRange(ctx *eval.Ctx, g *chickpeas.Snapshot, e ast.Expr, slots map[str
 	if !isTemporal || kind != value.Date {
 		return nil, nil, false
 	}
+	// The constant must sit exactly at midnight: date() output always
+	// does, but Date-kind values built by temporal arithmetic
+	// (date(...) + duration({hours: 5})) need not -- and for those the
+	// TRUE predicate is unsatisfiable (a truncated value never equals a
+	// non-aligned one) while the range form would select a day of rows
+	// starting at that time. Kind and constness both pass such a value;
+	// only alignment catches it (rustychickpeas' eefe831 gate).
+	if ms%eval.MSPerDay != 0 {
+		return nil, nil, false
+	}
 	dateRangeRewrites++
 	return &ast.Binary{Op: ast.OpGte, LHS: prop, RHS: &ast.Lit{Value: ast.IntLit(ms)}},
 		&ast.Binary{Op: ast.OpLt, LHS: prop, RHS: &ast.Lit{Value: ast.IntLit(ms + eval.MSPerDay)}},

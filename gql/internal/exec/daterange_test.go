@@ -137,3 +137,37 @@ func TestDateEqRangeRewriteRefusals(t *testing.T) {
 		t.Fatal("control shape did not fire -- the refusal cases are vacuous")
 	}
 }
+
+// TestDateEqRangeMidnightGate pins the alignment gate (task 301,
+// rustychickpeas eefe831's finding): a Date-KIND constant built by
+// temporal arithmetic need not sit at midnight, and for such a constant
+// the true predicate is unsatisfiable (date() output is always
+// truncated) while the range form would select a day of rows starting
+// at that time. Kind and constness both pass it; only alignment
+// declines. An aligned arithmetic constant (whole-day shift) still
+// rewrites.
+func TestDateEqRangeMidnightGate(t *testing.T) {
+	g := dateRangeFixture(t)
+
+	// Non-aligned: +5h off midnight. Must NOT rewrite, and must match
+	// nothing.
+	q := "MATCH (n:X) WHERE date(n.ts) = date(zoned_datetime('2012-09-16')) + duration({hours: 5}) RETURN n"
+	before := dateRangeRewrites
+	if got := runQuery(t, g, q); got != 0 {
+		t.Fatalf("non-aligned constant matched %d rows, want 0 (unsatisfiable)", got)
+	}
+	if dateRangeRewrites != before {
+		t.Fatal("the rewrite fired on a non-midnight Date constant")
+	}
+
+	// Aligned arithmetic: a whole-day shift lands on midnight of the
+	// 17th; only the next-midnight fixture row matches.
+	q = "MATCH (n:X) WHERE date(n.ts) = date(zoned_datetime('2012-09-16')) + duration({days: 1}) RETURN n"
+	before = dateRangeRewrites
+	if got := runQuery(t, g, q); got != 1 {
+		t.Fatalf("aligned shifted constant matched %d rows, want 1", got)
+	}
+	if dateRangeRewrites == before {
+		t.Fatal("the rewrite declined a midnight-aligned constant")
+	}
+}
