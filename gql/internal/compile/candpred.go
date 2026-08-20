@@ -398,8 +398,73 @@ func CandidateIntSweep(c *Compiled, slot int) (IntSweep, bool) {
 		return nil, false
 	}
 	r := col.i64
-	keep := opKeep(n.op)
-	rev := n.rev
+	// A reversed operand order mirrors the operator, so the loops below
+	// always compare value-vs-constant.
+	op := n.op
+	if n.rev {
+		switch op {
+		case ast.OpLt:
+			op = ast.OpGt
+		case ast.OpLte:
+			op = ast.OpGte
+		case ast.OpGt:
+			op = ast.OpLt
+		case ast.OpGte:
+			op = ast.OpLte
+		}
+	}
+	if exact {
+		// The exact int order inlines per operator: the per-id closure
+		// call and compare-function call were the sweep loop's dominant
+		// cost at 5.7M candidates/query.
+		var f IntSweep
+		switch op {
+		case ast.OpEq:
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] == k
+				}
+			}
+		case ast.OpNeq:
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] != k
+				}
+			}
+		case ast.OpLt:
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] < k
+				}
+			}
+		case ast.OpLte:
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] <= k
+				}
+			}
+		case ast.OpGt:
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] > k
+				}
+			}
+		default: // ast.OpGte
+			f = func(ids []uint32, vals []int64, present, keepM []bool) {
+				r.GetMany(ids, vals, present)
+				for i := range ids {
+					keepM[i] = keepM[i] && present[i] && vals[i] >= k
+				}
+			}
+		}
+		return f, true
+	}
+	keep := opKeep(op)
 	return func(ids []uint32, vals []int64, present, keepM []bool) {
 		r.GetMany(ids, vals, present)
 		for i := range ids {
@@ -407,17 +472,7 @@ func CandidateIntSweep(c *Compiled, slot int) (IntSweep, bool) {
 				keepM[i] = false
 				continue
 			}
-			lo, ro := vals[i], k
-			if rev {
-				lo, ro = ro, lo
-			}
-			var o int
-			comparable := true
-			if exact {
-				o = cmpI64(lo, ro)
-			} else {
-				o, comparable = cmpFloat(float64(lo), float64(ro))
-			}
+			o, comparable := cmpFloat(float64(vals[i]), float64(k))
 			keepM[i] = comparable && keep(o)
 		}
 	}, true

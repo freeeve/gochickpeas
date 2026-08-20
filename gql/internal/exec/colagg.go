@@ -245,11 +245,32 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 			}
 			ki++
 		}
-		idx, hit := index[gk]
+		// Small aggregates (the common colagg shape) probe the key list
+		// linearly -- comparing a few comparable structs beats hashing a
+		// 32-byte key per row; past the threshold the map takes over,
+		// seeded with the linear era's entries.
+		const linearGroups = 16
+		idx, hit := -1, false
+		if len(groupKeys) <= linearGroups {
+			for gi := range groupKeys {
+				if groupKeys[gi] == gk {
+					idx, hit = gi, true
+					break
+				}
+			}
+		} else {
+			idx, hit = index[gk]
+		}
 		if !hit {
 			idx = len(groupKeys)
-			index[gk] = idx
 			groupKeys = append(groupKeys, gk)
+			if len(groupKeys) == linearGroups+1 && len(index) == 0 {
+				for gi := range groupKeys {
+					index[groupKeys[gi]] = gi
+				}
+			} else if len(groupKeys) > linearGroups {
+				index[gk] = idx
+			}
 			for _, a := range proj.Aggs {
 				states = append(states, aggState{kind: a.Kind})
 			}
