@@ -289,7 +289,9 @@ func (b *Builder) InternPropertyKey(name string) PropertyKey {
 //
 // A key should keep one value type graph-wide: the snapshot stores one
 // column (one dtype) per key, so a key staged under several types across
-// different nodes keeps only one type's column at Finalize. Restaging one
+// different nodes keeps only one type's column at Finalize -- the other
+// types' pairs are discarded, reported by the snapshot's
+// DroppedCrossTypedStagings (zero on a well-typed graph). Restaging one
 // node's key under a new type is fine via UpdateProp, which sweeps the
 // node's old stagings of every type first.
 func (b *Builder) SetProp(node NodeID, key string, value any) error {

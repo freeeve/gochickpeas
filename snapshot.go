@@ -55,6 +55,11 @@ type Snapshot struct {
 	columns    map[PropertyKey]Column
 	relColumns map[PropertyKey]Column
 
+	// droppedCrossTyped counts staged property pairs discarded at
+	// Finalize because their key was staged under more than one value
+	// type (one column, one dtype, per key survives).
+	droppedCrossTyped int
+
 	atoms *Atoms
 
 	// Lazy caches. propIndex: (label, key) -> value -> node set, built on
@@ -161,6 +166,17 @@ func (g *Snapshot) NodeCount() uint32 {
 // RelCount is the number of relationships in the graph.
 func (g *Snapshot) RelCount() uint64 {
 	return g.nRels
+}
+
+// DroppedCrossTypedStagings reports how many staged property pairs
+// (node and relationship) Finalize discarded because their key was
+// staged under more than one value type. The snapshot stores one column
+// (one dtype) per key, so a key staged as, say, int64 on some nodes and
+// float64 on others keeps only one type's pairs; the rest vanish with
+// no error from SetProp. Zero means every staged pair is visible. The
+// count is diagnostic only -- the accepted inputs are unchanged.
+func (g *Snapshot) DroppedCrossTypedStagings() int {
+	return g.droppedCrossTyped
 }
 
 // getInToOut returns the incoming->outgoing CSR position map, building it once

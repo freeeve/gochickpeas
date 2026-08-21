@@ -283,6 +283,44 @@ func finalizeNodeColumns[P any](
 	}
 }
 
+// stagedLens is a staged column family reduced to per-key pair counts,
+// feeding the cross-typed drop diagnostic.
+func stagedLens[P any](m map[PropertyKey][]P) map[PropertyKey]int {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[PropertyKey]int, len(m))
+	for k, pairs := range m {
+		out[k] = len(pairs)
+	}
+	return out
+}
+
+// crossTypedDropCount counts the staged pairs a multi-kind key discards:
+// the column families finalize in a fixed order into one column map, so
+// for a key staged under several kinds only the LAST family's pairs
+// survive and every earlier family's pairs are dropped. Families must be
+// passed in finalize order.
+func crossTypedDropCount(families ...map[PropertyKey]int) int {
+	total := map[PropertyKey]int{}
+	winner := map[PropertyKey]int{}
+	multi := map[PropertyKey]bool{}
+	for _, f := range families {
+		for k, cnt := range f {
+			if _, seen := total[k]; seen {
+				multi[k] = true
+			}
+			total[k] += cnt
+			winner[k] = cnt
+		}
+	}
+	dropped := 0
+	for k := range multi {
+		dropped += total[k] - winner[k]
+	}
+	return dropped
+}
+
 // finalizeRelColumns stores every staged rel column, sharing the source's for
 // each untouched key. A rebuilt column remaps its staged rel indexes to
 // outgoing-CSR positions, the addressing the snapshot stores rel properties
@@ -372,6 +410,16 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 	finalizeRelColumns(g, plan, b.relColF64, m, relToOutCSR, columnFromPairsF64)
 	finalizeRelColumns(g, plan, b.relColBool, m, relToOutCSR, columnFromPairsBool)
 	finalizeRelColumns(g, plan, b.relColStr, m, relToOutCSR, columnFromPairsStr)
+
+	// The family order above is the diagnostic's authority: later kinds
+	// overwrite earlier ones per key, so the count must mirror it.
+	g.droppedCrossTyped = crossTypedDropCount(
+		stagedLens(b.nodeColI64), stagedLens(b.nodeColF64),
+		stagedLens(b.nodeColBool), stagedLens(b.nodeColStr),
+	) + crossTypedDropCount(
+		stagedLens(b.relColI64), stagedLens(b.relColF64),
+		stagedLens(b.relColBool), stagedLens(b.relColStr),
+	)
 
 	g.atoms = plan.aliasAtoms(b)
 	g.carryLazyCaches(plan)
