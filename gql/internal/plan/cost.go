@@ -78,7 +78,7 @@ func resolveAnchorNodes(n *ast.NodePat, where ast.Expr, slots map[string]int, bo
 		if ps.inVals != nil {
 			var ids []graph.NodeID
 			for _, v := range ps.inVals {
-				ids = append(ids, setSlice(g.NodesWithProperty(n.Labels[0], ps.key, semantics.LitValue(v)))...)
+				ids = append(ids, seekNodes(g, n.Labels[0], ps.key, semantics.LitValue(v))...)
 			}
 			slices.Sort(ids)
 			return slices.Compact(ids), true

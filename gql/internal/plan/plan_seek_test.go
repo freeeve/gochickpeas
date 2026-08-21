@@ -203,26 +203,36 @@ func TestScanSourcePicksMostSelectiveProp(t *testing.T) {
 }
 
 // TestScanSourcePropInSeek pins the multi-value IN seek (task 308, ported
-// from rustychickpeas c07ce7f): a string/boolean IN list on a fresh
-// labelled node anchors on ScanPropertyIn with the list's literals, and
-// every shape the coercion trap or the seek contract cannot serve
-// refuses back to the label scan -- numeric lists (IN compares int
-// against float numerically, a seek matches stored values exactly, so a
-// candidate never yielded is a row silently lost), mixed lists, params,
-// non-literal elements, and empty lists.
+// from rustychickpeas c07ce7f; numeric lists admitted by task 310):
+// string, boolean, and numeric IN lists on a fresh labelled node anchor
+// on ScanPropertyIn with the list's literals -- numeric elements are safe
+// because the seek probes each element's numeric twin (IN compares int
+// against float numerically, the index matches stored values exactly) --
+// while params, non-literal elements, and empty lists refuse back to the
+// label scan.
 func TestScanSourcePropInSeek(t *testing.T) {
 	g := buildFixture(t)
 
-	p := mustPlan(t, g, "MATCH (tg:Tag) WHERE tg.name IN ['tagA', 'tagB'] RETURN tg")
-	src := firstMatch(t, p).Ops[0].Source
-	if src.Kind != ScanPropertyIn || src.Key != "name" || len(src.Values) != 2 {
-		t.Fatalf("source = %+v, want ScanPropertyIn over name with 2 values", src)
+	accepted := []struct {
+		q    string
+		key  string
+		vals int
+	}{
+		{"MATCH (tg:Tag) WHERE tg.name IN ['tagA', 'tagB'] RETURN tg", "name", 2},
+		{"MATCH (n:Person) WHERE n.pid IN [1, 2] RETURN n", "pid", 2},
+		{"MATCH (n:Person) WHERE n.pid IN [1.0, 2.0] RETURN n", "pid", 2},
+		{"MATCH (n:Person) WHERE n.pid IN [1, 2.0] RETURN n", "pid", 2},
+		{"MATCH (tg:Tag) WHERE tg.name IN ['tagA', 1] RETURN tg", "name", 2},
+	}
+	for _, tc := range accepted {
+		p := mustPlan(t, g, tc.q)
+		src := firstMatch(t, p).Ops[0].Source
+		if src.Kind != ScanPropertyIn || src.Key != tc.key || len(src.Values) != tc.vals {
+			t.Fatalf("%q source = %+v, want ScanPropertyIn over %s with %d values", tc.q, src, tc.key, tc.vals)
+		}
 	}
 
 	refusals := []string{
-		"MATCH (n:Person) WHERE n.pid IN [1, 2] RETURN n",        // ints
-		"MATCH (n:Person) WHERE n.pid IN [1.0, 2.0] RETURN n",    // floats
-		"MATCH (tg:Tag) WHERE tg.name IN ['tagA', 1] RETURN tg",  // mixed
 		"MATCH (tg:Tag) WHERE tg.name IN ['tagA', $p] RETURN tg", // param elem
 		"MATCH (tg:Tag) WHERE tg.name IN [tg.name] RETURN tg",    // non-literal
 	}

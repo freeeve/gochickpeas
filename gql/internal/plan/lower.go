@@ -269,7 +269,7 @@ func bestPropSeek(node *ast.NodePat, where ast.Expr, g graph.Graph) (propSeekPic
 	for _, in := range propInConjuncts(where, node.Var) {
 		var c uint64
 		for _, v := range in.vals {
-			c += uint64(setLen(g.NodesWithProperty(label, in.key, semantics.LitValue(v))))
+			c += seekCard(g, label, in.key, semantics.LitValue(v))
 		}
 		if !found || best.abstain || c < best.card {
 			best = propSeekPick{key: in.key, inVals: in.vals, card: c}
@@ -291,14 +291,14 @@ type propIn struct {
 }
 
 // propInConjuncts collects WHERE conjuncts of the form
-// `<var>.<key> IN [<literal>, ...]` whose every element is a STRING or
-// BOOLEAN literal. Numeric literals are excluded deliberately: IN
-// compares int against float numerically (30 IN [30.0] is true) while a
-// property seek matches the stored value exactly -- a candidate the seek
-// never yields is a row silently lost, the one failure keep-and-re-check
-// cannot catch. Strings and booleans have no cross-type equality
-// partner. (The sibling engine shipped the numeric form and a mixed
-// int/float test caught it; rustychickpeas c07ce7f.)
+// `<var>.<key> IN [<literal>, ...]` whose every element is a string,
+// boolean, or numeric literal. IN compares int against float numerically
+// (30 IN [30.0] is true) while a property seek matches the stored value
+// exactly, so the seek probes each numeric element's twin alongside it
+// (seekNodes) -- without that a candidate the seek never yields is a row
+// silently lost, the one failure keep-and-re-check cannot catch.
+// (The sibling engine shipped the numeric form without twin probes and a
+// mixed int/float test caught it; rustychickpeas c07ce7f.)
 func propInConjuncts(where ast.Expr, varName string) []propIn {
 	if DisablePropInSeek || where == nil || varName == "" {
 		return nil
@@ -323,8 +323,16 @@ func propInConjuncts(where ast.Expr, varName string) []propIn {
 		qualified := true
 		for _, el := range list.Elems {
 			lit, isLit := el.(*ast.Lit)
-			if !isLit || (lit.Value.Kind != ast.LitStr && lit.Value.Kind != ast.LitBool) {
+			if !isLit {
 				qualified = false
+				break
+			}
+			switch lit.Value.Kind {
+			case ast.LitStr, ast.LitBool, ast.LitInt, ast.LitFloat:
+			default:
+				qualified = false
+			}
+			if !qualified {
 				break
 			}
 			vals = append(vals, lit.Value)

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("MATCH()MATCH()MATCH()MATCH()-[A]-{9}()RETURN 0")
