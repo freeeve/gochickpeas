@@ -252,3 +252,47 @@ func TestUnwindSinkExec(t *testing.T) {
 		t.Fatalf("scalar unwind value = %d, want 7", x)
 	}
 }
+
+// TestRowArenaGeometricGrowth exercises the arena across many chunk
+// boundaries under the geometric ladder (task 319): rows handed out
+// earlier must stay intact and non-aliased as later chunks allocate,
+// rollback must reuse the freed slot, and a fixed chunkValues arena
+// (the bounded-sink form) must behave identically to before.
+func TestRowArenaGeometricGrowth(t *testing.T) {
+	const width, n = 3, 20000 // crosses the full 512 -> 16384 ladder
+	a := rowArena{width: width}
+	rows := make([][]value.Value, n)
+	for i := range n {
+		r := a.alloc()
+		for j := range width {
+			r[j] = value.Int(int64(i*width + j))
+		}
+		rows[i] = r
+	}
+	for i, r := range rows {
+		for j := range width {
+			v, _ := r[j].AsInt()
+			if v != int64(i*width+j) {
+				t.Fatalf("row %d col %d = %d, want %d (chunk handoff corrupted a retained row)", i, j, v, i*width+j)
+			}
+		}
+	}
+
+	// Rollback returns the very next alloc to the same slot.
+	b := rowArena{width: 2}
+	r1 := b.alloc()
+	r1[0] = value.Int(1)
+	b.rollback()
+	r2 := b.alloc()
+	if &r1[0] != &r2[0] {
+		t.Fatal("rollback did not release the slot to the next alloc")
+	}
+
+	// Fixed-size arena (bounded sink): first chunk is exactly the
+	// configured size, not the ladder seed.
+	c := rowArena{width: 2, chunkValues: 64}
+	_ = c.alloc()
+	if len(c.chunk) != 64 {
+		t.Fatalf("fixed arena chunk = %d values, want 64", len(c.chunk))
+	}
+}

@@ -28,8 +28,12 @@ type rowSink interface {
 	close()
 }
 
-// arenaChunkValues is the bump-arena chunk size in values (not rows).
-const arenaChunkValues = 16384
+// arenaChunkValues caps the bump-arena chunk size in values (not rows);
+// arenaChunkStart seeds the geometric ladder.
+const (
+	arenaChunkValues = 16384
+	arenaChunkStart  = 512
+)
 
 // rowArena bump-allocates fixed-width rows out of large chunks, so
 // retaining n rows costs n/chunk allocations instead of n. A sink that
@@ -37,9 +41,15 @@ const arenaChunkValues = 16384
 // not pay a full-size chunk.
 type rowArena struct {
 	width       int
-	chunkValues int // chunk size in values; 0 means arenaChunkValues
-	chunk       []value.Value
-	off         int
+	chunkValues int // fixed chunk size in values; 0 means geometric growth
+	// nextChunk is the geometric ladder state: chunks start small and
+	// double up to arenaChunkValues, so a sink retaining a handful of
+	// rows pays kilobytes rather than a near-empty full-size chunk,
+	// while a large retention converges on the same big chunks after a
+	// few (amortized-free) steps.
+	nextChunk int
+	chunk     []value.Value
+	off       int
 }
 
 // alloc returns the next zeroed width-wide row.
@@ -47,7 +57,13 @@ func (a *rowArena) alloc() []value.Value {
 	if a.off+a.width > len(a.chunk) {
 		cv := a.chunkValues
 		if cv == 0 {
-			cv = arenaChunkValues
+			if a.nextChunk == 0 {
+				a.nextChunk = arenaChunkStart
+			}
+			cv = a.nextChunk
+			if a.nextChunk < arenaChunkValues {
+				a.nextChunk *= 2
+			}
 		}
 		n := max(cv, a.width)
 		a.chunk = make([]value.Value, n)
