@@ -335,3 +335,94 @@ func TestIDSeekFloatParam(t *testing.T) {
 		t.Errorf("param 1.5 = %d rows, want 0", len(rows))
 	}
 }
+
+// planHasScanKind reports whether any match stage in the plan anchors an
+// op on the given scan-source kind.
+func planHasScanKind(p *plan.Plan, kind plan.ScanKind) bool {
+	for _, br := range p.Branches {
+		for _, seg := range br {
+			for _, st := range seg.Stages {
+				ms, ok := st.(*plan.MatchStage)
+				if !ok {
+					continue
+				}
+				for i := range ms.Ops {
+					if ms.Ops[i].Source.Kind == kind {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// TestIDSeekVarFloat locks the per-row id seek's twin resolution (task
+// 312, ported from rustychickpeas d27bf0e): id(n) = pid installs a
+// ScanNodeIDVar for a bound pid with its runtime type unknown, so the
+// resolver must accept an integral float or float-carried ids silently
+// name nothing. The plan is asserted, not just rows -- a row-only check
+// passes vacuously when no seek installs and both spellings scan.
+func TestIDSeekVarFloat(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 0)
+	for range 4 {
+		if _, err := b.AddNode("N"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(b.Finalize("idvar"))
+
+	runPlanned := func(q string) (*plan.Plan, []uint32) {
+		t.Helper()
+		qq, err := parser.Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pl, err := plan.Build(qq, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := Execute(&eval.Ctx{G: g}, pl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]uint32, len(rows))
+		for i, r := range rows {
+			id, _ := r[0].AsNode()
+			ids[i] = uint32(id)
+		}
+		return pl, ids
+	}
+
+	floatQ := "FOR pid IN [1.0, 3.0] MATCH (n) WHERE id(n) = pid RETURN n"
+	pl, floatIDs := runPlanned(floatQ)
+	if !planHasScanKind(pl, plan.ScanNodeIDVar) {
+		t.Fatalf("%q did not install a ScanNodeIDVar -- the test would be vacuous", floatQ)
+	}
+	_, intIDs := runPlanned("FOR pid IN [1, 3] MATCH (n) WHERE id(n) = pid RETURN n")
+	if len(floatIDs) != 2 || len(intIDs) != 2 {
+		t.Fatalf("float spelling = %v, int spelling = %v, want two rows each", floatIDs, intIDs)
+	}
+	for i := range intIDs {
+		if floatIDs[i] != intIDs[i] {
+			t.Fatalf("row %d: float spelling id %d, int spelling id %d", i, floatIDs[i], intIDs[i])
+		}
+	}
+
+	// A non-integral id names nothing (id(n) = 1.5 is false for every n).
+	if _, ids := runPlanned("FOR pid IN [1.5] MATCH (n) WHERE id(n) = pid RETURN n"); len(ids) != 0 {
+		t.Fatalf("non-integral per-row seek rows = %v, want none", ids)
+	}
+
+	// The float LITERAL is safe by refusal: no id seek installs (pinned
+	// at the plan, per the vacuity warning), and the scan's coercing
+	// filter still names the node.
+	litQ := "MATCH (n) WHERE id(n) = 3.0 RETURN n"
+	pl, litIDs := runPlanned(litQ)
+	if planHasScanKind(pl, plan.ScanNodeID) || planHasScanKind(pl, plan.ScanNodeIDVar) {
+		t.Fatalf("%q installed an id seek -- the literal gate must refuse floats", litQ)
+	}
+	if len(litIDs) != 1 || litIDs[0] != 3 {
+		t.Fatalf("float-literal rows = %v, want node 3 via the scan", litIDs)
+	}
+}
