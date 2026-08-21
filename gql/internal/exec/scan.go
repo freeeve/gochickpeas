@@ -21,6 +21,15 @@ func scanMatcherRedundant(op *plan.BindOp) bool {
 		len(op.Labels) == 1 && op.Labels[0] == op.Source.Label
 }
 
+// seekProbes is the set of index keys a single-value property seek must
+// probe for v: the value itself plus its numeric twin when one exists.
+func seekProbes(v value.Value) []value.Value {
+	if tw, ok := value.NumericTwin(v); ok {
+		return []value.Value{v, tw}
+	}
+	return []value.Value{v}
+}
+
 // freshScan appends a row-independent source's candidates, filtered
 // through the op's pre-resolved matcher unless provably redundant.
 func freshScan(ctx *eval.Ctx, src *plan.ScanSource, m *graph.NodeMatcher, skipAccept bool, cand *[]graph.NodeID) {
@@ -32,11 +41,24 @@ func freshScan(ctx *eval.Ctx, src *plan.ScanSource, m *graph.NodeMatcher, skipAc
 	switch src.Kind {
 	case plan.ScanProperty:
 		// Resolve first (a param literal reads the context), then serve
-		// the anchor from the property index.
-		if set := ctx.G.NodesWithProperty(src.Label, src.Key, eval.LitValue(ctx, src.Value)); set != nil {
-			for id := range set.Iter() {
-				accept(id)
+		// the anchor from the property index. The index matches stored
+		// values exactly while equality coerces int against float, so the
+		// numeric twin of the resolved value is probed too -- without it a
+		// float literal over an int-stored property (or the reverse)
+		// silently loses every row. The two postings are disjoint (one
+		// stored value per node/key); sorting restores ascending id order.
+		v := eval.LitValue(ctx, src.Value)
+		var ids []graph.NodeID
+		for _, pv := range seekProbes(v) {
+			if set := ctx.G.NodesWithProperty(src.Label, src.Key, pv); set != nil {
+				for id := range set.Iter() {
+					ids = append(ids, id)
+				}
 			}
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			accept(id)
 		}
 	case plan.ScanPropertyIn:
 		// One property seek per listed value, unioned. Sorting restores
@@ -154,8 +176,17 @@ func existsSeedCandidates(ctx *eval.Ctx, op *plan.BindOp, m *graph.NodeMatcher, 
 
 // nodeIDSeekValue resolves an id-seek value: an in-id-space non-negative
 // integer, comma-ok. The id space (not the node count) bounds it so sparse
-// high-id seeds still resolve.
+// high-id seeds still resolve. An integral float resolves through its int
+// twin -- a parameter can spell an id as 3.0, and equality coerces, so a
+// seek that declined it would silently lose the row.
 func nodeIDSeekValue(ctx *eval.Ctx, v value.Value) (graph.NodeID, bool) {
+	if v.Kind() == value.KindFloat {
+		tw, ok := value.NumericTwin(v)
+		if !ok {
+			return 0, false
+		}
+		v = tw
+	}
 	i, ok := v.AsInt()
 	if !ok || i < 0 || uint64(i) >= uint64(ctx.G.IDSpace()) {
 		return 0, false

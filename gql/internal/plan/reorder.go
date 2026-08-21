@@ -49,7 +49,7 @@ func nodeAnchorCostNamed(n *ast.NodePat, where ast.Expr, bound map[string]bool, 
 			if lit.Kind == ast.LitParam || lit.Kind == ast.LitNamedParam || lit.Kind == ast.LitNull {
 				continue
 			}
-			c := int64(setLen(g.NodesWithProperty(label, n.Props[i].Key, semantics.LitValue(lit))))
+			c := int64(seekCard(g, label, n.Props[i].Key, semantics.LitValue(lit)))
 			if best < 0 || c < best {
 				best = c
 			}

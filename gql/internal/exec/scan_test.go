@@ -13,8 +13,9 @@ import (
 
 // TestNodeIDSeekValue covers the id-seek value resolution: a non-negative
 // integer within the CSR id space resolves (including a sparse high id with
-// no node present -- the id space, not the node count, is the bound), while
-// a negative id, an out-of-space id, and a non-integer all decline.
+// no node present -- the id space, not the node count, is the bound), an
+// integral float resolves through its int twin, while a negative id, an
+// out-of-space id, a non-integral float, and a non-number all decline.
 func TestNodeIDSeekValue(t *testing.T) {
 	// One node at id 10 -> the id space spans 0..10 with a single node, so
 	// the space exceeds the node count.
@@ -38,13 +39,21 @@ func TestNodeIDSeekValue(t *testing.T) {
 		}
 	}
 
-	// A negative id, an id at/beyond the space, and a non-integer decline.
+	// An integral float resolves through its int twin (params spell ids
+	// as floats; equality coerces, so the seek must too).
+	if got, ok := nodeIDSeekValue(ctx, value.Float(3.0)); !ok || got != graph.NodeID(3) {
+		t.Fatalf("float 3.0 = %d,%v, want 3,true", got, ok)
+	}
+
+	// A negative id, an id at/beyond the space, a non-integral float, and
+	// a non-number decline.
 	for _, v := range []value.Value{
 		value.Int(-1),
 		value.Int(space),
 		value.Int(space + 1000),
 		value.Str("7"),
-		value.Float(3.0),
+		value.Float(3.5),
+		value.Float(-1.0),
 		value.Null(),
 	} {
 		if _, ok := nodeIDSeekValue(ctx, v); ok {
@@ -182,5 +191,147 @@ func TestExistsSeedScanExec(t *testing.T) {
 	}
 	if bv, _ := rows[0][0].AsNode(); uint32(bv) != uint32(ps[1]) {
 		t.Fatalf("b = %v, want p1", bv)
+	}
+}
+
+// numericSeekFixture stores age as an int and score as a float on separate
+// Person nodes, plus a noise node with near-miss values on both keys, so a
+// seek that returns everything (or nothing) is caught either way.
+func numericSeekFixture(t *testing.T) graph.Graph {
+	t.Helper()
+	b := chickpeas.NewBuilder(8, 0)
+	intNode, err := b.AddNode("Person")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetProp(intNode, "age", int64(30))
+	floatNode, err := b.AddNode("Person")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetProp(floatNode, "score", 7.0)
+	noise, err := b.AddNode("Person")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetProp(noise, "age", int64(31))
+	b.SetProp(noise, "score", 7.5)
+	return graph.New(b.Finalize("numseek"))
+}
+
+// TestPropSeekNumericTwin locks the numeric-twin probe on the single-value
+// property seek (task 309): the property index matches stored values
+// exactly while equality coerces int against float, so without the twin a
+// float literal over an int-stored property (and the reverse) silently
+// lost every row. The unlabeled spelling never seeks (matcher-only), so it
+// is the reference the two seek spellings must agree with, both directions.
+func TestPropSeekNumericTwin(t *testing.T) {
+	g := numericSeekFixture(t)
+
+	// Engagement: the labeled inline spelling anchors on the property seek
+	// (the shape under test -- if this drifts, the test is testing nothing).
+	qq, err := parser.Parse("MATCH (p:Person {age: 30.0}) RETURN p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := plan.Build(qq, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := pl.Branches[0][0].Stages[0].(*plan.MatchStage)
+	if ms.Ops[0].Source.Kind != plan.ScanProperty {
+		t.Fatalf("plan anchors on %v, want ScanProperty", ms.Ops[0].Source.Kind)
+	}
+
+	cases := []struct {
+		name     string
+		qs       []string
+		want     int
+		distinct bool // qs are different queries, not spellings of one
+	}{
+		{"float literal over int-stored", []string{
+			"MATCH (p:Person {age: 30.0}) RETURN p",
+			"MATCH (p:Person) WHERE p.age = 30.0 RETURN p",
+			"MATCH (p {age: 30.0}) RETURN p",
+		}, 1, false},
+		{"int literal over float-stored", []string{
+			"MATCH (p:Person {score: 7}) RETURN p",
+			"MATCH (p:Person) WHERE p.score = 7 RETURN p",
+			"MATCH (p {score: 7}) RETURN p",
+		}, 1, false},
+		// Controls: near-miss literals return nothing, so the agreement
+		// above cannot be satisfied by a seek that returns everything.
+		{"non-integral float misses int-stored", []string{
+			"MATCH (p:Person {age: 30.5}) RETURN p",
+			"MATCH (p:Person) WHERE p.age = 30.5 RETURN p",
+			"MATCH (p {age: 30.5}) RETURN p",
+		}, 0, false},
+		{"same-type exact still works", []string{
+			"MATCH (p:Person {age: 30}) RETURN p",
+			"MATCH (p:Person {score: 7.5}) RETURN p",
+		}, 1, true},
+	}
+	for _, tc := range cases {
+		var ref []uint32
+		for i, q := range tc.qs {
+			ids := runIDs(t, g, q)
+			if len(ids) != tc.want {
+				t.Errorf("%s: %q = %d rows, want %d", tc.name, q, len(ids), tc.want)
+			}
+			if i == 0 || tc.distinct {
+				ref = ids
+				continue
+			}
+			if len(ids) != len(ref) {
+				continue // already reported above
+			}
+			for j := range ids {
+				if ids[j] != ref[j] {
+					t.Errorf("%s: %q row %d = node %d, spelling 0 has %d", tc.name, q, j, ids[j], ref[j])
+				}
+			}
+		}
+	}
+}
+
+// TestIDSeekFloatParam locks the id-seek twin resolution end-to-end (task
+// 309): a parameter spelling an id as a float must find the node an int
+// parameter finds -- the seek used to decline non-int values outright,
+// silently losing the row while the coercing equality would have matched.
+func TestIDSeekFloatParam(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 0)
+	b.AddNode("N")
+	b.AddNode("N")
+	g := graph.New(b.Finalize("idtwin"))
+	q, err := parser.Parse("MATCH (n) WHERE id(n) = $p RETURN n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := plan.Build(q, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pv := range []value.Value{value.Int(1), value.Float(1.0)} {
+		ctx := &eval.Ctx{G: g, Named: map[string]value.Value{"p": pv}}
+		rows, err := Execute(ctx, pl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Errorf("param %v = %d rows, want 1", pv, len(rows))
+			continue
+		}
+		if id, _ := rows[0][0].AsNode(); uint32(id) != 1 {
+			t.Errorf("param %v = node %d, want 1", pv, id)
+		}
+	}
+	// A non-integral float finds nothing (and must not error).
+	ctx := &eval.Ctx{G: g, Named: map[string]value.Value{"p": value.Float(1.5)}}
+	rows, err := Execute(ctx, pl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("param 1.5 = %d rows, want 0", len(rows))
 	}
 }

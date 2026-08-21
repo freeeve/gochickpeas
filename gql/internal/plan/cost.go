@@ -83,7 +83,7 @@ func resolveAnchorNodes(n *ast.NodePat, where ast.Expr, slots map[string]int, bo
 			slices.Sort(ids)
 			return slices.Compact(ids), true
 		}
-		return setSlice(g.NodesWithProperty(n.Labels[0], ps.key, semantics.LitValue(ps.val))), true
+		return seekNodes(g, n.Labels[0], ps.key, semantics.LitValue(ps.val)), true
 	}
 	return nil, false
 }

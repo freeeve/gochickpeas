@@ -3,10 +3,13 @@ package plan
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
+	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/nodeset"
 )
 
@@ -39,4 +42,36 @@ func setSlice(s *nodeset.Set) []uint32 {
 		return nil
 	}
 	return s.ToSlice()
+}
+
+// seekProbes is the set of index keys a single-value property seek must
+// probe for v: the value itself plus its numeric twin when one exists
+// (the index matches stored values exactly; equality coerces).
+func seekProbes(v value.Value) []value.Value {
+	if tw, ok := value.NumericTwin(v); ok {
+		return []value.Value{v, tw}
+	}
+	return []value.Value{v}
+}
+
+// seekCard is the posting count a single-value property seek yields for v
+// across all its probes.
+func seekCard(g graph.Graph, label, key string, v value.Value) uint64 {
+	var c uint64
+	for _, pv := range seekProbes(v) {
+		c += uint64(setLen(g.NodesWithProperty(label, key, pv)))
+	}
+	return c
+}
+
+// seekNodes is the sorted, deduplicated id set a single-value property
+// seek yields for v across all its probes (the exact set the built scan
+// serves).
+func seekNodes(g graph.Graph, label, key string, v value.Value) []graph.NodeID {
+	var ids []graph.NodeID
+	for _, pv := range seekProbes(v) {
+		ids = append(ids, setSlice(g.NodesWithProperty(label, key, pv))...)
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }

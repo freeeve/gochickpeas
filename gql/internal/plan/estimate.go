@@ -252,7 +252,7 @@ func scanCard(source *ScanSource, props []ast.PropEntry, g graph.Graph) uint64 {
 	switch source.Kind {
 	case ScanProperty:
 		if isConcrete(source.Value) {
-			return uint64(setLen(g.NodesWithProperty(source.Label, source.Key, semantics.LitValue(source.Value))))
+			return seekCard(g, source.Label, source.Key, semantics.LitValue(source.Value))
 		}
 		return g.LabelCardinality(source.Label)
 	case ScanLabel:
@@ -401,7 +401,7 @@ func resolveScanNodes(source *ScanSource, labels []string, props []ast.PropEntry
 	switch source.Kind {
 	case ScanProperty:
 		if isConcrete(source.Value) {
-			return setSlice(g.NodesWithProperty(source.Label, source.Key, semantics.LitValue(source.Value))), true
+			return seekNodes(g, source.Label, source.Key, semantics.LitValue(source.Value)), true
 		}
 		return nil, false
 	case ScanLabel:
@@ -418,7 +418,7 @@ func resolveByProps(labels []string, props []ast.PropEntry, g graph.Graph) ([]gr
 	}
 	for i := range props {
 		if isConcrete(props[i].Val) {
-			return setSlice(g.NodesWithProperty(labels[0], props[i].Key, semantics.LitValue(props[i].Val))), true
+			return seekNodes(g, labels[0], props[i].Key, semantics.LitValue(props[i].Val)), true
 		}
 	}
 	return nil, false
@@ -432,7 +432,7 @@ func nodeCard(labels []string, props []ast.PropEntry, g graph.Graph) uint64 {
 	}
 	for i := range props {
 		if isConcrete(props[i].Val) {
-			return uint64(setLen(g.NodesWithProperty(labels[0], props[i].Key, semantics.LitValue(props[i].Val))))
+			return seekCard(g, labels[0], props[i].Key, semantics.LitValue(props[i].Val))
 		}
 	}
 	return g.LabelCardinality(labels[0])

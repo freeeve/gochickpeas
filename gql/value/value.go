@@ -224,3 +224,28 @@ func (v Value) asNum() (float64, bool) {
 		return 0, false
 	}
 }
+
+// NumericTwin is the other numeric spelling of v that value.Compare
+// treats as equal: an integral float's int, an int's float. The property
+// index keys stored values exactly, while comparison coerces int against
+// float through float64 -- so an index probe for one spelling must also
+// probe the twin or rows whose stored type differs from the literal's
+// are silently lost. Bounded to |v| <= 2^53, where the int<->float
+// mapping is exact and bijective; beyond it no twin is reported (the
+// conversion rounds, so a probe would ask about a different number).
+func NumericTwin(v Value) (Value, bool) {
+	const maxExact = int64(1) << 53
+	if i, ok := v.AsInt(); ok && v.Kind() == KindInt {
+		if i >= -maxExact && i <= maxExact {
+			return Float(float64(i)), true
+		}
+		return Value{}, false
+	}
+	if v.Kind() == KindFloat {
+		f, _ := v.AsFloat()
+		if f == float64(int64(f)) && f >= -float64(maxExact) && f <= float64(maxExact) {
+			return Int(int64(f)), true
+		}
+	}
+	return Value{}, false
+}

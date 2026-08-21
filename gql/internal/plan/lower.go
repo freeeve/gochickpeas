@@ -254,7 +254,7 @@ func bestPropSeek(node *ast.NodePat, where ast.Expr, g graph.Graph) (propSeekPic
 			}
 			return
 		}
-		c := uint64(setLen(g.NodesWithProperty(label, key, semantics.LitValue(val))))
+		c := seekCard(g, label, key, semantics.LitValue(val))
 		if !found || best.abstain || c < best.card {
 			best = propSeekPick{key: key, val: val, card: c}
 			found = true

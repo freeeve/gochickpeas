@@ -313,3 +313,45 @@ func TestOrderCmpSameTierArms(t *testing.T) {
 		t.Fatal("total float order separates -0.0 and +0.0")
 	}
 }
+
+func TestNumericTwin(t *testing.T) {
+	const maxExact = int64(1) << 53
+	cases := []struct {
+		name string
+		in   Value
+		want Value
+		ok   bool
+	}{
+		{"int to float", Int(30), Float(30.0), true},
+		{"negative int", Int(-7), Float(-7.0), true},
+		{"integral float to int", Float(30.0), Int(30), true},
+		{"negative integral float", Float(-7.0), Int(-7), true},
+		{"zero", Int(0), Float(0.0), true},
+		{"boundary int 2^53", Int(maxExact), Float(float64(maxExact)), true},
+		{"beyond 2^53 int", Int(maxExact + 1), Value{}, false},
+		{"beyond -2^53 int", Int(-maxExact - 1), Value{}, false},
+		{"non-integral float", Float(30.5), Value{}, false},
+		{"beyond 2^53 float", Float(float64(maxExact) * 4), Value{}, false},
+		{"nan", Float(math.NaN()), Value{}, false},
+		{"pos inf", Float(math.Inf(1)), Value{}, false},
+		{"neg inf", Float(math.Inf(-1)), Value{}, false},
+		{"string", Str("30"), Value{}, false},
+		{"bool", Bool(true), Value{}, false},
+		{"null", Null(), Value{}, false},
+	}
+	for _, tc := range cases {
+		got, ok := NumericTwin(tc.in)
+		if ok != tc.ok {
+			t.Errorf("%s: ok = %v, want %v", tc.name, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		// Kind must be checked separately: Compare coerces, so a twin
+		// always compares equal to its own source value.
+		if c, cok := Compare(got, tc.want); got.Kind() != tc.want.Kind() || !cok || c != 0 {
+			t.Errorf("%s: twin = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
