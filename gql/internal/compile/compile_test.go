@@ -218,3 +218,53 @@ func TestPropReaderKindsAndAbsents(t *testing.T) {
 		t.Fatalf("epoch-millis .year = %v", v)
 	}
 }
+
+// TestConstValue pins the compile-time constant fold: literal-only
+// expressions fold with ok=true, anything that could read a row -- a
+// bound slot, a property, or an unbound-name coalesce that only LOOKS
+// constant -- declines. The slots map must be the caller's real one:
+// with the name bound, the null-literal laundering path is closed.
+func TestConstValue(t *testing.T) {
+	b := chickpeas.NewBuilder(4, 0)
+	n0, _ := b.AddNode("N")
+	_ = b.SetProp(n0, "i", int64(7))
+	g := b.Finalize("constval")
+	ctx := &eval.Ctx{G: graph.New(g)}
+	slots := map[string]int{"n": 0, "d": 1}
+
+	folds := []struct {
+		src  string
+		want value.Value
+	}{
+		{"1 + 2", value.Int(3)},
+		{"'a' + 'b'", value.Str("ab")},
+		{"2 * 3.5", value.Float(7.0)},
+		{"NOT false", value.Bool(true)},
+		{"coalesce(null, 4)", value.Int(4)},
+	}
+	for _, tc := range folds {
+		got, ok := ConstValue(ctx, exprOf(t, tc.src), slots, g)
+		if !ok {
+			t.Fatalf("%q did not fold", tc.src)
+		}
+		if c, cok := value.Compare(got, tc.want); !cok || c != 0 || got.Kind() != tc.want.Kind() {
+			t.Fatalf("%q = %v, want %v", tc.src, got, tc.want)
+		}
+	}
+
+	// Row-dependent shapes decline under the real slot map -- including
+	// the laundering shape ConstValue's contract calls out: with d bound,
+	// coalesce(n.i, d) must NOT fold to d's null literal.
+	for _, src := range []string{"n.i", "n.i + 1", "d", "coalesce(n.i, d)"} {
+		if v, ok := ConstValue(ctx, exprOf(t, src), slots, g); ok {
+			t.Fatalf("%q folded to %v under the real slot map", src, v)
+		}
+	}
+
+	// The hazard the contract documents: an EMPTY slot map folds the
+	// unbound name to a null literal and the whole expression launders
+	// into a constant. Pinned so the contract comment stays honest.
+	if _, ok := ConstValue(ctx, exprOf(t, "coalesce(null, d)"), map[string]int{}, g); !ok {
+		t.Fatal("empty-slot-map laundering no longer folds; update ConstValue's contract comment")
+	}
+}

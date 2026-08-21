@@ -180,3 +180,94 @@ func TestMembershipDensification(t *testing.T) {
 		t.Fatalf("empty list built memNodes")
 	}
 }
+
+// TestCandidateIntSweepMatchesEval pins the bulk i64 sweep against
+// Compiled.Eval's truthiness the same way the per-candidate parity test
+// does: every operator, both operand orders, exact-int and float-coerced
+// and temporal constants, across present, absent, and negative values.
+// The sweep ANDs into a running keep mask, so a pre-cleared entry must
+// stay cleared regardless of the compare.
+func TestCandidateIntSweepMatchesEval(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 0)
+	var ids []chickpeas.NodeID
+	for i := range 8 {
+		n, _ := b.AddNode("N")
+		ids = append(ids, n)
+		switch i {
+		case 0, 1, 2, 3:
+			_ = b.SetProp(n, "i", int64(i*10))
+		case 4:
+			_ = b.SetProp(n, "i", int64(-5))
+		case 5:
+			_ = b.SetProp(n, "f", 2.5)
+			// 6, 7: all props missing
+		}
+	}
+	g := b.Finalize("intsweep")
+	ctx := &eval.Ctx{G: graph.New(g)}
+	slots := map[string]int{"n": 0}
+	row := make([]value.Value, 1)
+
+	sweeps := []string{
+		"n.i = 20", "n.i <> 20", "n.i < 15", "n.i <= 20", "n.i > 10", "n.i >= 30",
+		"20 = n.i", "20 <> n.i", "15 > n.i", "15 >= n.i", "10 < n.i", "10 <= n.i",
+		"n.i < zoned_datetime('1970-01-01T00:00:01Z')", // temporal folds to epoch millis, exact order
+		"zoned_datetime('1970-01-01T00:00:00.020Z') = n.i",
+	}
+	uids := make([]uint32, len(ids))
+	for i, id := range ids {
+		uids[i] = uint32(id)
+	}
+	vals := make([]int64, len(ids))
+	present := make([]bool, len(ids))
+	keep := make([]bool, len(ids))
+	for _, src := range sweeps {
+		c := New(ctx, exprOf(t, src), slots, g)
+		sw, ok := CandidateIntSweep(c, 0)
+		if !ok {
+			t.Fatalf("%q did not specialize to an IntSweep (compiled to %T)", src, c.c)
+		}
+		for i := range keep {
+			keep[i] = true
+		}
+		sw(uids, vals, present, keep)
+		for i, id := range ids {
+			row[0] = value.Node(graph.NodeID(id))
+			want := c.Eval(ctx, row, slots).IsTruthy()
+			if keep[i] != want {
+				t.Fatalf("%q node %d: sweep %v, eval %v", src, id, keep[i], want)
+			}
+		}
+		// Running-mask semantics: a pre-cleared entry survives nothing.
+		for i := range keep {
+			keep[i] = i%2 == 0
+		}
+		sw(uids, vals, present, keep)
+		for i := range ids {
+			if i%2 == 1 && keep[i] {
+				t.Fatalf("%q entry %d: cleared keep re-asserted by the sweep", src, i)
+			}
+		}
+	}
+
+	// Decline cases: the sweep serves exactly cCmpPropConst over an i64
+	// node column with a foldable numeric/temporal constant, on the
+	// requested slot.
+	for _, src := range []string{
+		"n.f < 3.0",       // float column
+		"n.i < 15.5",      // float constant: constI64Val folds only Int/Temporal
+		"n.i = 'x'",       // incomparable constant
+		"n.i IN [10, 30]", // membership, not a compare
+		"n.i + 1 > 2",     // non-compare root
+		"n.i IS NOT NULL", // presence probe
+	} {
+		c := HoistCarriedIn(HoistConstIn(ctx, New(ctx, exprOf(t, src), slots, g), func(int) bool { return false }, nil, slots), func(int) bool { return false })
+		if _, ok := CandidateIntSweep(c, 0); ok {
+			t.Fatalf("%q must not specialize to an IntSweep", src)
+		}
+	}
+	c := New(ctx, exprOf(t, "n.i = 20"), slots, g)
+	if _, ok := CandidateIntSweep(c, 3); ok {
+		t.Fatal("wrong slot must not specialize to an IntSweep")
+	}
+}
