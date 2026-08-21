@@ -147,6 +147,11 @@ func TestIdentityPassthroughMatchesGeneral(t *testing.T) {
 	}
 	disableColAgg = true
 	defer func() { disableColAgg = false }()
+	// The subject is the exec passthrough, so pin the plan shapes it
+	// expects: sort-limit fusion would legitimately dissolve the
+	// standalone ORDER BY ... LIMIT boundary in the second fixture.
+	plan.DisableSortLimitFusion = true
+	defer func() { plan.DisableSortLimitFusion = false }()
 	for i, tc := range queries {
 		before := identPassthroughs
 		fast := runOrdered(t, g, tc.q)
@@ -164,6 +169,77 @@ func TestIdentityPassthroughMatchesGeneral(t *testing.T) {
 		if fired != tc.engage {
 			t.Errorf("query %d: passthrough engagement = %v, want %v (vacuity guard)\nplan:\n%s",
 				i, fired, tc.engage, planShape(t, g, tc.q))
+		}
+	}
+}
+
+// TestSortLimitFusionIdentity is the differential for the plan-side
+// sort-limit hoist (task 318): a NEXT-authored trailing ORDER BY +
+// LIMIT donates its ordering to the producer, whose bounded sink then
+// refuses rows early -- and the fused pipeline must produce exactly the
+// unfused pipeline's rows IN ORDER, on a fixture dense with duplicate
+// sort keys so the tie behavior at the retention boundary is what is
+// actually compared. Engagement is pinned at the plan (the producer
+// carries the ordering) so the differential cannot pass vacuously.
+func TestSortLimitFusionIdentity(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 0)
+	// 30 nodes over 5 duplicate-heavy key values, interleaved so arrival
+	// order and key order disagree; a second column distinguishes rows
+	// that tie on the first key.
+	for i := range 30 {
+		id, err := b.AddNode("Person")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(id, "pid", int64(i%5)); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(id, "seq", int64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize("pid", "seq")
+
+	queries := []string{
+		// Ties at the boundary: LIMIT 7 cuts inside a pid group.
+		"MATCH (p:Person) RETURN p.pid AS pid, p.seq AS sq NEXT ORDER BY pid DESC LIMIT 7 RETURN pid, sq",
+		// Full key + tiebreak column, offset cutting inside a group.
+		"MATCH (p:Person) RETURN p.pid AS pid, p.seq AS sq NEXT ORDER BY pid ASC, sq DESC SKIP 4 LIMIT 9 RETURN sq",
+		// Aggregated producer receiving the bound.
+		"MATCH (p:Person) RETURN p.pid AS pid, count(*) AS n NEXT ORDER BY n DESC, pid ASC LIMIT 3 RETURN pid, n",
+	}
+	for _, q := range queries {
+		// Engagement: the producer segment carries the fused ordering.
+		qq, err := parser.Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pl, err := plan.Build(qq, graph.New(g))
+		if err != nil {
+			t.Fatal(err)
+		}
+		carrier := -1
+		for i, s := range pl.Branches[0] {
+			if len(s.Proj.OrderBy) > 0 {
+				carrier = i
+				break
+			}
+		}
+		if carrier < 0 || (len(pl.Branches[0][carrier].Stages) == 0 && !pl.Branches[0][carrier].Proj.Aggregated) {
+			t.Fatalf("%q: fusion did not engage (ordering on segment %d) -- the differential would be vacuous", q, carrier)
+		}
+
+		fusedRows := runOrdered(t, g, q)
+		plan.DisableSortLimitFusion = true
+		plainRows := runOrdered(t, g, q)
+		plan.DisableSortLimitFusion = false
+		if len(fusedRows) != len(plainRows) {
+			t.Fatalf("%q: fused %d rows, unfused %d", q, len(fusedRows), len(plainRows))
+		}
+		for i := range fusedRows {
+			if fusedRows[i] != plainRows[i] {
+				t.Fatalf("%q row %d:\nfused:   %s\nunfused: %s", q, i, fusedRows[i], plainRows[i])
+			}
 		}
 	}
 }

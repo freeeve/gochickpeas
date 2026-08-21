@@ -82,6 +82,7 @@ func buildWithInColsCtx(q *ast.Query, inCols []string, g graph.Graph, pc *planCt
 			return nil, bindErrf("all UNION branches must return the same columns: [%s] vs [%s]",
 				joinComma(columns), joinComma(cols))
 		}
+		fuseSortLimit(segments)
 		branches = append(branches, segments)
 	}
 	return &Plan{Branches: branches, Union: q.Union, Columns: columns}, nil

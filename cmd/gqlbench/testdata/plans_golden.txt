@@ -316,10 +316,10 @@ Segment 5
   OrderBy [city1.name, score DESC, person1.id, person2.id]
 Segment 6
   Aggregate (group=[city1]; collect(person1.id), collect(person2.id), collect(score))
-Segment 7
-  Project [topPerson1Id, topPerson2Id, cityName, topScore]
   OrderBy [topScore DESC, topPerson1Id, topPerson2Id]
   Limit 100
+Segment 7
+  Project [topPerson1Id, topPerson2Id, cityName, topScore]
 
 === BI/Q15
 NodeByProperty (a:Person {id = 14})
@@ -652,10 +652,10 @@ Segment 0
   Expand (f)<-[:HAS_CREATOR]-(m)
   Filter (m.creationDate < zoned_datetime('2013-01-02'))
   Project [ms, mid]
-Segment 1
-  Project [ms, mid]
   OrderBy [ms DESC, mid]
   Limit 20
+Segment 1
+  Project [ms, mid]
 Segment 2
   Project [ms]
 
@@ -758,10 +758,10 @@ Segment 0
   Expand (p)<-[:HAS_CREATOR]-(_)
   Expand (_)<-[:REPLY_OF]-(reply)
   Project [ms, rid]
-Segment 1
-  Project [ms, rid]
   OrderBy [ms DESC, rid]
   Limit 20
+Segment 1
+  Project [ms, rid]
 Segment 2
   Project [ms]
 
@@ -777,10 +777,10 @@ Segment 1
   Expand (f)<-[:HAS_CREATOR]-(m)
   Filter (m.creationDate < zoned_datetime('2013-01-02'))
   Project [ms, mid]
-Segment 2
-  Project [ms, mid]
   OrderBy [ms DESC, mid]
   Limit 20
+Segment 2
+  Project [ms, mid]
 Segment 3
   Project [ms]
 
@@ -857,10 +857,10 @@ Segment 0
   Expand (p)<-[:HAS_CREATOR]-(m)
   Filter (m.creationDate < zoned_datetime('2013-01-02'))
   Project [ms, mid]
-Segment 1
-  Project [ms, mid]
   OrderBy [ms DESC, mid]
   Limit 10
+Segment 1
+  Project [ms, mid]
 Segment 2
   Project [ms]
 

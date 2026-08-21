@@ -98,6 +98,14 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 		}
 	}
 	if bound := orderBound(proj); bound >= 0 {
+		// Retention is bounded, so size arena chunks to it (plus eviction
+		// turnover) instead of the default sweep-sized chunk -- a
+		// LIMIT-bounded sink otherwise pays a near-empty 16K-value chunk
+		// per arena (the aggregate finalize precedent).
+		p.oArena.chunkValues = min(arenaChunkValues, max(64, 2*bound)*len(proj.Returns))
+		if p.needM {
+			p.mArena.chunkValues = min(arenaChunkValues, max(64, 2*bound)*width)
+		}
 		if nk := len(proj.OrderBy); nk > 0 {
 			p.topk = newTopKRows(bound, nk, proj.OrderBy)
 			p.kColIdx = make([]int, nk)
