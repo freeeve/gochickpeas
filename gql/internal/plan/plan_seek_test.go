@@ -201,3 +201,35 @@ func TestScanSourcePicksMostSelectiveProp(t *testing.T) {
 		t.Fatalf("seek key = %q, want email (most selective posting), not the first-written prop", src.Key)
 	}
 }
+
+// TestScanSourcePropInSeek pins the multi-value IN seek (task 308, ported
+// from rustychickpeas c07ce7f): a string/boolean IN list on a fresh
+// labelled node anchors on ScanPropertyIn with the list's literals, and
+// every shape the coercion trap or the seek contract cannot serve
+// refuses back to the label scan -- numeric lists (IN compares int
+// against float numerically, a seek matches stored values exactly, so a
+// candidate never yielded is a row silently lost), mixed lists, params,
+// non-literal elements, and empty lists.
+func TestScanSourcePropInSeek(t *testing.T) {
+	g := buildFixture(t)
+
+	p := mustPlan(t, g, "MATCH (tg:Tag) WHERE tg.name IN ['tagA', 'tagB'] RETURN tg")
+	src := firstMatch(t, p).Ops[0].Source
+	if src.Kind != ScanPropertyIn || src.Key != "name" || len(src.Values) != 2 {
+		t.Fatalf("source = %+v, want ScanPropertyIn over name with 2 values", src)
+	}
+
+	refusals := []string{
+		"MATCH (n:Person) WHERE n.pid IN [1, 2] RETURN n",        // ints
+		"MATCH (n:Person) WHERE n.pid IN [1.0, 2.0] RETURN n",    // floats
+		"MATCH (tg:Tag) WHERE tg.name IN ['tagA', 1] RETURN tg",  // mixed
+		"MATCH (tg:Tag) WHERE tg.name IN ['tagA', $p] RETURN tg", // param elem
+		"MATCH (tg:Tag) WHERE tg.name IN [tg.name] RETURN tg",    // non-literal
+	}
+	for _, q := range refusals {
+		p := mustPlan(t, g, q)
+		if src := firstMatch(t, p).Ops[0].Source; src.Kind == ScanPropertyIn {
+			t.Fatalf("%q anchored on ScanPropertyIn -- the gate must refuse it", q)
+		}
+	}
+}

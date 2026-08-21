@@ -6,6 +6,8 @@
 package plan
 
 import (
+	"slices"
+
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/semantics"
@@ -73,6 +75,14 @@ func resolveAnchorNodes(n *ast.NodePat, where ast.Expr, slots map[string]int, bo
 	// read here matches the plan actually built. A param seek abstains (no
 	// plan-time value).
 	if ps, ok := bestPropSeek(n, where, g); ok && !ps.abstain {
+		if ps.inVals != nil {
+			var ids []graph.NodeID
+			for _, v := range ps.inVals {
+				ids = append(ids, setSlice(g.NodesWithProperty(n.Labels[0], ps.key, semantics.LitValue(v)))...)
+			}
+			slices.Sort(ids)
+			return slices.Compact(ids), true
+		}
 		return setSlice(g.NodesWithProperty(n.Labels[0], ps.key, semantics.LitValue(ps.val))), true
 	}
 	return nil, false

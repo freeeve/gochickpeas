@@ -350,6 +350,12 @@ func opLabel(op *plan.BindOp, names []string) string {
 			return fmt.Sprintf("NodeBySeek (%s = id %s)", v, fmtLit(src.Value))
 		case plan.ScanNodeIDVar:
 			return fmt.Sprintf("NodeBySeek (%s = id %s)", v, nameOf(src.Slot, names))
+		case plan.ScanPropertyIn:
+			vals := make([]string, len(src.Values))
+			for i, lv := range src.Values {
+				vals[i] = fmtLit(lv)
+			}
+			return fmt.Sprintf("NodeByPropertyIn (%s:%s {%s IN [%s]})", v, src.Label, src.Key, strings.Join(vals, ", "))
 		case plan.ScanTextMatch:
 			return fmt.Sprintf("NodeByTextIndex (%s:%s {%s %s %s})", v, src.Label, src.Field, binopStr(src.Mode), fmtLit(src.Value))
 		case plan.ScanExistsSeed:

@@ -31,6 +31,11 @@ const (
 	// ScanArg is the node already bound in row slot Slot (carried in or
 	// reused across MATCH clauses).
 	ScanArg
+	// ScanPropertyIn is an indexed multi-value anchor: nodes of Label
+	// whose Key equals ANY of Values, served as one property seek per
+	// value, unioned, sorted, and deduplicated. The originating IN
+	// conjunct is kept and re-checked, so the source only narrows.
+	ScanPropertyIn
 	// ScanTextMatch is a substring-index candidate scan: nodes of Label
 	// whose Field satisfies Mode (STARTS WITH/ENDS WITH/CONTAINS) against
 	// the Value needle. Candidates are a superset; the kept WHERE conjunct
@@ -64,14 +69,15 @@ type SeedChain struct {
 
 // ScanSource is where a Scan op's candidate nodes come from.
 type ScanSource struct {
-	Kind  ScanKind
-	Label string
-	Key   string      // ScanProperty
-	Field string      // ScanTextMatch
-	Mode  ast.BinOp   // ScanTextMatch
-	Value ast.Literal // ScanProperty value / ScanNodeID id / ScanTextMatch needle
-	Slot  int         // ScanArg / ScanNodeIDVar
-	Seeds []SeedChain // ScanExistsSeed: one chain per EXISTS disjunct
+	Kind   ScanKind
+	Label  string
+	Key    string        // ScanProperty
+	Field  string        // ScanTextMatch
+	Mode   ast.BinOp     // ScanTextMatch
+	Value  ast.Literal   // ScanProperty value / ScanNodeID id / ScanTextMatch needle
+	Slot   int           // ScanArg / ScanNodeIDVar
+	Seeds  []SeedChain   // ScanExistsSeed: one chain per EXISTS disjunct
+	Values []ast.Literal // ScanPropertyIn: the IN list's literals
 }
 
 // OpKind discriminates a BindOp.

@@ -38,6 +38,24 @@ func freshScan(ctx *eval.Ctx, src *plan.ScanSource, m *graph.NodeMatcher, skipAc
 				accept(id)
 			}
 		}
+	case plan.ScanPropertyIn:
+		// One property seek per listed value, unioned. Sorting restores
+		// the ascending order a label scan yields (unordered results must
+		// not reshuffle) and dedup collapses ids that satisfy more than
+		// one arm (duplicate literals in the list); the kept IN conjunct
+		// re-checks every candidate.
+		var ids []graph.NodeID
+		for _, v := range src.Values {
+			if set := ctx.G.NodesWithProperty(src.Label, src.Key, eval.LitValue(ctx, v)); set != nil {
+				for id := range set.Iter() {
+					ids = append(ids, id)
+				}
+			}
+		}
+		slices.Sort(ids)
+		for _, id := range slices.Compact(ids) {
+			accept(id)
+		}
 	case plan.ScanLabel:
 		if set := ctx.G.NodesWithLabel(src.Label); set != nil {
 			for id := range set.Iter() {

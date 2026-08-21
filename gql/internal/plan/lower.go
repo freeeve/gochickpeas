@@ -219,10 +219,12 @@ func propEqSide(propExpr, litExpr ast.Expr, varName string) (string, ast.Literal
 // chosen over both inline `{key: val}` props and top-level WHERE equalities on
 // the node. A concrete value carries its exact posting length; a param abstains
 // (no plan-time value) and is used only when nothing concrete seeks -- so a
-// param never bakes a value into a shared cached plan.
+// param never bakes a value into a shared cached plan. inVals non-nil marks a
+// multi-value IN seek (card = summed posting lengths).
 type propSeekPick struct {
 	key     string
 	val     ast.Literal
+	inVals  []ast.Literal
 	card    uint64 // exact posting length; meaningful only when !abstain
 	abstain bool   // param value: seekable but uncosted
 }
@@ -264,7 +266,74 @@ func bestPropSeek(node *ast.NodePat, where ast.Expr, g graph.Graph) (propSeekPic
 	for _, eq := range propEqConjuncts(where, node.Var) {
 		consider(eq.key, eq.val)
 	}
+	for _, in := range propInConjuncts(where, node.Var) {
+		var c uint64
+		for _, v := range in.vals {
+			c += uint64(setLen(g.NodesWithProperty(label, in.key, semantics.LitValue(v))))
+		}
+		if !found || best.abstain || c < best.card {
+			best = propSeekPick{key: in.key, inVals: in.vals, card: c}
+			found = true
+		}
+	}
 	return best, found
+}
+
+// DisablePropInSeek pins result identity in tests: the label-scan +
+// filter evaluation must produce exactly the rows the IN seek does, in
+// the same order.
+var DisablePropInSeek bool
+
+// propIn is one `<var>.<key> IN [literals]` conjunct usable as a seek.
+type propIn struct {
+	key  string
+	vals []ast.Literal
+}
+
+// propInConjuncts collects WHERE conjuncts of the form
+// `<var>.<key> IN [<literal>, ...]` whose every element is a STRING or
+// BOOLEAN literal. Numeric literals are excluded deliberately: IN
+// compares int against float numerically (30 IN [30.0] is true) while a
+// property seek matches the stored value exactly -- a candidate the seek
+// never yields is a row silently lost, the one failure keep-and-re-check
+// cannot catch. Strings and booleans have no cross-type equality
+// partner. (The sibling engine shipped the numeric form and a mixed
+// int/float test caught it; rustychickpeas c07ce7f.)
+func propInConjuncts(where ast.Expr, varName string) []propIn {
+	if DisablePropInSeek || where == nil || varName == "" {
+		return nil
+	}
+	var conjs []ast.Expr
+	SplitAnd(where, &conjs)
+	var out []propIn
+	for _, c := range conjs {
+		in, ok := c.(*ast.In)
+		if !ok {
+			continue
+		}
+		p, ok := in.Expr.(*ast.Prop)
+		if !ok || p.Var != varName {
+			continue
+		}
+		list, ok := in.List.(*ast.ListExpr)
+		if !ok || len(list.Elems) == 0 {
+			continue
+		}
+		vals := make([]ast.Literal, 0, len(list.Elems))
+		qualified := true
+		for _, el := range list.Elems {
+			lit, isLit := el.(*ast.Lit)
+			if !isLit || (lit.Value.Kind != ast.LitStr && lit.Value.Kind != ast.LitBool) {
+				qualified = false
+				break
+			}
+			vals = append(vals, lit.Value)
+		}
+		if qualified {
+			out = append(out, propIn{key: p.Key, vals: vals})
+		}
+	}
+	return out
 }
 
 // scanSource picks a fresh node's default scan source: the most selective
@@ -272,6 +341,9 @@ func bestPropSeek(node *ast.NodePat, where ast.Expr, g graph.Graph) (propSeekPic
 // bestPropSeek), else a label scan, else all nodes.
 func scanSource(node *ast.NodePat, where ast.Expr, g graph.Graph) ScanSource {
 	if ps, ok := bestPropSeek(node, where, g); ok {
+		if ps.inVals != nil {
+			return ScanSource{Kind: ScanPropertyIn, Label: node.Labels[0], Key: ps.key, Values: ps.inVals}
+		}
 		return ScanSource{Kind: ScanProperty, Label: node.Labels[0], Key: ps.key, Value: ps.val}
 	}
 	if len(node.Labels) > 0 {

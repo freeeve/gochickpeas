@@ -227,7 +227,7 @@ Segment 4
 Segment 0
   NodeScan (person:Person)
   GroupJoin (key=person) [person, $gj0]
-      NodeScan (post:Post)
+      NodeByPropertyIn (post:Post {language IN ['ar', 'hu']})
       VarExpand (post)<-[:REPLY_OF*0..]-(message)
       Expand (message)-[:HAS_CREATOR]->(person)
       Filter (message.content IS NOT NULL AND message.length < 20 AND message.creationDate > zoned_datetime('2010-07-22') AND post.language IN ['ar', 'hu'])
