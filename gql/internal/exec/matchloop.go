@@ -39,6 +39,15 @@ type genScratch struct {
 	// the freshly filled candidate buffer (the fill-time sweep), so the
 	// pop loop skips them and counts bindings from the sweep's credit.
 	swept []bool
+	// scanMemo/scanMemoOK cache a level's row-independent fresh-scan
+	// candidates across match calls: a constant-anchored scan nested
+	// below the driving level otherwise recomputes an identical set for
+	// every outer row. The memo holds the pristine post-matcher list
+	// (filled before the per-row sweep/prunes mutate the working buffer)
+	// and lives as long as this stage's stream node, matching the
+	// fixed-per-execution parameters the scan can read.
+	scanMemo   [][]graph.NodeID
+	scanMemoOK []bool
 	// keep is the sweep's columnar mask, reused across levels.
 	keep []bool
 	// chainRoots / chainFunc cache each var-expand op's chain-collapse
@@ -121,6 +130,8 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 		scratch.candRange = append(scratch.candRange, nil)
 		scratch.candPairData = append(scratch.candPairData, nil)
 		scratch.candPairRange = append(scratch.candPairRange, nil)
+		scratch.scanMemo = append(scratch.scanMemo, nil)
+		scratch.scanMemoOK = append(scratch.scanMemoOK, false)
 	}
 	scratch.pos = append(scratch.pos[:0], make([]int, n)...)
 	scratch.uniqPushed = append(scratch.uniqPushed[:0], make([]int, n)...)
@@ -392,9 +403,33 @@ func levelCandidates(ctx *eval.Ctx, op *plan.BindOp, sc *stageComp, i int, row [
 			freshScan(ctx, &base, m, false, cand)
 		}
 	default:
+		// Row-independent sources (property/label/IN/id-literal/text/all
+		// scans) yield the same candidates for every row of this stage,
+		// so the first fill is memoized and later calls copy it instead
+		// of re-running the scan -- the per-row sweep and prunes mutate
+		// only the working buffer, never the memo.
+		if disableScanMemo {
+			freshScan(ctx, &op.Source, m, scanMatcherRedundant(op), cand)
+			return
+		}
+		if scratch.scanMemoOK[i] {
+			*cand = append(*cand, scratch.scanMemo[i]...)
+			scanMemoHits++
+			return
+		}
 		freshScan(ctx, &op.Source, m, scanMatcherRedundant(op), cand)
+		scratch.scanMemo[i] = append(scratch.scanMemo[i][:0], *cand...)
+		scratch.scanMemoOK[i] = true
 	}
 }
+
+// scanMemoHits counts row-independent scan fills served from the memo,
+// so tests can assert the reuse actually engaged.
+var scanMemoHits int
+
+// disableScanMemo pins result identity in tests: every match call must
+// produce exactly the rows the memoized path does.
+var disableScanMemo bool
 
 // baseScanKind is the source a ScanExistsSeed degrades to when its walk
 // is abandoned: the label scan when one exists, else every node.

@@ -9,6 +9,7 @@ import (
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/parser"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
+	"github.com/freeeve/gochickpeas/gql/value"
 )
 
 // TestGenMatchesEntryScratchDoesNotAllocPerRow pins the
@@ -155,5 +156,75 @@ func TestRelSlotOf(t *testing.T) {
 	}
 	if got := relSlotOf(&plan.BindOp{Kind: plan.OpScan, RelSlot: 4}); got != plan.NoSlot {
 		t.Fatalf("relSlotOf(scan) = %d, want NoSlot", got)
+	}
+}
+
+// TestScanMemoReusesRowIndependentScans locks the loop-invariant scan
+// memo (task 315, after rustychickpeas's correction to the twin-probe
+// cost claim): a row-independent scan nested below the driving level
+// used to re-run for every outer row -- with the numeric-twin probes
+// that is two index probes per row, and for an unselective anchor the
+// recomputation dwarfs the probes. The memo fills once per stage
+// execution and later rows copy it. Engagement is asserted through the
+// hit counter, identity through the disable switch.
+func TestScanMemoReusesRowIndependentScans(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 0)
+	for range 3 {
+		if _, err := b.AddNode("A"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 4 {
+		id, err := b.AddNode("B")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(id, "k", int64(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(b.Finalize("k"))
+	q := "MATCH (a:A) MATCH (b:B {k: 1}) RETURN a, b"
+
+	run := func() [][]value.Value {
+		t.Helper()
+		qq, err := parser.Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pl, err := plan.Build(qq, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := Execute(&eval.Ctx{G: g}, pl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+
+	scanMemoHits = 0
+	memo := run()
+	if len(memo) != 12 {
+		t.Fatalf("rows = %d, want 12 (3 a x 4 b)", len(memo))
+	}
+	if scanMemoHits == 0 {
+		t.Fatal("scan memo never engaged -- the nested scan shape did not build, the test is vacuous")
+	}
+
+	disableScanMemo = true
+	plain := run()
+	disableScanMemo = false
+	if len(plain) != len(memo) {
+		t.Fatalf("disabled rows = %d, memo rows = %d", len(plain), len(memo))
+	}
+	for i := range memo {
+		for j := range memo[i] {
+			am, _ := memo[i][j].AsNode()
+			ap, _ := plain[i][j].AsNode()
+			if am != ap {
+				t.Fatalf("row %d col %d: memo node %d, plain node %d -- order must be identical", i, j, am, ap)
+			}
+		}
 	}
 }
