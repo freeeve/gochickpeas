@@ -104,6 +104,23 @@ techniques land; cite the commit that proved the win.
    (chunkGroups blocks sized in groups -- the unit callers slice by --
    so a group's window never straddles a boundary), which is why the
    churn their fix removed never existed here.
+10. **Price a reuse/pooling fork by histogram replay before building
+    either side.** Capture one warm execution's allocation SIZE
+    HISTOGRAM (MemProfileRate=1 profile gives it), replay just those
+    allocations in a standalone loop, and compare that wall time to
+    the query's: reuse cannot save more than the allocator time it
+    removes, so the replay upper-bounds the win in an afternoon,
+    without implementing pooling or a session API. The bound is
+    generous in three ways that all push the true figure lower:
+    pooled memory still gets cleared and re-touched, the replay skips
+    the real run's interleaved frees, and not every captured
+    allocation is per-execution scratch. Cross-engine validation: the
+    Rust sibling's histogram replay bounded their aggregator-scratch
+    reuse at 1.02-1.40% of wall where our env-gated sync.Pool
+    prototype (research/agg-slab-pool) measured ~1-2% -- two methods,
+    two allocators, same verdict. The prototype is tighter and proves
+    the mechanism works; the replay is the cheap first pass for a fork
+    you suspect will come back "not worth it".
 
 ## Where Go allocates, and what to do about it
 
