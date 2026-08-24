@@ -54,6 +54,11 @@ func TestGroupJoinExecMatchesNested(t *testing.T) {
 	}
 
 	defer func(v float64) { plan.GroupJoinMinOuterRows = v }(plan.GroupJoinMinOuterRows)
+	// The subject is the SINK: pin past the unselective-inner
+	// discriminator, which correctly declines this label-anchored
+	// fixture shape.
+	plan.DisableGJAnchorDecline = true
+	defer func() { plan.DisableGJAnchorDecline = false }()
 
 	// The nested OPTIONAL execution (the group-join rewrite disabled).
 	plan.GroupJoinMinOuterRows = 1e18
@@ -248,6 +253,10 @@ func TestGroupJoinPartialOrderTailIdentity(t *testing.T) {
 	}
 
 	defer func(v float64) { plan.GroupJoinMinOuterRows = v }(plan.GroupJoinMinOuterRows)
+	// Subject is the sink's ordering: pin past the unselective-inner
+	// discriminator, which correctly declines this fixture shape.
+	plan.DisableGJAnchorDecline = true
+	defer func() { plan.DisableGJAnchorDecline = false }()
 	plan.GroupJoinMinOuterRows = 0
 	gj := ordered(true)
 	plan.GroupJoinMinOuterRows = 1e18

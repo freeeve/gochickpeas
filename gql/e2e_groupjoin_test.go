@@ -39,7 +39,14 @@ func gjCompare(t *testing.T, g *chickpeas.Snapshot, q string, wantJoin bool) []s
 	nested := hjRowKeys(t, g, q)
 	floor := plan.GroupJoinMinOuterRows
 	plan.GroupJoinMinOuterRows = 0
-	defer func() { plan.GroupJoinMinOuterRows = floor }()
+	// The subject is rewrite-vs-nested identity: pin past the
+	// unselective-inner economics discriminator, which correctly
+	// declines these fixture-scale label-anchored inners.
+	plan.DisableGJAnchorDecline = true
+	defer func() {
+		plan.GroupJoinMinOuterRows = floor
+		plan.DisableGJAnchorDecline = false
+	}()
 	qf := q + " " // defeat the plan cache: the lowered floor must re-plan
 	pl, err := gql.Explain(g, qf)
 	if err != nil {

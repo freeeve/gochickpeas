@@ -217,3 +217,78 @@ func TestPatternVars(t *testing.T) {
 		t.Fatalf("anonymous pattern vars = %v", got)
 	}
 }
+
+// TestGJAnchorDecline pins the inner-anchor discriminator (task 325,
+// from rustychickpeas' losing-regime report): when the standalone inner
+// plan anchors on its own correlation variable, both legs walk the same
+// relationships and the hash table is pure cost (measured 1.27x slower
+// here, 7.6x in the Rust engine on an unfiltered whole-label shape), so
+// the rewrite declines. An inner whose plan anchors on a selective seek
+// of the non-correlated side stays admitted -- the Q12-class win the
+// discriminator must not touch.
+func TestGJAnchorDecline(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 64)
+	// Few Persons, many Messages: the unfiltered inner anchors on the
+	// smaller Person side -- the correlation variable.
+	var ps []graph.NodeID
+	for range 4 {
+		id, _ := b.AddNode("Person")
+		ps = append(ps, id)
+	}
+	for i := range 40 {
+		m, _ := b.AddNode("Message")
+		_ = b.SetProp(m, "lang", []string{"ar", "hu"}[i%2])
+		if _, err := b.AddRel(m, ps[i%4], "HAS_CREATOR"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(b.Finalize("lang"))
+
+	hasGJ := func(q string) bool {
+		t.Helper()
+		p := mustPlan(t, g, q)
+		for _, seg := range p.Branches[0] {
+			for _, st := range seg.Stages {
+				if _, ok := st.(*GroupJoinStage); ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	defer func(v float64) { GroupJoinMinOuterRows = v }(GroupJoinMinOuterRows)
+	GroupJoinMinOuterRows = 0
+
+	losing := "MATCH (p:Person) OPTIONAL MATCH (p)<-[:HAS_CREATOR]-(m:Message) RETURN p, count(m) AS c"
+	admitted := "MATCH (p:Person) OPTIONAL MATCH (p)<-[:HAS_CREATOR]-(m:Message {lang: 'ar'}) RETURN p, count(m) AS c"
+
+	// The unfiltered inner anchors on the correlation variable: decline,
+	// with the counter as the engagement oracle.
+	before := gjAnchorDeclines
+	if hasGJ(losing) {
+		t.Fatal("corr-anchored inner still group-joins -- the discriminator did not fire")
+	}
+	if gjAnchorDeclines == before {
+		t.Fatal("no decline counted -- the shape dissolved before the discriminator (vacuous)")
+	}
+
+	// The disable switch restores the always-admit behavior (the
+	// differential leg for exec identity tests).
+	DisableGJAnchorDecline = true
+	stillGJ := hasGJ(losing)
+	DisableGJAnchorDecline = false
+	if !stillGJ {
+		t.Fatal("disabled discriminator still declines -- switch dead")
+	}
+
+	// A selective seek on the non-correlated side anchors the inner away
+	// from the correlation key: admitted, counter untouched.
+	before = gjAnchorDeclines
+	if !hasGJ(admitted) {
+		t.Fatal("seek-anchored inner declined -- the Q12-class win would regress")
+	}
+	if gjAnchorDeclines != before {
+		t.Fatal("admitted shape bumped the decline counter")
+	}
+}

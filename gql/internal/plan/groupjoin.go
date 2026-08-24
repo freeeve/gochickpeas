@@ -60,6 +60,11 @@ type gjCandidate struct {
 	corr       []string
 	corrLabels []string
 	aggs       []gjAgg
+	// repetition is the gate's estimated outer-breadth-to-population
+	// ratio, minimized over the correlation labels: ~1 means each
+	// correlation key appears once (no re-walk for the table build to
+	// amortize), >1 means the nested drive would re-walk shared keys.
+	repetition float64
 }
 
 // exprVars collects every variable an expression reads (bare references
@@ -229,6 +234,42 @@ func detectGroupJoin(specs []stageSpec, projAST *ast.Projection, inCols []string
 	return &gjCandidate{specIdx: n, corr: corr, corrLabels: labels, aggs: aggs}
 }
 
+// gjAnchorDeclines counts inner plans refused as unselective with no
+// outer repetition to amortize the table, so tests can assert the
+// discriminator engaged. DisableGJAnchorDecline pins differential tests
+// to the always-admit behavior the discriminator replaced.
+var (
+	gjAnchorDeclines       int
+	DisableGJAnchorDecline bool
+)
+
+// gjInnerAnchorSelective reports whether the standalone inner plan
+// drives from a value seek. A seek is the rewrite's winning case: the
+// per-outer-row nested drive cannot use it, so the standalone inner
+// genuinely walks less. A label or all-nodes anchor walks the same
+// relationships the nested drive would (merely from the other end), so
+// selectivity is the benefit's existence test. An unrecognized shape
+// reports selective (the rewrite stays admitted, the pre-discriminator
+// behavior).
+func gjInnerAnchorSelective(sub *Plan) bool {
+	if len(sub.Branches) != 1 || len(sub.Branches[0]) == 0 {
+		return true
+	}
+	seg := sub.Branches[0][0]
+	if len(seg.Stages) == 0 {
+		return true
+	}
+	ms, ok := seg.Stages[0].(*MatchStage)
+	if !ok || len(ms.Ops) == 0 || ms.Ops[0].Kind != OpScan {
+		return true
+	}
+	switch ms.Ops[0].Source.Kind {
+	case ScanLabel, ScanAll:
+		return false
+	}
+	return true
+}
+
 // varLabelIn finds v's first written label across the specs' patterns
 // ("" when v is never labeled).
 func varLabelIn(specs []stageSpec, v string) string {
@@ -264,6 +305,7 @@ func gjGate(c *gjCandidate, stages []Stage, g graph.Graph) bool {
 	if breadth < GroupJoinMinOuterRows {
 		return false
 	}
+	c.repetition = 0
 	for _, l := range c.corrLabels {
 		pop := float64(g.NodeCount())
 		if l != "" {
@@ -271,6 +313,9 @@ func gjGate(c *gjCandidate, stages []Stage, g graph.Graph) bool {
 		}
 		if breadth < GroupJoinMinCoverage*pop {
 			return false
+		}
+		if r := breadth / pop; c.repetition == 0 || r < c.repetition {
+			c.repetition = r
 		}
 	}
 	return true
@@ -363,6 +408,20 @@ func buildGroupJoinStage(c *gjCandidate, spec *stageSpec, projAST *ast.Projectio
 	sub, err := Build(innerQ, g)
 	if err != nil {
 		return nil, err
+	}
+	// The rewrite's benefits are a SELECTIVE inner anchor the nested
+	// per-outer-row drive cannot use, and amortizing repeated
+	// correlation keys into one walk; its cost is the hash table over
+	// every inner row. An inner driving from an unselective label scan
+	// walks the same relationships the nested drive would (merely from
+	// the other end), so when the outer also has no key repetition to
+	// amortize (~one row per key), the table build is pure loss --
+	// measured 1.27x slower here and 7.6x in the Rust sibling on the
+	// unfiltered whole-label shape. Decline BEFORE the projection
+	// rewrite below, which the nested fallback must see unmutated.
+	if !DisableGJAnchorDecline && c.repetition <= 1.05 && !gjInnerAnchorSelective(sub) {
+		gjAnchorDeclines++
+		return nil, fmt.Errorf("group-join inner is unselective with no outer key repetition")
 	}
 	gj := &GroupJoinStage{Sub: sub}
 	for _, v := range c.corr {
