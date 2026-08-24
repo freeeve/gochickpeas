@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -172,6 +173,92 @@ func TestGroupJoinDeclinesSharedUniqScope(t *testing.T) {
 					t.Fatal("detector admitted a comma pattern sharing a uniqueness scope")
 				}
 			}
+		}
+	}
+}
+
+// TestGroupJoinPartialOrderTailIdentity pins the ordering claim behind
+// our tail gate (task 323): the group-join sink streams outer rows
+// through in arrival order, so a PARTIAL ORDER BY over the aggregated
+// output resolves ties identically on both legs and a LIMIT cuts the
+// same prefix -- the hazard the Rust engine's rewrite has (groups
+// re-emitted in table order) is structurally absent here, which is why
+// our gate admits partial orderings their total-ordering condition
+// still declines. Rows are compared IN ORDER (an order-insensitive
+// comparison would prove nothing -- ordering is the whole risk), with
+// engagement pinned at the plan.
+func TestGroupJoinPartialOrderTailIdentity(t *testing.T) {
+	bld := chickpeas.NewBuilder(16, 16)
+	// Six persons over two tiers (ties on the sort key), KNOWS degrees
+	// varied so aggregate values differ within a tie group.
+	var ids []graph.NodeID
+	for i := range 6 {
+		id, err := bld.AddNode("Person")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bld.SetProp(id, "tier", int64(i%2)); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	for _, e := range [][2]int{{0, 1}, {0, 2}, {0, 3}, {2, 4}, {4, 5}, {4, 1}, {4, 0}} {
+		if _, err := bld.AddRel(ids[e[0]], ids[e[1]], "KNOWS"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(bld.Finalize("tier"))
+	ctx := &eval.Ctx{G: g}
+
+	// Partial ordering: tier ties three persons each; LIMIT 4 cuts
+	// inside the second tie group.
+	q, err := parser.Parse("MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN a.tier AS tier, a, count(b) AS c ORDER BY tier LIMIT 4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered := func(wantGJ bool) []string {
+		t.Helper()
+		p, err := plan.Build(q, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasGJ := false
+		for _, seg := range p.Branches[0] {
+			for _, st := range seg.Stages {
+				if _, ok := st.(*plan.GroupJoinStage); ok {
+					hasGJ = true
+				}
+			}
+		}
+		if hasGJ != wantGJ {
+			t.Fatalf("plan group-join presence = %v, want %v (differential would be vacuous)", hasGJ, wantGJ)
+		}
+		rows, err := Execute(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(rows))
+		for i, r := range rows {
+			tier, _ := r[0].AsInt()
+			id, _ := r[1].AsNode()
+			c, _ := r[2].AsInt()
+			out[i] = fmt.Sprintf("%d/%d/%d", tier, id, c)
+		}
+		return out
+	}
+
+	defer func(v float64) { plan.GroupJoinMinOuterRows = v }(plan.GroupJoinMinOuterRows)
+	plan.GroupJoinMinOuterRows = 0
+	gj := ordered(true)
+	plan.GroupJoinMinOuterRows = 1e18
+	nested := ordered(false)
+
+	if len(gj) != 4 || len(nested) != 4 {
+		t.Fatalf("rows: group-join %d, nested %d, want 4 each", len(gj), len(nested))
+	}
+	for i := range gj {
+		if gj[i] != nested[i] {
+			t.Fatalf("row %d: group-join %s, nested %s -- tie order diverged at the cut", i, gj[i], nested[i])
 		}
 	}
 }
