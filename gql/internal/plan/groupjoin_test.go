@@ -292,3 +292,65 @@ func TestGJAnchorDecline(t *testing.T) {
 		t.Fatal("admitted shape bumped the decline counter")
 	}
 }
+
+// TestGJRepetitionUsesKeyDomain pins the multi-key repetition estimate
+// (task 327, from rustychickpeas 80e59cc): a two-key outer has one row
+// per key TUPLE, so breadth divided by any single label's population
+// reads as amortizable repetition while breadth over the domain PRODUCT
+// correctly reads ~1 -- and an unselective inner must then decline. The
+// disable switch doubles as the false-admit demonstration.
+func TestGJRepetitionUsesKeyDomain(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 64)
+	// 4 A x 4 B cross outer (16 rows, one per (a,b) tuple); unselective
+	// inner touching both keys.
+	var as, bs []graph.NodeID
+	for range 4 {
+		a, _ := b.AddNode("A")
+		as = append(as, a)
+		bb, _ := b.AddNode("B")
+		bs = append(bs, bb)
+	}
+	for i := range 16 {
+		x, _ := b.AddNode("X")
+		if _, err := b.AddRel(as[i%4], x, "R"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.AddRel(bs[i/4], x, "S"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph.New(b.Finalize())
+
+	hasGJ := func(q string) bool {
+		t.Helper()
+		p := mustPlan(t, g, q)
+		for _, seg := range p.Branches[0] {
+			for _, st := range seg.Stages {
+				if _, ok := st.(*GroupJoinStage); ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	defer func(v float64) { GroupJoinMinOuterRows = v }(GroupJoinMinOuterRows)
+	GroupJoinMinOuterRows = 0
+
+	q := "MATCH (a:A), (b:B) OPTIONAL MATCH (a)-[:R]->(x)<-[:S]-(b) RETURN a, b, count(x) AS c"
+	before := gjAnchorDeclines
+	if hasGJ(q) {
+		t.Fatal("two-key unselective shape still group-joins -- repetition divided per label, not by the domain")
+	}
+	if gjAnchorDeclines == before {
+		t.Fatal("no decline counted -- the shape dissolved before the gate (vacuous)")
+	}
+	// The disabled leg still admits, proving the shape reaches the
+	// rewrite and only the economics gate refuses it.
+	DisableGJAnchorDecline = true
+	admitted := hasGJ(q)
+	DisableGJAnchorDecline = false
+	if !admitted {
+		t.Fatal("disabled discriminator still declines -- the decline is not the economics gate's")
+	}
+}

@@ -60,10 +60,11 @@ type gjCandidate struct {
 	corr       []string
 	corrLabels []string
 	aggs       []gjAgg
-	// repetition is the gate's estimated outer-breadth-to-population
-	// ratio, minimized over the correlation labels: ~1 means each
-	// correlation key appears once (no re-walk for the table build to
-	// amortize), >1 means the nested drive would re-walk shared keys.
+	// repetition is the gate's estimated outer rows per correlation-key
+	// TUPLE: breadth over the product of the correlation labels'
+	// populations. ~1 or below means each key tuple appears at most
+	// once (no re-walk for the table build to amortize), >1 means the
+	// nested drive would re-walk shared keys.
 	repetition float64
 }
 
@@ -305,7 +306,14 @@ func gjGate(c *gjCandidate, stages []Stage, g graph.Graph) bool {
 	if breadth < GroupJoinMinOuterRows {
 		return false
 	}
-	c.repetition = 0
+	// The repetition estimate divides breadth by the key DOMAIN -- the
+	// PRODUCT of the correlation labels' populations -- not any single
+	// label's. A multi-key outer (a cross of two labels, say) has one
+	// row per key TUPLE even though breadth is many multiples of each
+	// label alone; dividing per-label reads that as amortizable
+	// repetition and false-admits at every size (the Rust sibling's
+	// 80e59cc, confirmed against this arm).
+	domain := 1.0
 	for _, l := range c.corrLabels {
 		pop := float64(g.NodeCount())
 		if l != "" {
@@ -314,10 +322,9 @@ func gjGate(c *gjCandidate, stages []Stage, g graph.Graph) bool {
 		if breadth < GroupJoinMinCoverage*pop {
 			return false
 		}
-		if r := breadth / pop; c.repetition == 0 || r < c.repetition {
-			c.repetition = r
-		}
+		domain *= pop
 	}
+	c.repetition = breadth / domain
 	return true
 }
 
