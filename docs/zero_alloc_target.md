@@ -121,6 +121,20 @@ techniques land; cite the commit that proved the win.
     two allocators, same verdict. The prototype is tighter and proves
     the mechanism works; the replay is the cheap first pass for a fork
     you suspect will come back "not worth it".
+11. **Match the differential's comparison to the property under test:
+    when ORDERING is the risk, compare rows IN ORDER.** A multiset or
+    sorted comparison of two legs is vacuously green against any
+    reordering bug -- the group-join tail differential compared result
+    MAPS for months while the ordering claim it implicitly guarded went
+    unpinned (fixed with an in-order tie-cutting differential; both
+    engines had the same blind spot, Rust catalogued it as their item
+    37). The counter-example that keeps this from reading as
+    distrust-of-sorting: for a genuinely UNORDERED result contract,
+    the multiset comparison is the correct oracle, and forcing order
+    would over-constrain -- failing legitimate reorderings the
+    contract permits. The question to ask per differential is "what
+    property does this comparison actually pin?", not "sorted or
+    unsorted".
 
 ## Where Go allocates, and what to do about it
 
