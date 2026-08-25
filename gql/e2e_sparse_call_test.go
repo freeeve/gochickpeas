@@ -67,6 +67,10 @@ func TestSparseCallRealNodesPresent(t *testing.T) {
 		{"CALL algo.pagerank() YIELD node, value FILTER id(node) = 5000 RETURN value", -1},
 		{"CALL algo.cdlp() YIELD node, value FILTER id(node) = 5000 RETURN value", -1},
 		{"CALL algo.lcc() YIELD node, value FILTER id(node) = 5000 RETURN value", -1},
+		// propagate is the traversal-row family (one row per REACHED
+		// node), so its mode-5 exposure is kernel-internal sizing; the
+		// reachable high-id node must appear at depth 3 (depths are seed-1-based).
+		{"CALL algo.propagate([0], [9.0], 'R', 'out', 10, 'weight', 'asc', 0) YIELD node, depth FILTER id(node) = 5000 RETURN depth", 3},
 	}
 	for _, p := range procs {
 		rows, err := gql.Run(g, p.call)
