@@ -13,11 +13,6 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// maxAllShortestPaths caps the minimum-hop paths ALL SHORTEST enumerates
-// per endpoint pair -- a min-hop DAG can fan out combinatorially, so
-// enumeration stops at this safety valve rather than blow up.
-const maxAllShortestPaths = 1024
-
 // runSPStage binds the path slot to the minimum-hop path(s) between the
 // bound endpoint slots. The single form binds one path per input row; the
 // ALL form is row-expanding. A required stage drops rows with no path; an
@@ -193,6 +188,9 @@ type spScratch struct {
 	// amortizing allocation count to one per slab.
 	arNodes []graph.NodeID
 	arRels  []uint32
+	// preds memoizes per-node predecessor sequences for one ALL SHORTEST
+	// enumeration (cleared per endpoint pair); see predsOf.
+	preds map[graph.NodeID][]graph.NodeID
 }
 
 func newSPScratch() *spScratch { return &spScratch{} }

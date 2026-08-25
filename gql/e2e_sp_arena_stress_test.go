@@ -131,7 +131,7 @@ func TestSPPathRetentionAcrossQueries(t *testing.T) {
 // the slab. Count and per-path validity (alternating rails, strictly
 // advancing rungs) must survive the flood.
 func TestAllShortestSlabFlood(t *testing.T) {
-	const rungs = 12 // 2^12 = 4096 candidate paths, > the 1024 cap
+	const rungs = 12 // 2 entry choices x 2^12 transitions = 8192 paths
 	b := chickpeas.NewBuilder(64, 256)
 	mk := func(id int64) chickpeas.NodeID {
 		nd, err := b.AddNode("L")
@@ -191,7 +191,9 @@ func TestAllShortestSlabFlood(t *testing.T) {
 		}
 		count++
 	}
-	if count != 1024 {
-		t.Fatalf("paths = %d, want the 1024 cap", count)
+	// Complete enumeration by decision (the 1024 safety valve is gone):
+	// every one of the 2^(rungs+1) tie paths comes back.
+	if count != 1<<(rungs+1) {
+		t.Fatalf("paths = %d, want %d (complete enumeration)", count, 1<<(rungs+1))
 	}
 }

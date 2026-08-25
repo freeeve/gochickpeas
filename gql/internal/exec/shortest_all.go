@@ -64,6 +64,11 @@ func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *gr
 	rdir := flipDir(sp.Dir)
 	var chains [][]graph.NodeID
 	suffix := []graph.NodeID{b}
+	if scr.preds == nil {
+		scr.preds = map[graph.NodeID][]graph.NodeID{}
+	} else {
+		clear(scr.preds)
+	}
 	enumeratePaths(ctx, a, scr, rdir, rm, hop, &suffix, &chains)
 	out := make([]nodesRels, len(chains))
 	for i, nodes := range chains {
@@ -73,11 +78,14 @@ func allShortestPaths(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *gr
 }
 
 // enumeratePaths extends the reversed suffix [b..v] by each predecessor u
-// whose stamped distance is dist[v]-1; reaching a completes one path.
+// whose stamped distance is dist[v]-1; reaching a completes one path. The
+// enumeration is COMPLETE by decision -- a min-hop DAG can fan out
+// combinatorially and every path is the operator's contract -- so the
+// work is kept output-proportional: each node's predecessor sequence is
+// resolved once per enumeration (predsOf) instead of re-scanning its
+// adjacency on every path through it, which charged a hub's whole degree
+// per path.
 func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Direction, rm *graph.RelMatcher, hop *hopFilter, suffix *[]graph.NodeID, out *[][]graph.NodeID) {
-	if len(*out) >= maxAllShortestPaths {
-		return
-	}
 	v := (*suffix)[len(*suffix)-1]
 	if v == a {
 		path := scr.nodeSlice(len(*suffix))
@@ -86,17 +94,31 @@ func enumeratePaths(ctx *eval.Ctx, a graph.NodeID, scr *spScratch, rdir graph.Di
 		*out = append(*out, path)
 		return
 	}
+	for _, u := range predsOf(ctx, v, scr, rdir, rm, hop) {
+		*suffix = append(*suffix, u)
+		enumeratePaths(ctx, a, scr, rdir, rm, hop, suffix, out)
+		*suffix = (*suffix)[:len(*suffix)-1]
+	}
+}
+
+// predsOf memoizes v's minimum-hop predecessor sequence for the current
+// enumeration, preserving the exact order (and any multigraph duplicates)
+// the filtered neighbor walk yields -- the memo must be sequence-
+// identical to the walk it replaces, not merely set-equal, so path output
+// order is unchanged.
+func predsOf(ctx *eval.Ctx, v graph.NodeID, scr *spScratch, rdir graph.Direction, rm *graph.RelMatcher, hop *hopFilter) []graph.NodeID {
+	if ps, ok := scr.preds[v]; ok {
+		return ps
+	}
 	want := scr.dist[v] - 1
+	ps := []graph.NodeID{}
 	filteredNeighbors(ctx, v, rdir, rm, hop, func(u graph.NodeID) {
-		if len(*out) >= maxAllShortestPaths {
-			return
-		}
 		if scr.gen[u] == scr.cur && scr.dist[u] == want {
-			*suffix = append(*suffix, u)
-			enumeratePaths(ctx, a, scr, rdir, rm, hop, suffix, out)
-			*suffix = (*suffix)[:len(*suffix)-1]
+			ps = append(ps, u)
 		}
 	})
+	scr.preds[v] = ps
+	return ps
 }
 
 // pathRelPositions resolves each consecutive node pair's relationship
