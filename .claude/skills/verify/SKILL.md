@@ -11,16 +11,19 @@ nontrivial engine/gql changes:
 ## 1. Parity gate (real data, full pipeline)
 
 ```bash
-go run ./cmd/gqlbench -manifest ~/rustychickpeas-ldbc/viz/data/gql_variants.tsv \
-  -verify-only -cached-parity \
-  -plans-golden cmd/gqlbench/testdata/plans_golden.txt
+GOCHICKPEAS_GQL_MANIFEST=~/rustychickpeas-ldbc/viz/data/gql_variants.tsv \
+  go test ./internal/ldbc -run TestGQLParityGate -count=1 -v
 ```
 
 Expect `89/89 MATCH, 0 DIFF, 0 SKIP`, plus `plan-shape golden: 89 queries
 unchanged`. This drives parse -> plan -> exec over SF1/FinBench SF10 exports
-with pinned row hashes. Loads ~26M rels; takes a few minutes. Never emit
-(-verify-only) from a dirty tree -- the append-only bench-out protocol stamps
-engineCommit.
+with pinned row hashes, verifies the PlanCache (cached-parity) path against
+the same hashes, and diffs every plan shape against the golden at
+internal/ldbc/testdata/plans_golden.txt. Loads ~26M rels; takes a few
+minutes. After an INTENDED planner change, review the drift and regenerate
+in the same commit with GOCHICKPEAS_PLANS_GOLDEN_CAPTURE=1. Timings and
+emission live in rustychickpeas-ldbc's sweep (their go/cmd drivers); this
+gate is verification only, so no dirty-tree emission hazard exists.
 
 - `-cached-parity` also checks the auto-parameterized PlanCache path against
   the same reference hashes (catches literal-vs-cached-plan divergence).
@@ -60,13 +63,14 @@ VarExpand lines to see whether a pushdown fired). Probe near-miss
 phrasings and malformed input; errors should be clean plan/bind errors.
 
 Gotchas:
-- Timing on this machine is very noisy; alloc counts (gqlbench profiles
-  output) are the most trustworthy A/B signal. For timing A/Bs, run the
+- Timing on this machine is very noisy; alloc counts (MemProfileRate=1
+  GC-synced diffs, or ldbc.MeasureAllocs) are the most trustworthy A/B
+  signal. For timing A/Bs, run the
   whole comparison inside ONE `taskman lock run local-cpu` session in
   ABBA order (new-old-old-new): interleaving alone does not cancel a
   load trend, only ABBA does. A run whose TIMING is the product must
   also pass `-max-load 2` and must not publish on a non-zero exit.
-- `gqlbench` must run from the repo root (HeadStamp shells to git);
-  point -out/-plans-out/-profiles-out at the scratchpad.
+- The parity gate runs from any cwd (paths resolve via the env var);
+  timings/emission are the rustychickpeas-ldbc sweep's job now.
 - 45s of `go test ./gql -fuzz FuzzQuery -fuzztime 45s` is cheap
   insurance after recognizer/planner changes.

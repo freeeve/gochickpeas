@@ -35,14 +35,14 @@ github.com/freeeve/gochickpeas      go 1.25; deps: RoaringBitmap/roaring/v2, fre
 │                                   promoted from internal/parallel)                    [M3]
 ├── internal/bitset/                []uint64 bitset                         [M3]
 ├── internal/unorm/                 Unicode normalization tables (generated) for gql eval
-├── internal/ldbc/                  LDBC/GA/SPB benchmark parity harness: native reference
-│                                   kernels, loaders, manifest/rowhash, bench-out emission.
-│                                   Slated to migrate to the rustychickpeas-ldbc repo --
-│                                   do not grow or reorganize it here.
-├── cmd/                            bench drivers over internal/ldbc (gqlbench, gabench,
-│                                   ldbcnativebench, loadbench, nativemanifest, spbexport,
-│                                   weightedexport) + standalone rssbench; migrate with the
-│                                   harness above
+├── internal/ldbc/                  minimal LDBC parity core: manifest + rowhash/refjson +
+│                                   MeasureAllocs + the plan-shape golden, feeding the
+│                                   env-gated local parity gate (paritygate_test.go) and the
+│                                   gql census tests. The kernels, loaders, emission
+│                                   pipeline, and bench drivers live in rustychickpeas-ldbc
+│                                   (their 389/409686b); benching happens there.
+├── cmd/                            standalone rssbench only; the seven bench drivers
+│                                   migrated to rustychickpeas-ldbc go/cmd
 ├── (root) package chickpeas        the engine, one package, small files    [M3+]
 └── gql/                            GQL query engine (M10+): public API, white-box tests, and
     │                               the e2e_* public-API suite (package gql_test)
