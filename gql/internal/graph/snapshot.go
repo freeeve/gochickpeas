@@ -32,6 +32,9 @@ func (s *SnapshotGraph) NodeCount() uint32 { return s.g.NodeCount() }
 // ids).
 func (s *SnapshotGraph) IDSpace() uint32 { return s.g.CSRIDSpace() }
 
+// NodeExists forwards the engine's existence oracle.
+func (s *SnapshotGraph) NodeExists(id NodeID) bool { return s.g.NodeExists(chickpeas.NodeID(id)) }
+
 // AvgDegree forwards the engine's per-type degree statistic.
 func (s *SnapshotGraph) AvgDegree(relType string, dir chickpeas.Direction) float64 {
 	return s.g.AvgDegree(relType, dir)

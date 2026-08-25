@@ -10,9 +10,11 @@
 //	sections:       at the directory offsets (relative to file start)
 //
 // Section IDs: 1 atoms, 2 meta, 3 nodes, 4 relationships, 5 node columns,
-// 6 relationship columns, 7 optional atom block index. Unknown section IDs
-// are ignored on read so the format can grow; files with a version above 1
-// are rejected.
+// 6 relationship columns, 7 optional atom block index, 8 optional node
+// existence bitmap (sparse id spaces only -- absent means every
+// in-id-space id is a node, which is exactly true for dense writers).
+// Unknown section IDs are ignored on read so the format can grow; files
+// with a version above 1 are rejected.
 package rcpg
 
 import (
@@ -34,6 +36,7 @@ const (
 	sectionNodeCols  uint32 = 5
 	sectionRelCols   uint32 = 6
 	sectionAtomIndex uint32 = 7
+	sectionExistence uint32 = 8
 )
 
 // atomIndexBlockLen is the writer default for the section-7 atom index's
@@ -57,6 +60,14 @@ type WriteOptions struct {
 	// off, so existing byte-identity guarantees (and the vendored
 	// conformance corpus) are unchanged unless a writer opts in.
 	AtomIndex bool
+	// Existence emits the optional section-8 node existence bitmap when
+	// the graph carries one (sparse id spaces). Default off for the same
+	// byte-identity reason as AtomIndex: the conformance corpus is the
+	// cross-engine contract, and the section joins it in a coordinated
+	// corpus bump once the Rust writer emits it too. Until a sparse
+	// graph is written WITH this, its round trip keeps the legacy
+	// every-in-space-id-exists presumption.
+	Existence bool
 }
 
 // DefaultWriteOptions emits every section.
@@ -131,6 +142,7 @@ func WriteWith(g *GraphSection, w io.Writer, opts WriteOptions) error {
 		{sectionNodeCols, func() ([]byte, error) { return encodeColumns(g.NodeColumns) }, opts.NodeColumns},
 		{sectionRelCols, func() ([]byte, error) { return encodeColumns(g.RelColumns) }, opts.RelColumns},
 		{sectionAtomIndex, func() ([]byte, error) { return encodeAtomIndex(g.Atoms, atomIndexBlockLen) }, opts.AtomIndex},
+		{sectionExistence, func() ([]byte, error) { return encodeExistence(g.Existence) }, opts.Existence && g.Existence != nil},
 	} {
 		if !enc.enabled {
 			continue
@@ -230,6 +242,8 @@ func decodeSection(id uint32, body []byte, opts ParseOptions, g *GraphSection) e
 		g.RelColumns, err = decodeColumns(body)
 	case id == sectionAtomIndex:
 		g.AtomIndex, err = decodeAtomIndex(body)
+	case id == sectionExistence:
+		g.Existence, err = decodeExistence(body)
 	default:
 		// Present-but-skipped columns, or forward compatibility: ignore
 		// unknown sections.

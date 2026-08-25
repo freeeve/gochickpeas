@@ -70,6 +70,13 @@ type GraphSection struct {
 	// Atoms is the string table; index 0 is always "".
 	Atoms []string
 
+	// Existence is the optional section-8 node existence bitmap: the set
+	// of ids that are actual nodes, for id spaces with gaps (builder-
+	// chosen sparse ids). Nil means absent, in which case every
+	// in-id-space id is a node -- exactly true for dense writers, whose
+	// files stay byte-identical by never emitting the section.
+	Existence *roaring.Bitmap
+
 	// AtomIndex is the optional section-7 block index over the atoms
 	// section, present only when the file carried one: lazy readers route
 	// an atom id straight to its block instead of scanning the section's
@@ -345,6 +352,28 @@ func decodeRels(body []byte, g *GraphSection) error {
 	}
 	g.TypeIndex, err = decodeBitmapIndex(c)
 	return err
+}
+
+// --- existence (section 8: one portable roaring bitmap) -----------------------------
+
+// encodeExistence writes the node existence bitmap as one portable
+// roaring serialization (the section body is exactly the bitmap; the
+// directory carries the length).
+func encodeExistence(bm *roaring.Bitmap) ([]byte, error) {
+	var buf bytes.Buffer
+	if _, err := bm.WriteTo(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// decodeExistence parses a section-8 body back into the bitmap.
+func decodeExistence(body []byte) (*roaring.Bitmap, error) {
+	bm := roaring.New()
+	if _, err := bm.ReadFrom(bytes.NewReader(body)); err != nil {
+		return nil, corruptf("invalid existence bitmap: %v", err)
+	}
+	return bm, nil
 }
 
 // --- bitmap indexes (label/type -> roaring) ----------------------------------------

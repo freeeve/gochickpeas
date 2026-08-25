@@ -29,6 +29,10 @@ type Graph interface {
 	// IDSpace is one past the largest id any node can take, so a dense
 	// 0..IDSpace() array indexed by node id never goes out of bounds.
 	IDSpace() uint32
+	// NodeExists reports whether id is an actual node rather than a gap
+	// in a sparse id space: unconstrained scans and per-node result
+	// emission consult it so phantom ids never surface as rows.
+	NodeExists(id NodeID) bool
 	// AvgDegree is the average degree over relType in dir -- a planner
 	// statistic used to break anchor ties; 0 when the type is unknown.
 	AvgDegree(relType string, dir chickpeas.Direction) float64

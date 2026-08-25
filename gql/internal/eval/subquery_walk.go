@@ -103,8 +103,11 @@ func (s *subqueryShape) existsScan(ctx *Ctx, node *ast.NodePat) []graph.NodeID {
 			}
 		}
 	} else {
+		// A sparse id space contains gap ids that are not nodes; the
+		// existence oracle keeps them out (same rule as the exec fresh
+		// scan's all-nodes arm).
 		for id := graph.NodeID(0); id < ctx.G.IDSpace(); id++ {
-			if ctx.G.NodeMatcherAccepts(m, id) {
+			if ctx.G.NodeExists(id) && ctx.G.NodeMatcherAccepts(m, id) {
 				s.scan0 = append(s.scan0, id)
 			}
 		}

@@ -365,6 +365,9 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 	g.nNodes = uint32(b.knownNodes.GetCardinality())
 	g.nRels = uint64(m)
 	g.version = b.version
+	// Retain the known-nodes set: on a sparse id space it is the only
+	// record distinguishing nodes from gaps (NodeExists).
+	g.existence = nodeset.FromBitmap(b.knownNodes.Clone())
 
 	plan := b.newAliasPlan(n, m)
 	// Rel properties are stored by outgoing-CSR position, so the successor

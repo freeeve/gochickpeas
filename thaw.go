@@ -66,6 +66,15 @@ func NewBuilderFromSnapshot(g *Snapshot) *Builder {
 		thawRelColumn(b, key, col, outToStaging)
 	}
 
+	// Seed known nodes from the retained existence set when present:
+	// label/rel/prop restaging above cannot see a label-less isolated
+	// node, so without this a sparse graph's such nodes would vanish
+	// across a thaw round trip.
+	if g.existence != nil {
+		for id := range g.existence.Iter() {
+			b.knownNodes.Add(id)
+		}
+	}
 	if !b.knownNodes.IsEmpty() {
 		b.nextNodeID = b.knownNodes.Maximum() + 1
 	}

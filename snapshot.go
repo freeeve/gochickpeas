@@ -60,6 +60,14 @@ type Snapshot struct {
 	// type (one column, one dtype, per key survives).
 	droppedCrossTyped int
 
+	// existence is the set of node ids that actually exist -- the
+	// builder's known-nodes set, retained so sparse id spaces (builder-
+	// chosen ids with gaps) can be distinguished from their gaps. Nil on
+	// a legacy deserialized graph with no existence section, in which
+	// case every in-id-space id is presumed to exist (the pre-oracle
+	// behavior; dense loaders are unaffected either way).
+	existence *nodeset.Set
+
 	atoms *Atoms
 
 	// Lazy caches. propIndex: (label, key) -> value -> node set, built on
@@ -166,6 +174,19 @@ func (g *Snapshot) NodeCount() uint32 {
 // RelCount is the number of relationships in the graph.
 func (g *Snapshot) RelCount() uint64 {
 	return g.nRels
+}
+
+// NodeExists reports whether id is an actual node rather than a gap in
+// a sparse id space. The CSR pads its arrays to max-id+1, so ids inside
+// the space are not necessarily nodes; scans, result emission, and
+// per-node kernels consult this to keep phantoms out of results. On a
+// legacy deserialized graph with no existence record, every in-space id
+// is presumed to exist (dense loaders make the two identical).
+func (g *Snapshot) NodeExists(id NodeID) bool {
+	if g.existence == nil {
+		return uint32(id) < g.CSRIDSpace()
+	}
+	return g.existence.Contains(uint32(id))
 }
 
 // DroppedCrossTypedStagings reports how many staged property pairs

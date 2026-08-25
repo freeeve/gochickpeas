@@ -123,7 +123,22 @@ func (g *Snapshot) PageRank(directed bool, damping float64, iterations int) []fl
 	if n == 0 {
 		return nil
 	}
-	nf := float64(n)
+	// N is the number of REAL nodes: on a sparse id space the arrays
+	// stay id-space-sized (raw-id indexing in bounds), but init, the
+	// teleport/dangling base, and the dangling sum are confined to
+	// existing nodes -- broadcasting base over gap ids both contaminates
+	// real ranks and breaks mass conservation (the padded-space form
+	// conserves exactly, but over the wrong N). Gap entries stay 0 and
+	// the emission layer filters them anyway. Dense graphs are
+	// arithmetically identical (existence covers the whole space).
+	nf := float64(g.nNodes)
+	if nf == 0 {
+		return make([]float64, n)
+	}
+	exists := func(v int) bool { return true }
+	if g.existence != nil && int(g.existence.Len()) < n {
+		exists = func(v int) bool { return g.existence.Contains(uint32(v)) }
+	}
 	out, in := fwd(directed), ind(directed)
 	all := MatchAll()
 	outdeg := make([]uint32, n)
@@ -139,18 +154,24 @@ func (g *Snapshot) PageRank(directed bool, damping float64, iterations int) []fl
 	pr := make([]float64, n)
 	next := make([]float64, n)
 	for i := range pr {
-		pr[i] = 1 / nf
+		if exists(i) {
+			pr[i] = 1 / nf
+		}
 	}
 	for range iterations {
 		dangling := 0.0
 		for v := range n {
-			if outdeg[v] == 0 {
+			if outdeg[v] == 0 && exists(v) {
 				dangling += pr[v]
 			}
 		}
 		base := (1-damping)/nf + damping*dangling/nf
 		parallel.For(n, func(lo, hi int) {
 			for v := lo; v < hi; v++ {
+				if !exists(v) {
+					next[v] = 0
+					continue
+				}
 				pull := 0.0
 				for u := range g.NeighborsMatch(NodeID(v), in, all) {
 					if d := outdeg[u]; d > 0 {

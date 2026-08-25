@@ -297,7 +297,14 @@ func (c *callSink) push(row []value.Value) bool {
 		return true
 	}
 	if values != nil {
+		// The per-node vector is id-space-sized, so on a sparse space its
+		// indexes include gap ids; the existence oracle keeps phantom
+		// rows out of the result (a real node structurally cannot drop --
+		// the vector covers the whole space).
 		for i, v := range values {
+			if !c.g.NodeExists(chickpeas.NodeID(i)) {
+				continue
+			}
 			copy(c.buf, row)
 			if c.cs.NodeSlot != plan.NoSlot {
 				c.buf[c.cs.NodeSlot] = value.Node(graph.NodeID(i))

@@ -114,8 +114,13 @@ func freshScan(ctx *eval.Ctx, src *plan.ScanSource, m *graph.NodeMatcher, skipAc
 			}
 		}
 	case plan.ScanAll:
+		// The id space pads to max-id+1, so a sparse space contains gap
+		// ids that are not nodes; the existence oracle keeps them out
+		// (dense graphs answer true for the whole space).
 		for id := graph.NodeID(0); id < ctx.G.IDSpace(); id++ {
-			accept(id)
+			if ctx.G.NodeExists(id) {
+				accept(id)
+			}
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/freeeve/gochickpeas/internal/bitset"
 	"github.com/freeeve/gochickpeas/nodeset"
 	"github.com/freeeve/gochickpeas/rcpg"
@@ -281,6 +282,14 @@ func (g *Snapshot) graphSectionWith(nodeCols, relCols bool) *rcpg.GraphSection {
 		inTypes[i] = t.ID()
 	}
 
+	// The existence section is emitted only for a genuinely sparse id
+	// space: dense graphs (every loader) keep byte-identical files, and
+	// absent-means-dense is exactly correct for them on read.
+	var existence *roaring.Bitmap
+	if g.existence != nil && uint32(g.existence.Len()) < g.CSRIDSpace() {
+		existence = g.existence.Bitmap()
+	}
+
 	return &rcpg.GraphSection{
 		NNodes:      g.nNodes,
 		NRels:       g.nRels,
@@ -296,6 +305,7 @@ func (g *Snapshot) graphSectionWith(nodeCols, relCols bool) *rcpg.GraphSection {
 		RelColumns:  convert(g.relColumns, relCols),
 		Version:     g.version,
 		Atoms:       g.atoms.Strings(),
+		Existence:   existence,
 	}
 }
 
@@ -320,6 +330,9 @@ func FromGraphSection(section *rcpg.GraphSection) *Snapshot {
 		g.inTypes[i] = RelType(t)
 	}
 
+	if section.Existence != nil {
+		g.existence = nodeset.FromBitmap(section.Existence)
+	}
 	for _, e := range section.LabelIndex {
 		g.labelIndex[Label(e.Atom)] = nodeset.FromBitmap(e.Bitmap)
 	}

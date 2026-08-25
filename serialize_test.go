@@ -6,8 +6,11 @@
 package chickpeas
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
+
+	"github.com/freeeve/gochickpeas/rcpg"
 )
 
 // refInToOutFromCSR is the original map-based pairing, retained as the
@@ -135,5 +138,79 @@ func TestToGraphSectionRoundTrip(t *testing.T) {
 	}
 	if v, ok := g2.Prop(NodeID(2), "age").I64(); !ok || v != 22 {
 		t.Fatalf("reload age[2] = %d/%v, want 22", v, ok)
+	}
+}
+
+// TestSparseExistenceRoundTrip covers the section-8 existence bitmap
+// (task 328): written WITH the option, a sparse graph's gaps survive the
+// round trip (NodeExists answers exactly the built set); written with
+// the DEFAULT options the section is absent and the reader keeps the
+// legacy every-in-space-id presumption -- and dense graphs never emit
+// the section at all, so their bytes are unchanged (the conformance
+// corpus pins that separately).
+func TestSparseExistenceRoundTrip(t *testing.T) {
+	b := NewBuilder(8, 0)
+	for _, id := range []uint32{0, 7, 1000, 5000} {
+		if _, err := b.AddNodeWithID(id, "Thing"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize()
+
+	// Opt-in write: existence survives.
+	var buf bytes.Buffer
+	opts := rcpg.DefaultWriteOptions()
+	opts.Existence = true
+	if err := g.WriteRCPGWith(&buf, opts); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := ReadRCPG(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.NodeCount() != 4 {
+		t.Fatalf("round-trip node count = %d, want 4", rt.NodeCount())
+	}
+	for _, id := range []uint32{0, 7, 1000, 5000} {
+		if !rt.NodeExists(NodeID(id)) {
+			t.Fatalf("real node %d lost across the round trip", id)
+		}
+	}
+	for _, id := range []uint32{1, 6, 999, 4999} {
+		if rt.NodeExists(NodeID(id)) {
+			t.Fatalf("gap id %d exists after the round trip", id)
+		}
+	}
+
+	// Default write: no section, legacy presumption on read.
+	var legacy bytes.Buffer
+	if err := g.WriteRCPG(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	lt, err := ReadRCPG(legacy.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lt.NodeExists(NodeID(1)) {
+		t.Fatal("legacy read must presume in-space ids exist (no existence section)")
+	}
+
+	// A dense graph never emits the section even when asked.
+	db := NewBuilder(8, 0)
+	for range 4 {
+		if _, err := db.AddNode("Thing"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dg := db.Finalize()
+	var d1, d2 bytes.Buffer
+	if err := dg.WriteRCPG(&d1); err != nil {
+		t.Fatal(err)
+	}
+	if err := dg.WriteRCPGWith(&d2, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(d1.Bytes(), d2.Bytes()) {
+		t.Fatal("dense write with the existence option changed bytes")
 	}
 }
