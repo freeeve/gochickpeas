@@ -21,8 +21,22 @@ import (
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
-// hjRowKeys runs q and returns the sorted row-key multiset.
+// hjRowKeys runs q and returns the sorted row-key multiset. Use ONLY
+// for queries with no ORDER BY: sorting the actual output proves
+// multiset equality and nothing about sequence, so a comparison built
+// on this cannot detect an order violation (the differential-surface
+// audit rule -- sorting to build a reference is fine, sorting the
+// actual destroys the property). Ordered queries use hjRowKeysOrdered.
 func hjRowKeys(t *testing.T, g *chickpeas.Snapshot, q string) []string {
+	t.Helper()
+	out := hjRowKeysOrdered(t, g, q)
+	slices.Sort(out)
+	return out
+}
+
+// hjRowKeysOrdered returns the row keys in engine order, for
+// comparisons where sequence is part of the claim.
+func hjRowKeysOrdered(t *testing.T, g *chickpeas.Snapshot, q string) []string {
 	t.Helper()
 	rows, err := gql.Run(g, q)
 	if err != nil {
@@ -37,7 +51,6 @@ func hjRowKeys(t *testing.T, g *chickpeas.Snapshot, q string) []string {
 		}
 		out = append(out, sb.String())
 	}
-	slices.Sort(out)
 	return out
 }
 

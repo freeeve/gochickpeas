@@ -182,8 +182,18 @@ func FuzzQuery(f *testing.F) {
 			}
 		}
 
-		// Multigraph lane: literal vs cached-template rows, multiset
-		// equality (plan shapes may differ; row multisets must not).
+		// Multigraph lane: literal vs cached-template rows, MULTISET
+		// equality only -- multiplicity is this lane's whole claim (plan
+		// shapes may legitimately differ under the template; parallel
+		// rels are where a shape change becomes a row-count change).
+		// Sequence is deliberately out of scope here: for a fuzzed ORDER
+		// BY query, literal-vs-cached tie order may legitimately differ
+		// between plans, and classifying permitted reorderings for
+		// arbitrary generated queries would be an unexercised leniency
+		// path (the differential-surface audit's trap). Cached-path
+		// ORDER is verified order-sensitively by the parity gate's
+		// cached-parity leg over the manifest corpus, whose rowhash has
+		// no sort norm at all.
 		mrows, merr := Run(mg, q)
 		crows, cerr := mcache.Run(mg, q)
 		if (merr == nil) != (cerr == nil) {

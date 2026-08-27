@@ -32,11 +32,14 @@ func gjRowKey(vs ...value.Value) string {
 
 // gjCompare runs q nested (default breadth floor), re-plans a textual
 // variant with the floor lowered to zero, requires the rewrite to fire
-// (or not, per wantJoin), and requires identical row multisets. Returns
-// the multiset for content assertions.
+// (or not, per wantJoin), and requires identical rows IN ORDER -- the
+// fixtures carry ORDER BY over unique keys, so sequence is contractual
+// and an in-order comparison is what can actually detect a violation
+// (the differential-surface audit: a sorted-actual comparison here
+// could not). Returns the ordered keys for content assertions.
 func gjCompare(t *testing.T, g *chickpeas.Snapshot, q string, wantJoin bool) []string {
 	t.Helper()
-	nested := hjRowKeys(t, g, q)
+	nested := hjRowKeysOrdered(t, g, q)
 	floor := plan.GroupJoinMinOuterRows
 	plan.GroupJoinMinOuterRows = 0
 	// The subject is rewrite-vs-nested identity: pin past the
@@ -55,9 +58,9 @@ func gjCompare(t *testing.T, g *chickpeas.Snapshot, q string, wantJoin bool) []s
 	if got := strings.Contains(pl, "GroupJoin"); got != wantJoin {
 		t.Fatalf("GroupJoin in forced plan = %v, want %v:\n%s", got, wantJoin, pl)
 	}
-	joined := hjRowKeys(t, g, qf)
+	joined := hjRowKeysOrdered(t, g, qf)
 	if !slices.Equal(nested, joined) {
-		t.Fatalf("row multiset divergence for %s\nnested (%d): %v\njoined (%d): %v\nplan:\n%s",
+		t.Fatalf("ordered-row divergence for %s\nnested (%d): %v\njoined (%d): %v\nplan:\n%s",
 			q, len(nested), nested, len(joined), joined, pl)
 	}
 	return nested
