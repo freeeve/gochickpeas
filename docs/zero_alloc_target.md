@@ -135,6 +135,18 @@ techniques land; cite the commit that proved the win.
     contract permits. The question to ask per differential is "what
     property does this comparison actually pin?", not "sorted or
     unsorted".
+12. **When the load gate will not clear, measure a BOUND with
+    min-of-N.** (Rust sibling's item 38, from a probe their gate
+    refused three times.) Two moves rescue a measurement on a box that
+    never quiets: (a) report the MINIMUM of N interleaved reps per leg
+    -- interference only ever adds time, so the minimum is nearest the
+    uncontended cost, and the cross-leg RATIO agreeing across
+    contaminated runs is the consistency check when neither absolute
+    is citable; (b) ask for a bound, not a value -- contention
+    inflates both legs, so a contaminated delta upper-bounds the true
+    delta under proportional slowdown, which is enough to DECLINE an
+    optimization without ever publishing an untrustworthy timing.
+    Declining on a bound is publishable; the timing itself is not.
 
 ## Where Go allocates, and what to do about it
 

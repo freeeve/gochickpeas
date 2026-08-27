@@ -158,3 +158,49 @@ func TestRowFastPropVsLiteral(t *testing.T) {
 		}
 	}
 }
+
+// TestRowFastRelPropertyDerivesButFallsBack pins the node/rel key
+// ambiguity (task 339, mirror of rustychickpeas 279992b): a property
+// key naming BOTH a node and a rel column derives the row-fast form
+// through the NODE half of the reader, and a comparison whose slot
+// holds a RELATIONSHIP then takes the interpreter fallback on every
+// row -- correct (the Kind guard is the contract), just a derivation
+// that buys nothing there. Both halves are asserted: the derivation
+// (so the ambiguity's existence stays visible) and the fallback's
+// correct interpreted result. The SECOND half inverts if a rel-side
+// fast path is ever built -- measured ceiling in the Rust sibling was
+// <=4.7% of the one affected corpus query, declined on both sides.
+func TestRowFastRelPropertyDerivesButFallsBack(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	n0, _ := b.AddNode("N")
+	n1, _ := b.AddNode("N")
+	// "since" names BOTH a node column and a rel column.
+	_ = b.SetProp(n0, "since", int64(100))
+	if _, err := b.AddRel(n0, n1, "R"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetRelPropAt(0, "since", int64(7)); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize("rowfast_relprop")
+	ctx := &eval.Ctx{G: graph.New(g)}
+	slots := map[string]int{"r": 0}
+
+	c := New(ctx, exprOf(t, "r.since > 5"), slots, g)
+	// Half one: the ambiguous key DERIVES (through the node column).
+	if c.fast == nil {
+		t.Fatal("rel-property compare no longer derives a fast form -- the ambiguity is gone; " +
+			"if a rel-side fast path was built, update this test to assert its result instead")
+	}
+	// Half two: a rel-valued slot falls back to the interpreter and the
+	// result is the REL column's comparison (7 > 5), not the node's.
+	row := []value.Value{value.Rel(0)}
+	got := c.Eval(ctx, row, slots)
+	if !got.IsTruthy() {
+		t.Fatalf("r.since > 5 over rel prop 7 = %v, want true (interpreted fallback must read the REL column)", got)
+	}
+	c2 := New(ctx, exprOf(t, "r.since > 50"), slots, g)
+	if c2.Eval(ctx, row, slots).IsTruthy() {
+		t.Fatal("r.since > 50 over rel prop 7 must be false -- the fallback read the NODE column")
+	}
+}
