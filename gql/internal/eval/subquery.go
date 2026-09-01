@@ -8,6 +8,7 @@ package eval
 
 import (
 	"maps"
+	"reflect"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
@@ -125,9 +126,18 @@ func subqueryShapeFor(ctx *Ctx, outer map[string]int, outerRow []value.Value, pa
 }
 
 // validFor reports whether the shape was built against an identical outer
-// scope and row width.
+// scope and row width. The common case is the SAME slots map object on
+// every evaluation (compiled once per segment), so map identity
+// short-circuits the per-call maps.Equal walk -- which profiled at 16%
+// of an existence-heavy query, paid once per NOT EXISTS row.
 func (s *subqueryShape) validFor(outer map[string]int, outerRow []value.Value) bool {
-	return len(outerRow) == s.outerRowW && maps.Equal(outer, s.outer)
+	if len(outerRow) != s.outerRowW {
+		return false
+	}
+	if reflect.ValueOf(outer).Pointer() == reflect.ValueOf(s.outer).Pointer() {
+		return true
+	}
+	return maps.Equal(outer, s.outer)
 }
 
 // buildSubqueryShape anchors the DFS on a bound endpoint: if the start
