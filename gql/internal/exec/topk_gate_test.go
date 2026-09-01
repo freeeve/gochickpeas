@@ -160,3 +160,110 @@ func TestSPScratchEpochSafety(t *testing.T) {
 		}
 	}
 }
+
+// runTypedBoth runs q with the typed prefilter on, then off (boxed gated
+// flow), returning both row lists in engine order.
+func runTypedBoth(t *testing.T, g *chickpeas.Snapshot, q string) (typed, boxed []string) {
+	t.Helper()
+	disableTypedSink = false
+	typed, _ = runBoth(t, g, q)
+	disableTypedSink = true
+	boxed, _ = runBoth(t, g, q)
+	disableTypedSink = false
+	return typed, boxed
+}
+
+// TestTypedSinkPrefilter pins the typed reject path: i64-column keys on
+// a full heap refuse rows without boxed evaluation (the counter), and
+// the surviving rows are identical to the boxed gated flow -- single
+// key, two-key IC9 shape (DESC then ASC), and DESC alone.
+func TestTypedSinkPrefilter(t *testing.T) {
+	g := topkFixture(t, 500)
+	before := typedSinkRejects
+	rows, _ := runBoth(t, g,
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 5")
+	if len(rows) != 5 {
+		t.Fatalf("rows = %d, want 5", len(rows))
+	}
+	if got := typedSinkRejects - before; got < 400 {
+		t.Fatalf("typed rejects = %d, want most of the 495 refusals (0 means the prefilter never engaged)", got)
+	}
+	for _, q := range []string{
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 5",
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v DESC LIMIT 7",
+		"MATCH (m:N) RETURN m.grp AS g, m.v AS v ORDER BY g DESC, v ASC LIMIT 9",
+		"MATCH (m:N) RETURN m.grp AS g, m.name AS name ORDER BY g ASC LIMIT 6",
+	} {
+		typed, boxed := runTypedBoth(t, g, q)
+		if fmt.Sprint(typed) != fmt.Sprint(boxed) {
+			t.Fatalf("typed prefilter diverged on %s:\n%v\nvs\n%v", q, typed, boxed)
+		}
+	}
+}
+
+// TestTypedSinkLargeIntTies pins the float64-mirror constraint: adjacent
+// int64 keys above 2^53 collapse to OrderCmp TIES (the boxed Int tier
+// compares through float64), so arrival order decides -- a raw i64
+// compare would order them and change the survivors. The typed path must
+// reproduce the boxed outcome exactly.
+func TestTypedSinkLargeIntTies(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 1)
+	base := int64(1) << 53
+	for i := range 40 {
+		nd, err := b.AddNode("N")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Pairs (base+2i, base+2i+1) are distinct i64s but equal float64s.
+		if err := b.SetProp(nd, "v", base+int64(i)); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.SetProp(nd, "name", fmt.Sprintf("n%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize("topk-large")
+	for _, q := range []string{
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 7",
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v DESC LIMIT 7",
+	} {
+		typed, boxed := runTypedBoth(t, g, q)
+		if fmt.Sprint(typed) != fmt.Sprint(boxed) {
+			t.Fatalf("large-int tie divergence on %s:\n%v\nvs\n%v", q, typed, boxed)
+		}
+	}
+}
+
+// TestTypedSinkNullFallback pins the per-row fallback: nodes lacking the
+// key property read as Null (a different OrderCmp tier), which the typed
+// reader cannot represent -- those rows must take the boxed path and the
+// output must match the boxed flow exactly. When a Null lands IN the
+// heap, the root shadow invalidates and the prefilter stands down.
+func TestTypedSinkNullFallback(t *testing.T) {
+	b := chickpeas.NewBuilder(64, 1)
+	for i := range 30 {
+		nd, err := b.AddNode("N")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i%3 != 0 { // every third node lacks v entirely
+			if err := b.SetProp(nd, "v", int64(100-i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := b.SetProp(nd, "name", fmt.Sprintf("n%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := b.Finalize("topk-null")
+	for _, q := range []string{
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 4",
+		// LIMIT larger than the non-null population: nulls enter the heap.
+		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v DESC LIMIT 25",
+	} {
+		typed, boxed := runTypedBoth(t, g, q)
+		if fmt.Sprint(typed) != fmt.Sprint(boxed) {
+			t.Fatalf("null-fallback divergence on %s:\n%v\nvs\n%v", q, typed, boxed)
+		}
+	}
+}

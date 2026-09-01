@@ -11,9 +11,11 @@ import (
 	"maps"
 	"slices"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
 	"github.com/freeeve/gochickpeas/gql/internal/semantics"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -61,6 +63,15 @@ type projSink struct {
 	// built (most candidates die on one comparison once the heap fills).
 	kGate    bool
 	kRowEval []RowEval
+	// kTyped is the typed prefilter over the gated path: when every
+	// ORDER BY key is a bare i64-column property read of a node slot,
+	// a full heap pre-tests each row against a typed shadow of the
+	// root's key tuple with float64 compares (mirroring OrderCmp's
+	// Int-tier totalCmpF64 exactly, ties included) before any boxed
+	// evaluation. A failed typed read (null slot, absent property) or
+	// an unshadowable root falls back to the boxed flow per row.
+	kTyped    []func(row []value.Value) (float64, bool)
+	kTypedBuf []float64
 }
 
 // topkPayloadBuilds counts full projected payload constructions on the
@@ -72,6 +83,51 @@ var (
 	topkPayloadBuilds int
 	disableTopkGate   bool
 )
+
+// typedSinkRejects counts rows refused by the typed prefilter alone --
+// the engagement oracle: a full heap over a classifiable key set must
+// reject through int-path compares, not boxed OrderCmp.
+// disableTypedSink pins differential tests to the boxed gated flow.
+var (
+	typedSinkRejects int
+	disableTypedSink bool
+)
+
+// typedKeyReader classifies one ORDER BY key expression as a bare
+// i64-column property read of a node slot, returning a reader that
+// yields the column value through the same float64 conversion
+// OrderCmp's Int tier orders by. ok=false declines (any other shape,
+// dtype, or a missing column -- whose boxed reads would be Null).
+func typedKeyReader(ctx *eval.Ctx, e ast.Expr, slots map[string]int) (func(row []value.Value) (float64, bool), bool) {
+	prop, ok := e.(*ast.Prop)
+	if !ok {
+		return nil, false
+	}
+	slot, ok := slots[prop.Var]
+	if !ok {
+		return nil, false
+	}
+	native, ok := ctx.G.(graph.Native)
+	if !ok {
+		return nil, false
+	}
+	col, ok := native.Snapshot().ColIndexed(prop.Key)
+	if !ok || col.Dtype() != chickpeas.DtypeI64 {
+		return nil, false
+	}
+	r := col.I64()
+	return func(row []value.Value) (float64, bool) {
+		id, ok := row[slot].AsNode()
+		if !ok {
+			return 0, false
+		}
+		v, ok := r.Get(uint32(id))
+		if !ok {
+			return 0, false
+		}
+		return float64(v), true
+	}, true
+}
 
 func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
 	p := &projSink{
@@ -140,6 +196,28 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 					break
 				}
 			}
+			if p.kGate && !disableTypedSink {
+				typed := make([]func([]value.Value) (float64, bool), len(proj.OrderBy))
+				allTyped := true
+				for k := range proj.OrderBy {
+					kexpr := proj.OrderBy[k].Expr
+					if idx := p.kColIdx[k]; idx >= 0 {
+						kexpr = proj.Returns[idx].Expr
+					}
+					rd, ok := typedKeyReader(ctx, kexpr, slots)
+					if !ok {
+						allTyped = false
+						break
+					}
+					typed[k] = rd
+				}
+				if allTyped {
+					p.kTyped = typed
+					p.kTypedBuf = make([]float64, len(proj.OrderBy))
+					p.topk.typedArmed = true
+					p.topk.thr = make([]float64, p.topk.nk)
+				}
+			}
 		} else {
 			// No ORDER BY: arrival order is output order, so retention
 			// past skip+limit can never surface.
@@ -180,6 +258,28 @@ func (p *projSink) push(row []value.Value) bool {
 	// wouldAccept), so the surviving rows match the unguarded path
 	// exactly.
 	if p.kGate {
+		// Typed prefilter: a full heap with a valid typed shadow refuses
+		// most rows on raw column reads and float64 compares -- no boxed
+		// key evaluation, no OrderCmp. Any typed-read miss falls through
+		// to the boxed flow for that row; skipping is decision-identical
+		// because the shadow holds exactly the root's key ordering and
+		// ties lose on both paths.
+		if p.kTyped != nil && p.topk.n == p.topk.bound && p.topk.thrValid {
+			typedOK := true
+			for k, rd := range p.kTyped {
+				v, ok := rd(row)
+				if !ok {
+					typedOK = false
+					break
+				}
+				p.kTypedBuf[k] = v
+			}
+			if typedOK && p.topk.typedReject(p.kTypedBuf) {
+				typedSinkRejects++
+				p.topk.seq++
+				return true
+			}
+		}
 		for k := range p.proj.OrderBy {
 			if idx := p.kColIdx[k]; idx >= 0 {
 				p.kBuf[k] = p.returns[idx].Eval(p.ctx, row, p.slots)
@@ -272,6 +372,47 @@ type topKRows struct {
 	seqs  []int
 	n     int
 	seq   int
+	// Typed shadow of the root's key tuple for the sink's prefilter:
+	// valid only while every root key is a KindInt (the i64-column
+	// boxed form the typed readers mirror); refreshed after each
+	// successful offer.
+	typedArmed bool
+	thr        []float64
+	thrValid   bool
+}
+
+// refreshTyped re-derives the typed shadow from the current root.
+func (t *topKRows) refreshTyped() {
+	if !t.typedArmed || t.n < t.bound {
+		t.thrValid = false
+		return
+	}
+	for k := 0; k < t.nk; k++ {
+		v, ok := t.keys[k].AsInt()
+		if !ok || t.keys[k].Kind() != value.KindInt {
+			t.thrValid = false
+			return
+		}
+		t.thr[k] = float64(v)
+	}
+	t.thrValid = true
+}
+
+// typedReject reports whether a candidate with these typed keys would be
+// refused by wouldAccept: accepted only when strictly before the root
+// under the sort order; a tie loses (a fresh arrival's sequence is
+// larger than every admitted row's).
+func (t *topKRows) typedReject(keys []float64) bool {
+	for k := 0; k < t.nk; k++ {
+		if keys[k] != t.thr[k] {
+			less := keys[k] < t.thr[k]
+			if t.desc[k] {
+				less = !less
+			}
+			return !less
+		}
+	}
+	return true
 }
 
 func newTopKRows(bound, nk int, order []ast.SortItem) *topKRows {
@@ -354,11 +495,13 @@ func (t *topKRows) offer(keys []value.Value, out []value.Value) bool {
 		t.seqs = append(t.seqs, seq)
 		t.n++
 		t.siftUp(t.n - 1)
+		t.refreshTyped()
 		return true
 	}
 	copy(t.keys[:t.nk], keys)
 	t.outs[0], t.seqs[0] = out, seq
 	t.siftDown(0)
+	t.refreshTyped()
 	return true
 }
 
