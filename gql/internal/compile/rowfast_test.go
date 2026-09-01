@@ -204,3 +204,75 @@ func TestRowFastRelPropertyDerivesButFallsBack(t *testing.T) {
 		t.Fatal("r.since > 50 over rel prop 7 must be false -- the fallback read the NODE column")
 	}
 }
+
+// TestTypedCompareCollisionPair supplies the one input class the matrix
+// above cannot: adjacent int64s above 2^53, which collide under the
+// float64 coercion the interpreter's numeric compare uses. Every typed
+// fast tier (the compiled prop-vs-const form, the per-candidate
+// predicate, the bulk int sweep) deliberately mirrors that coercion for
+// Int constants -- constI64Val folds Int with exact=false -- so all
+// three must AGREE with the interpreter that the pair is equal. A
+// future regression to raw i64 compare in any tier flips these
+// assertions (the Rust sibling shipped exactly that divergence with a
+// green matrix; representation-boundary values belong in the fixture --
+// their catalog item 40).
+func TestTypedCompareCollisionPair(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 1)
+	n1, _ := b.AddNode("N")
+	n2, _ := b.AddNode("N")
+	_ = b.SetProp(n1, "k", int64(9007199254740992)) // 2^53
+	_ = b.SetProp(n2, "k", int64(9007199254740993)) // 2^53+1
+	g := b.Finalize("collision")
+	ctx := &eval.Ctx{G: graph.New(g)}
+	slots := map[string]int{"a": 0}
+	ids := []chickpeas.NodeID{n1, n2}
+
+	for _, src := range []string{
+		"a.k = 9007199254740992", "a.k = 9007199254740993",
+		"9007199254740992 = a.k", "a.k < 9007199254740993",
+		"a.k > 9007199254740992", "a.k <> 9007199254740993",
+		"a.k >= 9007199254740993", "a.k <= 9007199254740992",
+	} {
+		e := exprOf(t, src)
+		c := New(ctx, e, slots, g)
+		for _, id := range ids {
+			row := []value.Value{value.Node(graph.NodeID(id))}
+			want := eval.Eval(ctx, e, row, slots)
+			if got := c.Eval(ctx, row, slots); !value.Identical(got, want) {
+				t.Fatalf("compiled %q id=%d: fast %v, interp %v", src, id, got, want)
+			}
+			if p, ok := CandidatePred(c, 0, slots); ok {
+				if got := p(ctx, row, graph.NodeID(id)); got != want.IsTruthy() {
+					t.Fatalf("candpred %q id=%d: pred %v, interp %v", src, id, got, want)
+				}
+			} else {
+				t.Fatalf("candpred %q did not specialize", src)
+			}
+		}
+		if sw, ok := CandidateIntSweep(c, 0); ok {
+			cand := []uint32{uint32(n1), uint32(n2)}
+			vals := make([]int64, 2)
+			present := make([]bool, 2)
+			keep := []bool{true, true}
+			sw(cand, vals, present, keep)
+			for i, id := range ids {
+				row := []value.Value{value.Node(graph.NodeID(id))}
+				if want := eval.Eval(ctx, exprOf(t, src), row, slots).IsTruthy(); keep[i] != want {
+					t.Fatalf("intsweep %q id=%d: keep %v, interp %v", src, id, keep[i], want)
+				}
+			}
+		}
+	}
+
+	// The lossiness itself, stated positively: the pair IS equal under
+	// every tier today (the coerced semantics), so an equality against
+	// either literal matches BOTH nodes.
+	e := exprOf(t, "a.k = 9007199254740993")
+	c := New(ctx, e, slots, g)
+	for _, id := range ids {
+		row := []value.Value{value.Node(graph.NodeID(id))}
+		if !c.Eval(ctx, row, slots).IsTruthy() {
+			t.Fatalf("id=%d: the coerced equality must match both collision nodes", id)
+		}
+	}
+}
