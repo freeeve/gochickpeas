@@ -20,6 +20,11 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 	node := s.nodes[level]
 	slot := s.nodeSlots[level]
 	candidates := s.cand[level][:0]
+	relSlot := -1
+	if level > 0 {
+		relSlot = s.relSlots[level-1]
+	}
+	candRels := s.candRel[level][:0]
 	if level == 0 {
 		if s.anchored[0] {
 			if id, ok := s.row[slot].AsNode(); ok && ctx.G.NodeMatcherAccepts(s.nodeMatcherFor(ctx, 0), id) {
@@ -46,11 +51,11 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 			bound, isBound = b, true
 		}
 		switch {
-		case rel.Length == nil && isBound:
-			// Both endpoints bound: count the matching relationships
-			// directly instead of enumerating a candidate set, appending
-			// the bound node once per relationship so match multiplicity
-			// (COUNT forms) is preserved exactly.
+		case rel.Length == nil && isBound && relSlot < 0:
+			// Both endpoints bound, rel unbound: count the matching
+			// relationships directly instead of enumerating a candidate
+			// set, appending the bound node once per relationship so
+			// match multiplicity (COUNT forms) is preserved exactly.
 			if ctx.G.NodeMatcherAccepts(s.nodeMatcherFor(ctx, level), bound) {
 				n := ctx.G.CountNeighborsMatched(fromID, bound, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
 				for range n {
@@ -58,26 +63,40 @@ func (s *subqueryShape) dfs(ctx *Ctx, level int, onMatch func() bool) bool {
 				}
 			}
 		default:
-			if rel.Length != nil {
+			switch {
+			case rel.Length != nil:
 				candidates = s.existsReach(ctx, fromID, rel, level-1, candidates)
-			} else {
+			case relSlot >= 0:
+				// The hop binds its relationship: enumerate (neighbor,
+				// position) pairs so the walk can set the rel slot per
+				// traversal.
+				candidates, candRels = ctx.G.AppendRelationshipsMatched(candidates, candRels, fromID, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
+			default:
 				candidates = ctx.G.AppendNeighborsMatched(candidates, fromID, engineDir(rel.Dir), s.matcherFor(ctx, level-1))
 			}
 			// Filter the appended tail in place: endpoint binding and the
 			// pattern node's own constraints.
 			m := s.nodeMatcherFor(ctx, level)
 			kept := candidates[:0]
-			for _, nid := range candidates {
+			keptRels := candRels[:0]
+			for i, nid := range candidates {
 				if (!isBound || bound == nid) && ctx.G.NodeMatcherAccepts(m, nid) {
 					kept = append(kept, nid)
+					if relSlot >= 0 {
+						keptRels = append(keptRels, candRels[i])
+					}
 				}
 			}
-			candidates = kept
+			candidates, candRels = kept, keptRels
 		}
 	}
 	s.cand[level] = candidates
-	for _, c := range candidates {
+	s.candRel[level] = candRels
+	for i, c := range candidates {
 		s.row[slot] = value.Node(c)
+		if relSlot >= 0 {
+			s.row[relSlot] = value.Rel(candRels[i])
+		}
 		if s.dfs(ctx, level+1, onMatch) {
 			return true
 		}

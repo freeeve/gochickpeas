@@ -54,6 +54,11 @@ type subqueryShape struct {
 	slots     map[string]int
 	row       []value.Value
 	cand      [][]graph.NodeID
+	// relSlots is each hop's rel-variable slot (-1 when the hop binds no
+	// fresh fixed-hop rel var); candRel holds the per-level rel position
+	// parallel to cand at levels whose incoming hop has a slot.
+	relSlots []int
+	candRel  [][]uint32
 	// scan0 memoizes the unanchored level-0 scan (evaluation-invariant:
 	// labels and literal props only); scan0Done marks it filled.
 	scan0     []graph.NodeID
@@ -209,8 +214,26 @@ func buildOneSubqueryShape(outer map[string]int, outerRow []value.Value, pattern
 			w++
 		}
 	}
+	// A fixed hop's fresh rel variable gets a slot too, bound per
+	// traversed relationship in the walk -- a subquery WHERE reading it
+	// (k.w > 1) otherwise evaluated against null and silently rejected
+	// every row. An outer-bound name keeps its outer slot (reads work;
+	// the walk does not re-check identity, matching prior behavior), and
+	// a quantified hop's var stays unbound (the reachable-set collapse
+	// has no single relationship to bind).
+	s.relSlots = make([]int, len(pattern.Hops))
+	for i := range pattern.Hops {
+		s.relSlots[i] = -1
+		rv := pattern.Hops[i].Rel.Var
+		if rv != "" && pattern.Hops[i].Rel.Length == nil && !hasKey(s.slots, rv) {
+			s.slots[rv] = w
+			s.relSlots[i] = w
+			w++
+		}
+	}
 	s.row = make([]value.Value, w)
 	s.cand = make([][]graph.NodeID, len(s.nodes))
+	s.candRel = make([][]uint32, len(s.nodes))
 	return s
 }
 

@@ -4,7 +4,9 @@ import (
 	"math"
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -66,6 +68,91 @@ func TestExistsCountAndPatternComp(t *testing.T) {
 	}
 	if s, _ := xs[0].AsStr(); s != "Bob" {
 		t.Fatalf("pattern comp[0] = %q", s)
+	}
+}
+
+// TestSubqueryRelVarWhere pins the walk's rel-variable binding: a WHERE
+// (or comprehension projection) reading a rel var bound by the subquery
+// pattern must see the traversed relationship, not null. Before the
+// relSlots fix every such read evaluated null and silently rejected the
+// row -- an EXISTS with both endpoints bound and a rel-prop filter
+// returned false on a matching edge.
+func TestSubqueryRelVarWhere(t *testing.T) {
+	b := chickpeas.NewBuilder(8, 8)
+	alice, _ := b.AddNode("Person")
+	bob, _ := b.AddNode("Person")
+	carol, _ := b.AddNode("Person")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r1, err := b.AddRel(alice, bob, "KNOWS")
+	must(err)
+	must(b.SetRelPropAt(r1, "w", int64(5)))
+	r2, err := b.AddRel(alice, bob, "KNOWS")
+	must(err)
+	must(b.SetRelPropAt(r2, "w", int64(1)))
+	r3, err := b.AddRel(bob, carol, "KNOWS")
+	must(err)
+	must(b.SetRelPropAt(r3, "w", int64(1)))
+	ctx := &Ctx{G: graph.New(b.Finalize())}
+	row := []value.Value{value.Node(0), value.Node(1)}
+	slots := map[string]int{"a": 0, "b": 1}
+
+	// One endpoint bound.
+	oneBound := exprOf(t, "EXISTS { MATCH (a)-[k:KNOWS]->(x) WHERE k.w > 3 }")
+	if got, _ := Eval(ctx, oneBound, row, slots).AsBool(); !got {
+		t.Fatal("alice has a w=5 edge; rel-var WHERE read null")
+	}
+	bobRow := []value.Value{value.Node(1), value.Node(2)}
+	if got, _ := Eval(ctx, oneBound, bobRow, slots).AsBool(); got {
+		t.Fatal("bob's only edge is w=1; filter must reject")
+	}
+	// Both endpoints bound (the rel-enumeration path replaces the
+	// count-only fast path).
+	bothBound := exprOf(t, "EXISTS { MATCH (a)-[k:KNOWS]->(b) WHERE k.w > 3 }")
+	if got, _ := Eval(ctx, bothBound, row, slots).AsBool(); !got {
+		t.Fatal("both-bound EXISTS with rel-prop filter missed the w=5 edge")
+	}
+	// Undirected spelling.
+	undir := exprOf(t, "EXISTS { MATCH (a)-[k:KNOWS]-(b) WHERE k.w > 3 }")
+	if got, _ := Eval(ctx, undir, row, slots).AsBool(); !got {
+		t.Fatal("undirected both-bound EXISTS with rel-prop filter missed")
+	}
+	// COUNT multiplicity: both parallel edges pass w > 0, one passes w > 3.
+	cntAll := exprOf(t, "COUNT { MATCH (a)-[k:KNOWS]->(b) WHERE k.w > 0 }")
+	if got, _ := Eval(ctx, cntAll, row, slots).AsInt(); got != 2 {
+		t.Fatalf("parallel-edge count = %d, want 2", got)
+	}
+	cntBig := exprOf(t, "COUNT { MATCH (a)-[k:KNOWS]->(b) WHERE k.w > 3 }")
+	if got, _ := Eval(ctx, cntBig, row, slots).AsInt(); got != 1 {
+		t.Fatalf("filtered count = %d, want 1", got)
+	}
+	// Pattern comprehension projecting the rel property.
+	pc := &ast.PatternComp{
+		Pattern: &ast.Pattern{
+			Start: ast.NodePat{Var: "a"},
+			Hops: []ast.PatternHop{{
+				Rel:  ast.RelPat{Var: "k", Dir: ast.DirOut, Types: []string{"KNOWS"}},
+				Node: ast.NodePat{Var: "x"},
+			}},
+		},
+		Proj: &ast.Prop{Var: "k", Key: "w"},
+	}
+	got := Eval(ctx, pc, row, slots)
+	lst, ok := got.AsList()
+	if !ok || len(lst) != 2 {
+		t.Fatalf("comprehension = %v, want two weights", got)
+	}
+	sum := int64(0)
+	for _, v := range lst {
+		n, _ := v.AsInt()
+		sum += n
+	}
+	if sum != 6 {
+		t.Fatalf("projected weights sum = %d, want 6 (5+1)", sum)
 	}
 }
 
