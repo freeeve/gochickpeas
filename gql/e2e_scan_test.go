@@ -9,6 +9,7 @@ import (
 	"errors"
 	"github.com/freeeve/gochickpeas/gql"
 	"slices"
+	"strings"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -349,6 +350,48 @@ func TestExistsSeededScan(t *testing.T) {
 	if cols := rows.Columns(); len(cols) != 1 || cols[0] != "plan" {
 		t.Fatalf("profile columns = %v", cols)
 	}
+}
+
+// TestExistsSeededScanRelPropWhere drives the seed-scan finalization
+// with a rel-property filter inside the EXISTS: the seed walk ignores
+// interior predicates (candidates are a superset), so correctness rests
+// entirely on the kept conjunct's subquery walk binding the rel
+// variable -- the defect the correlated-subquery rel-slot fix closed.
+// Pre-fix this returned no rows over a matching w=5 edge.
+func TestExistsSeededScanRelPropWhere(t *testing.T) {
+	b := chickpeas.NewBuilder(16, 16)
+	a, _ := b.AddNode("Anchor")
+	_ = b.SetProp(a, "name", "x")
+	p1, _ := b.AddNode("Person")
+	_ = b.SetProp(p1, "name", "heavy")
+	p2, _ := b.AddNode("Person")
+	_ = b.SetProp(p2, "name", "light")
+	r1, err := b.AddRel(p1, a, "REL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetRelPropAt(r1, "w", int64(5)); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := b.AddRel(p2, a, "REL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetRelPropAt(r2, "w", int64(1)); err != nil {
+		t.Fatal(err)
+	}
+	g := b.Finalize()
+	q := "MATCH (a:Anchor {name: 'x'}) MATCH (p:Person) WHERE EXISTS { MATCH (p)-[k:REL]->(a) WHERE k.w > 3 } RETURN p.name AS n ORDER BY n"
+	// Engagement: the scan must actually be exists-seeded, so the walk
+	// under test is the finalizing conjunct, not a plain label scan.
+	pl, err := gql.Explain(g, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pl, "NodeByExistsSeed") {
+		t.Fatalf("scan is not exists-seeded:\n%s", pl)
+	}
+	gql.WantStrs(t, gql.StrColOrdered(t, g, q, "n"), "heavy")
 }
 
 func TestExplainModes(t *testing.T) {
