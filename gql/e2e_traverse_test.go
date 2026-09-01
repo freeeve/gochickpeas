@@ -6,6 +6,7 @@ package gql_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -202,6 +203,34 @@ func TestNamedPathFixedHop(t *testing.T) {
 		t.Fatalf("filtered paths = %d", len(batch))
 	}
 }
+
+// TestNamedPathRetentionDistinct pins the survivor-clone freshness of
+// the path-assembly scratch: paths RETAINED past their row (projected
+// out, then read after all rows have been walked) must be distinct,
+// correct values -- if the pushed path aliased the sink's scratch,
+// every collected row would show the last-assembled walk.
+func TestNamedPathRetentionDistinct(t *testing.T) {
+	g := gql.SocialGraph(t)
+	rows := gql.RunBoth(t, g,
+		"MATCH p = (a:Person {name: 'Alice'})-[:KNOWS]->{1,2}(b:Person) WHERE length(p) >= 1 RETURN nodes(p)[-1] AS endNode, length(p) AS l ORDER BY l ASC")
+	seen := map[string]bool{}
+	for r := range rows.All() {
+		ev, _ := r.Get("endNode")
+		lv, _ := r.Get("l")
+		l, _ := lv.AsInt()
+		key := fmt.Sprint(ev) + "|" + fmt.Sprint(lv)
+		if l < 1 || l > 2 {
+			t.Fatalf("length %d escaped the filter", l)
+		}
+		seen[key] = true
+	}
+	// Alice knows two people at 1 hop, and further distinct walks exist
+	// at 2 -- aliasing collapses these to one repeated (endNode, l).
+	if len(seen) < 3 {
+		t.Fatalf("retained paths collapsed to %d distinct (endNode, length) rows -- scratch aliasing", len(seen))
+	}
+}
+
 func TestVarLengthUndirectedTrailUniqueness(t *testing.T) {
 	g := gql.ReplyForest(t)
 	// Undirected {1,2} from a: root and c at 1 hop; b (via root) and the
