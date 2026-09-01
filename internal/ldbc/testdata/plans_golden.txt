@@ -118,18 +118,20 @@ Segment 3
   Limit 100
 
 === BI/Q6
-NodeByProperty (tag:Tag {name = 'Arnold_Schwarzenegger'})
-  [anchor: tag:Tag {name} card=N, fan-out N,N · vs personN:Person card=N, fan-out ~N → smaller leaf cardinality]
-Expand (tag)<-[:HAS_TAG]-(message1)
-Expand (message1)-[:HAS_CREATOR]->(person1)
-Argument (message1)
-Expand (message1)<-[:LIKES]-(person2)
-Argument (person2)
-Expand (person2)<-[:HAS_CREATOR]-(message2)
-Expand (message2)<-[:LIKES]-(person3)
-Aggregate (group=[person1Id]; count(DISTINCT like))
-OrderBy [authorityScore DESC, person1Id]
-Limit 100
+Segment 0
+  NodeByProperty (tag:Tag {name = 'Arnold_Schwarzenegger'})
+    [anchor: tag:Tag {name} card=N, fan-out N,N · vs personN:Person card=N, fan-out ~N → smaller leaf cardinality]
+  Expand (tag)<-[:HAS_TAG]-(message1)
+  Expand (message1)-[:HAS_CREATOR]->(person1)
+  Argument (message1)
+  Expand (message1)<-[:LIKES]-(person2)
+  Distinct Project [person1Id, person2]
+Segment 1
+  Project [person1Id, __factor_rl]
+Segment 2
+  Aggregate (group=[person1Id]; sum(__factor_rl))
+  OrderBy [authorityScore DESC, person1Id]
+  Limit 100
 
 === BI/Q7
 NodeByProperty (tag:Tag {name = 'Enrique_Iglesias'})

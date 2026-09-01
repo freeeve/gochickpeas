@@ -100,6 +100,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	scope := uint32(0)
 
 	clauses, retProj := fuseTrailingProjectionIntoRet(fuseProjectionBeforeAggregate(part.Clauses), part.Ret)
+	clauses, retProj = factorDistinctAgg(clauses, retProj, g)
 	for _, clause := range clauses {
 		switch c := clause.(type) {
 		case *ast.Match:
