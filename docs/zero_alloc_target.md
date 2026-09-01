@@ -147,6 +147,19 @@ techniques land; cite the commit that proved the win.
     delta under proportional slowdown, which is enough to DECLINE an
     optimization without ever publishing an untrustworthy timing.
     Declining on a bound is publishable; the timing itself is not.
+    LIMIT (Rust's 39, found the hard way): min-of-N has a resolving
+    power of roughly the box's BETWEEN-run drift (~20% here) -- it
+    removes upward noise within a run and does nothing across runs. It
+    settled a 2x ratio and manufactured five phantom losses on a 3-7%
+    effect. For small effects, run the whole A/B twice and gate each
+    cell on DIRECTION agreement (same side of the band both passes;
+    else UNRESOLVED) -- and gate on side, not spread: two passes at
+    1.37x/1.31x agree ("helps, magnitude noisy"), and a spread gate
+    wrongly discards them. A/Bs also need liveness assertions: a
+    harness that measures nothing must FAIL, not print an
+    empty-tabled "0 regressions". And skip the alloc-substitution
+    escape for per-row-work effects: a reproducible 1.3x timing win
+    can carry an allocation delta of exactly zero.
 
 ## Where Go allocates, and what to do about it
 
