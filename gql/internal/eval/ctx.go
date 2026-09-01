@@ -58,6 +58,12 @@ type Ctx struct {
 	// identity builds once, not once per sibling.
 	DecorTables map[DecorTableKey]map[graph.NodeID]int
 	DecorBuilds int
+	// ScanCSE memoizes a CSE-marked recorder segment's filtered-scan
+	// survivor ids for later consumer segments in the same execution,
+	// keyed by the recorder's plan segment (exec/colagg.go). The graph
+	// and params are fixed per Ctx, so a recorded set stays valid for
+	// the Ctx's lifetime; nil until a marked plan records.
+	ScanCSE map[any][]uint32
 	// constCalls memoizes all-literal scalar calls for this execution: a
 	// call whose every argument is a literal (params included -- fixed per
 	// Ctx) evaluates once instead of per row, so a temporal constructor in

@@ -1,17 +1,19 @@
 # gochickpeas canonical plan-shape golden.
 # Regenerate deliberately after an intended planner change:
-#   gqlbench -manifest <...> -plans-golden <this file> -plans-golden-capture
+#   GOCHICKPEAS_PLANS_GOLDEN_CAPTURE=1 go test ./internal/ldbc -run TestGQLParityGate
 # A diff here is a review prompt: the planner moved a plan.
 
 === BI/Q1
 Segment 0
   NodeScan (message:Message)
+    [cse: record survivors]
   Filter (message.creationDate < zoned_datetime('2011-12-01'))
   Aggregate (group=[]; count(message))
 Segment 1
   Project [totalMessageCountInt, totalMessageCount]
 Segment 2
   NodeScan (message:Message)
+    [cse: shared scan]
   Filter (message.creationDate < zoned_datetime('2011-12-01') AND message.content IS NOT NULL)
   Aggregate (group=[totalMessageCount, year, isComment, lengthCategory]; count(message), sum(message.length), count(message), sum(message.length))
 Segment 3

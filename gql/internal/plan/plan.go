@@ -149,6 +149,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	// rewrite so it sees the final stage and boundary shapes.
 	injectSPGates(segments)
 	lowerColumnarAggs(segments)
+	linkScanCSE(segments)
 	return segments, seg.Proj.Columns, nil
 }
 

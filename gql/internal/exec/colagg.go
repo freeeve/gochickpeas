@@ -14,6 +14,8 @@
 package exec
 
 import (
+	"bytes"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/compile"
@@ -26,15 +28,37 @@ import (
 // disableColAgg pins differential tests to the general path;
 // colAggFired counts successful fusions so tests can assert the fused
 // arm actually took the fused path (a silent double-general run would
-// pass any differential vacuously).
+// pass any differential vacuously). colAggCSERecorded/Consumed count
+// the cross-segment scan-share halves for the same reason.
 var (
-	disableColAgg = false
-	colAggFired   int
+	disableColAgg     = false
+	colAggFired       int
+	colAggCSERecorded int
+	colAggCSEConsumed int
 )
 
 // colAggMaxKeys is the fused group key width (a fixed-size comparable map
 // key); wider groupings keep the general path.
 const colAggMaxKeys = 4
+
+// cseCondsHold validates a consumer's auto-param slot conditions: each
+// listed pair must hold canonically identical values this execution
+// (byte-level key equality, so cross-type numeric coercion never
+// smuggles an unequal template through).
+func cseCondsHold(ctx *eval.Ctx, conds [][2]uint32) bool {
+	for _, c := range conds {
+		a, b := int(c[0]), int(c[1])
+		if a >= len(ctx.Params) || b >= len(ctx.Params) {
+			return false
+		}
+		ka := value.AppendKey(nil, ctx.Params[a])
+		kb := value.AppendKey(nil, ctx.Params[b])
+		if !bytes.Equal(ka, kb) {
+			return false
+		}
+	}
+	return true
+}
 
 // colAggKeyKind says how a computed key's int64 unboxes for output.
 type colAggKeyKind uint8
@@ -107,14 +131,32 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 	never := func(int) bool { return false }
 	ctx.MatchEpoch++
 
+	// Cross-segment scan CSE (plan/cse_scan.go): a consumer seeds from
+	// its recorder's survivor memo and evaluates only the residual
+	// conjuncts. No memo (the recorder's chain declined to the general
+	// path) or a failed param-value condition falls back to the full
+	// WHERE -- the marks are an opportunity, never a commitment.
+	whereExpr := ms.Where
+	var cseIDs []uint32
+	cseSeeded := false
+	if head.CSEFrom != nil {
+		if ids, ok := ctx.ScanCSE[head.CSEFrom]; ok && cseCondsHold(ctx, head.CSEParamConds) {
+			cseIDs, cseSeeded = ids, true
+			whereExpr = head.CSEResidual
+		}
+	}
+	_, cseDone := ctx.ScanCSE[head]
+	cseRecording := head.CSERecord && !cseDone
+	var cseRec []uint32
+
 	// Filters: every WHERE conjunct of the scan stage must specialize --
 	// i64-column-vs-constant conjuncts to bulk IntSweeps (one column
 	// dispatch per chunk), everything else to a per-candidate predicate.
 	var sweeps []compile.IntSweep
 	var preds []compile.CandPred
-	if ms.Where != nil {
+	if whereExpr != nil {
 		var conjs []ast.Expr
-		plan.SplitAnd(ms.Where, &conjs)
+		plan.SplitAnd(whereExpr, &conjs)
 		for _, c := range conjs {
 			cc := compile.HoistCarriedIn(compile.HoistConstIn(ctx, compile.New(ctx, c, head.Slots, g), isConst, scratch, head.Slots), never)
 			if sw, ok := compile.CandidateIntSweep(cc, vSlot); ok {
@@ -231,6 +273,9 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 				return
 			}
 		}
+		if cseRecording {
+			cseRec = append(cseRec, id)
+		}
 		var gk groupKey
 		ki := 0
 		for _, k := range keys {
@@ -284,27 +329,36 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 			}
 		}
 	}
-	if hasLabel {
-		// Chunked candidate walk: sweeps bulk-filter each id chunk (one
-		// column dispatch per conjunct per chunk), then survivors run
-		// the per-candidate predicates and accumulate.
-		const sweepChunk = 4096
-		vbuf := make([]int64, sweepChunk)
-		pbuf := make([]bool, sweepChunk)
-		kbuf := make([]bool, sweepChunk)
-		runChunk := func(chunk []uint32) {
-			for i := range chunk {
-				kbuf[i] = true
-			}
-			for _, sw := range sweeps {
-				sw(chunk, vbuf[:len(chunk)], pbuf[:len(chunk)], kbuf[:len(chunk)])
-			}
-			for i, id := range chunk {
-				if kbuf[i] {
-					scan(id)
-				}
+	// Chunked candidate walk: sweeps bulk-filter each id chunk (one
+	// column dispatch per conjunct per chunk), then survivors run
+	// the per-candidate predicates and accumulate.
+	const sweepChunk = 4096
+	vbuf := make([]int64, sweepChunk)
+	pbuf := make([]bool, sweepChunk)
+	kbuf := make([]bool, sweepChunk)
+	runChunk := func(chunk []uint32) {
+		for i := range chunk {
+			kbuf[i] = true
+		}
+		for _, sw := range sweeps {
+			sw(chunk, vbuf[:len(chunk)], pbuf[:len(chunk)], kbuf[:len(chunk)])
+		}
+		for i, id := range chunk {
+			if kbuf[i] {
+				scan(id)
 			}
 		}
+	}
+	if cseSeeded {
+		// The memo already holds the shared conjuncts' survivors in the
+		// recorder's enumeration order (the label walk); only the
+		// residual sweeps and predicates run over it.
+		colAggCSEConsumed++
+		for off := 0; off < len(cseIDs); off += sweepChunk {
+			end := min(off+sweepChunk, len(cseIDs))
+			runChunk(cseIDs[off:end])
+		}
+	} else if hasLabel {
 		// A selective range conjunct flips the enumeration: instead of
 		// every labeled node testing every predicate, walk the range
 		// index's window (exact count, no estimate) and test label
@@ -312,7 +366,7 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 		// than the label, so broad ranges keep the cache-linear label
 		// sweep. Every predicate still runs per candidate (the window is
 		// a superset reduction), so results are identical either way.
-		if win := colAggRangeWindow(env, ms.Where, vName, g); win != nil && len(win) < ids.Len()/4 {
+		if win := colAggRangeWindow(env, whereExpr, vName, g); win != nil && len(win) < ids.Len()/4 {
 			dense := g.LabelDense(op.Source.Label)
 			idbuf := make([]uint32, 0, sweepChunk)
 			flush := func() {
@@ -343,6 +397,13 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 				return true
 			})
 		}
+	}
+	if cseRecording {
+		colAggCSERecorded++
+		if ctx.ScanCSE == nil {
+			ctx.ScanCSE = map[any][]uint32{}
+		}
+		ctx.ScanCSE[head] = cseRec
 	}
 
 	// No candidate survived. A keyless aggregate over no input still

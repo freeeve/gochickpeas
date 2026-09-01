@@ -147,6 +147,14 @@ func renderSegment(out *[]string, seg *plan.Segment, ind string, sp *SegProf, se
 					}
 					*out = append(*out, ind+"  "+n)
 				}
+				if oi == 0 && ti == 0 {
+					if seg.CSERecord {
+						*out = append(*out, ind+"  [cse: record survivors]")
+					}
+					if seg.CSEFrom != nil {
+						*out = append(*out, ind+"  [cse: shared scan]")
+					}
+				}
 			}
 			if s.Where != nil {
 				line(out, ind, "Filter ("+fmtExpr(s.Where)+")", at(opEsts, len(s.Ops)), at(opRows, len(s.Ops)))

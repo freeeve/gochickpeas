@@ -58,6 +58,17 @@ type Segment struct {
 	// typed column pass, falling back to the general chain when any
 	// expression declines classification.
 	ColAgg bool
+	// Cross-segment scan CSE (cse_scan.go). CSERecord tells this
+	// segment's fused pass to publish its filtered-scan survivor ids on
+	// the eval context; CSEFrom points a consumer at its recorder (the
+	// memo key); CSEResidual holds the consumer's unshared conjuncts
+	// (nil when the scans filter identically); CSEParamConds lists
+	// auto-param slot pairs that must hold equal values this execution
+	// for the share to be sound.
+	CSERecord     bool
+	CSEFrom       *Segment
+	CSEResidual   ast.Expr
+	CSEParamConds [][2]uint32
 }
 
 // Plan is a compiled query: one segment pipeline per UNION branch, the
