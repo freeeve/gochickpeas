@@ -250,6 +250,15 @@ func (a *aggregator) finalizeTopK(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[
 		scope[c] = i
 	}
 	topk := newTopKRows(bound, nk, proj.OrderBy)
+	// Non-column keys compile once and evaluate per group -- the
+	// interpreted per-group walk was a measured Q4 cost (two key
+	// expressions times every (country, forum) group).
+	keyC := make([]RowEval, nk)
+	for k := range proj.OrderBy {
+		if colIdx[k] < 0 {
+			keyC[k] = compileEval(ctx, proj.OrderBy[k].Expr, scope)
+		}
+	}
 	scratch := make([]value.Value, stride)
 	kbuf := make([]value.Value, nk)
 	// Retention is bounded (plus eviction turnover), so size chunks to the
@@ -262,7 +271,7 @@ func (a *aggregator) finalizeTopK(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[
 			if ci := colIdx[k]; ci >= 0 {
 				kbuf[k] = scratch[ci]
 			} else {
-				kbuf[k] = eval.Eval(ctx, proj.OrderBy[k].Expr, scratch[:nCols], scope)
+				kbuf[k] = keyC[k].Eval(ctx, scratch[:nCols], scope)
 			}
 		}
 		if !topk.wouldAccept(kbuf) {

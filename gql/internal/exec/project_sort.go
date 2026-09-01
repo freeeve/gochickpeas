@@ -34,6 +34,14 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 	for i, c := range proj.Columns {
 		scope[c] = base + i
 	}
+	// Non-column keys compile once and evaluate per row (the interpreted
+	// per-row walk was a measured cost on group-heavy sorts).
+	keyC := make([]RowEval, nk)
+	for k := range proj.OrderBy {
+		if colIdx[k] < 0 {
+			keyC[k] = compileEval(ctx, proj.OrderBy[k].Expr, scope)
+		}
+	}
 	keys := make([]value.Value, len(outs)*nk)
 	var rowbuf []value.Value
 	for i := range outs {
@@ -48,7 +56,7 @@ func sortRowsByOrder(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, m
 				rowbuf = append(rowbuf, outs[i]...)
 				built = true
 			}
-			keys[i*nk+k] = eval.Eval(ctx, proj.OrderBy[k].Expr, rowbuf, scope)
+			keys[i*nk+k] = keyC[k].Eval(ctx, rowbuf, scope)
 		}
 	}
 	idx := make([]int, len(outs))
