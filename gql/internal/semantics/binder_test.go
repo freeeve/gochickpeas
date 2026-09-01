@@ -159,6 +159,56 @@ func TestCheckRefs(t *testing.T) {
 	mustBindErr(t, CheckRefs(&ast.MapLit{Fields: []ast.MapField{{Key: "k", Val: &ast.Var{Name: "zz"}}}}, scope), "zz")
 }
 
+// TestQuantifiedRelReadInSubquery pins the loud rejection: a fresh
+// quantified-hop rel variable read inside an EXISTS/COUNT WHERE or a
+// comprehension is a bind error (the walk dedups to endpoints and
+// cannot bind per-path lists -- pre-rejection the read evaluated null
+// and silently mis-answered). Unused vars and outer-bound names stay
+// accepted.
+func TestQuantifiedRelReadInSubquery(t *testing.T) {
+	scope := map[string]int{"a": 0}
+	one := uint64(1)
+	two := uint64(2)
+	qpat := func() *ast.Pattern {
+		return &ast.Pattern{Start: ast.NodePat{Var: "a"},
+			Hops: []ast.PatternHop{{
+				Rel:  ast.RelPat{Var: "k", Dir: ast.DirOut, Types: []string{"K"}, Length: &ast.VarLength{Min: &one, Max: &two}},
+				Node: ast.NodePat{Var: "x"},
+			}}}
+	}
+	readK := &ast.Binary{Op: ast.OpGt,
+		LHS: &ast.Func{Name: "size", Args: []ast.Expr{&ast.Var{Name: "k"}}},
+		RHS: &ast.Lit{Value: ast.IntLit(1)}}
+
+	mustBindErr(t, CheckRefs(&ast.Exists{Pattern: qpat(), Where: readK}, scope), "quantified hop")
+	mustBindErr(t, CheckRefs(&ast.CountSub{Pattern: qpat(), Where: readK}, scope), "quantified hop")
+	mustBindErr(t, CheckRefs(&ast.PatternComp{Pattern: qpat(), Proj: &ast.Var{Name: "k"}}, scope), "quantified hop")
+	mustBindErr(t, CheckRefs(&ast.PatternComp{Pattern: qpat(), Where: readK, Proj: &ast.Var{Name: "x"}}, scope), "quantified hop")
+
+	// Unused: the var may be NAMED, just not read.
+	if err := CheckRefs(&ast.Exists{Pattern: qpat(), Where: &ast.Prop{Var: "x", Key: "y"}}, scope); err != nil {
+		t.Fatalf("unused quantified rel var rejected: %v", err)
+	}
+	if err := CheckRefs(&ast.Exists{Pattern: qpat()}, scope); err != nil {
+		t.Fatalf("where-less subquery rejected: %v", err)
+	}
+	// An outer-bound name resolves to the outer binding; reads keep
+	// working (prior behavior, unchanged).
+	outerScope := map[string]int{"a": 0, "k": 1}
+	if err := CheckRefs(&ast.Exists{Pattern: qpat(), Where: readK}, outerScope); err != nil {
+		t.Fatalf("outer-bound name rejected: %v", err)
+	}
+	// A FIXED hop's rel var read stays accepted (the rel-slot binding).
+	fpat := &ast.Pattern{Start: ast.NodePat{Var: "a"},
+		Hops: []ast.PatternHop{{
+			Rel:  ast.RelPat{Var: "k", Dir: ast.DirOut, Types: []string{"K"}},
+			Node: ast.NodePat{Var: "x"},
+		}}}
+	if err := CheckRefs(&ast.Exists{Pattern: fpat, Where: &ast.Binary{Op: ast.OpGt, LHS: &ast.Prop{Var: "k", Key: "w"}, RHS: &ast.Lit{Value: ast.IntLit(1)}}}, scope); err != nil {
+		t.Fatalf("fixed-hop rel read rejected: %v", err)
+	}
+}
+
 func TestCheckRefsSkippingAgg(t *testing.T) {
 	scope := map[string]int{"a": 0}
 	// count(*) binds nothing.

@@ -216,14 +216,18 @@ func CheckRefs(e ast.Expr, scope map[string]int) error {
 		return checkSubqueryRefs(n.Pattern, n.Where, scope)
 	case *ast.PatternComp:
 		// The pattern's node/rel variables are bound for both the filter
-		// and projection; outer variables remain in scope.
+		// and projection; outer variables remain in scope. Quantified-hop
+		// rel variables get the same read rejection as subquery WHEREs.
 		inner := scopeWithPatternVars(scope, n.Pattern)
 		if n.Where != nil {
 			if err := CheckRefs(n.Where, inner); err != nil {
 				return err
 			}
 		}
-		return CheckRefs(n.Proj, inner)
+		if err := CheckRefs(n.Proj, inner); err != nil {
+			return err
+		}
+		return checkQuantifiedRelReads(n.Pattern, scope, inner, n.Where, n.Proj)
 	case *ast.Cost:
 		if err := req(n.From, scope); err != nil {
 			return err
@@ -329,12 +333,47 @@ func CheckRefsSkippingAgg(e ast.Expr, scope map[string]int) error {
 }
 
 // checkSubqueryRefs validates an EXISTS/COUNT subquery's WHERE: it may
-// reference outer variables plus the pattern's own.
+// reference outer variables plus the pattern's own, except a quantified
+// hop's relationship variable, which the subquery walk cannot bind (it
+// dedups to endpoints; a per-path rel list would need path enumeration)
+// -- reading one is rejected loudly here rather than evaluating null,
+// the same treatment an unsupported subquery path bind already gets.
 func checkSubqueryRefs(p *ast.Pattern, where ast.Expr, scope map[string]int) error {
 	if where == nil {
 		return nil
 	}
-	return CheckRefs(where, scopeWithPatternVars(scope, p))
+	inner := scopeWithPatternVars(scope, p)
+	if err := CheckRefs(where, inner); err != nil {
+		return err
+	}
+	return checkQuantifiedRelReads(p, scope, inner, where)
+}
+
+// checkQuantifiedRelReads rejects a read of any fresh quantified-hop rel
+// variable in the given expressions. Detection reuses CheckRefs: the
+// full-scope pass above succeeded, so a failure with the variable
+// removed can only mean the expression reads it.
+func checkQuantifiedRelReads(p *ast.Pattern, outer, inner map[string]int, exprs ...ast.Expr) error {
+	for i := range p.Hops {
+		rv := p.Hops[i].Rel.Var
+		if p.Hops[i].Rel.Length == nil || rv == "" {
+			continue
+		}
+		if _, isOuter := outer[rv]; isOuter {
+			continue
+		}
+		reduced := cloneScope(inner)
+		delete(reduced, rv)
+		for _, e := range exprs {
+			if e == nil {
+				continue
+			}
+			if CheckRefs(e, reduced) != nil {
+				return bindErrf("relationship variable `%s` is bound by a quantified hop inside a subquery and cannot be read there; bind the path in an outer MATCH instead", rv)
+			}
+		}
+	}
+	return nil
 }
 
 // scopeWithPatternVars clones scope and adds the pattern's node and rel
