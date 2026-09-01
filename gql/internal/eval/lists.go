@@ -4,9 +4,11 @@
 package eval
 
 import (
+	chickpeas "github.com/freeeve/gochickpeas"
 	"maps"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -46,21 +48,29 @@ func (c *Ctx) scopeFor(node ast.Expr, row []value.Value, slots map[string]int, v
 	return s.row, s.slots, s.idx
 }
 
-// listSeq is a list-source view for the list-scope forms: either a
-// materialized list or a lazily iterated integer range, so a range(a,b[,s])
-// source -- the common quantifier counter idiom -- never materializes a
-// boxed list per evaluation.
+// listSeq is a list-source view for the list-scope forms: a materialized
+// list, a lazily iterated integer range, or a path's node/rel backing
+// arrays -- so range(a,b[,s]) and the nodes(p)/rels(p) idioms (the
+// per-path predicate family) never materialize a boxed list per
+// evaluation.
 type listSeq struct {
 	items       []value.Value
 	start, step int64
 	n           int
 	ranged      bool
+	pathNodes   []chickpeas.NodeID
+	pathRels    []uint32
 }
 
 // at returns element i without bounds concern beyond [0, n).
 func (s *listSeq) at(i int) value.Value {
-	if s.ranged {
+	switch {
+	case s.ranged:
 		return value.Int(s.start + int64(i)*s.step)
+	case s.pathNodes != nil:
+		return value.Node(graph.NodeID(s.pathNodes[i]))
+	case s.pathRels != nil:
+		return value.Rel(s.pathRels[i])
 	}
 	return s.items[i]
 }
@@ -92,6 +102,20 @@ func listSource(ctx *Ctx, src ast.Expr, row []value.Value, slots map[string]int)
 				n = int((end-start)/step) + 1
 			}
 			return listSeq{start: start, step: step, n: n, ranged: true}, true
+		}
+	}
+	// nodes(p)/rels(p) over an actual path iterate its backing arrays
+	// directly; every other argument shape (a var-length rel list, a
+	// single rel, null) keeps the eager evaluation below, whose result
+	// unwraps as a list or declines exactly as before.
+	if f, isFunc := src.(*ast.Func); isFunc && !f.Star && len(f.Args) == 1 {
+		if op, known := ResolveFuncOp(f.Name); known && (op == FuncNodes || op == FuncRels) {
+			if ns, rs, isPath := Eval(ctx, f.Args[0], row, slots).AsPath(); isPath {
+				if op == FuncNodes {
+					return listSeq{pathNodes: ns, n: len(ns)}, true
+				}
+				return listSeq{pathRels: rs, n: len(rs)}, true
+			}
 		}
 	}
 	items, ok := Eval(ctx, src, row, slots).AsList()
