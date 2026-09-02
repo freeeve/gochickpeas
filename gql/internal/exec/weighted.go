@@ -192,9 +192,15 @@ type wpParent struct {
 type wpScratch struct {
 	dist   map[nodeHops]float64
 	parent map[nodeHops]wpParent
-	heap   wpHeap
-	nbrs   []graph.NodeID
-	poss   []uint32
+	// The unbounded search keys state by node alone; dedicated
+	// uint32-keyed maps take the runtime's fast32 access path instead
+	// of hashing a 12-byte struct per relaxation (the struct hashing
+	// profiled ~20% of Q19's search).
+	udist   map[graph.NodeID]float64
+	uparent map[graph.NodeID]wpParent
+	heap    wpHeap
+	nbrs    []graph.NodeID
+	poss    []uint32
 }
 
 // weightedShortestPath is the min-cost path a..b honoring the hop cap
@@ -235,16 +241,18 @@ func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID
 	if len(remaining) == 0 {
 		return out
 	}
-	unbounded := sp.Max == nil
-	cap := uint64(ctx.G.NodeCount())
-	if sp.Max != nil {
-		cap = *sp.Max
-	}
-	key := func(n graph.NodeID, hops uint64) nodeHops {
-		if unbounded {
-			return nodeHops{n, 0}
+	if sp.Max == nil {
+		// Plain Dijkstra: state keys by node alone, through the
+		// runtime's fast uint32 map path.
+		if ws.udist == nil {
+			ws.udist = map[graph.NodeID]float64{}
+			ws.uparent = map[graph.NodeID]wpParent{}
 		}
-		return nodeHops{n, hops}
+		clear(ws.udist)
+		clear(ws.uparent)
+		wpSearch(ctx, a, remaining, out, sp, rm, hop, w, ws, uint64(ctx.G.NodeCount()),
+			func(n graph.NodeID, hops uint64) graph.NodeID { return n }, ws.udist, ws.uparent)
+		return out
 	}
 	if ws.dist == nil {
 		ws.dist = map[nodeHops]float64{}
@@ -252,8 +260,22 @@ func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID
 	}
 	clear(ws.dist)
 	clear(ws.parent)
-	dist, parent := ws.dist, ws.parent
-	dist[nodeHops{a, 0}] = 0
+	wpSearch(ctx, a, remaining, out, sp, rm, hop, w, ws, *sp.Max,
+		func(n graph.NodeID, hops uint64) nodeHops { return nodeHops{n, hops} }, ws.dist, ws.parent)
+	return out
+}
+
+// wpSearch is the search loop shared by both keyings: the bounded form
+// keys state on (node, hops) -- a hop cap makes cost non-monotonic per
+// node -- and the unbounded form on the node alone. The key function
+// must be injective per distinct state and map the start to
+// key(a, 0); generic instantiation keeps the unbounded form on the
+// uint32-specialized map operations.
+func wpSearch[K comparable](ctx *eval.Ctx, a graph.NodeID, remaining map[graph.NodeID]bool, out map[graph.NodeID]*nodesRels,
+	sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, w *pathWeight, ws *wpScratch, cap uint64,
+	key func(graph.NodeID, uint64) K, dist map[K]float64, parent map[K]wpParent) {
+	startKey := key(a, 0)
+	dist[startKey] = 0
 	h := &ws.heap
 	*h = append((*h)[:0], wpState{cost: 0, node: a, hops: 0})
 	for len(*h) > 0 {
@@ -268,7 +290,7 @@ func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID
 			var rels []uint32
 			nodes = append(nodes, st.node)
 			cur := k
-			for cur.node != a || cur.hops != 0 {
+			for cur != startKey {
 				p := parent[cur]
 				rels = append(rels, p.rel)
 				nodes = append(nodes, p.prev)
@@ -280,7 +302,7 @@ func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID
 			}
 			out[st.node] = &nodesRels{nodes: nodes, rels: rels}
 			if len(remaining) == 0 {
-				return out
+				return
 			}
 		}
 		if st.hops >= cap {
@@ -305,5 +327,4 @@ func weightedShortestPaths(ctx *eval.Ctx, a graph.NodeID, targets []graph.NodeID
 			}
 		}
 	}
-	return out
 }
