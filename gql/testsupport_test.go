@@ -138,6 +138,12 @@ func ReplyForest(t *testing.T) *chickpeas.Snapshot {
 // differential harness every end-to-end test runs through.
 func RunBoth(t *testing.T, g *chickpeas.Snapshot, q string) *Rows {
 	t.Helper()
+	// Leg-vacuity guard (the claim-audit's rule 1): if a prior test
+	// leaked the interpreter toggle, BOTH legs below interpret and the
+	// differential compares a path against itself forever.
+	if forceInterp {
+		t.Fatal("forceInterp leaked true into RunBoth -- the compiled leg would interpret and the dual-path differential would be vacuous")
+	}
 	compiled, err := Run(g, q)
 	if err != nil {
 		t.Fatalf("query failed: %s\n%v", q, err)
