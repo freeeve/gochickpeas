@@ -1,26 +1,43 @@
 package chickpeas
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // Atoms is the immutable interned-string table of a snapshot: id -> string
-// with an O(1) reverse index. Atom 0 is always the empty string (the RCPG
+// with a reverse index. Atom 0 is always the empty string (the RCPG
 // convention: labels, rel types, property keys, and string property values
 // are all atom ids, and dense string columns encode missing as atom 0).
+// The reverse index is a SORTED PERMUTATION of the ids, not a map: ID()
+// runs a leftmost binary search (~20 string compares at a million
+// atoms), which is compile-time work -- matchers and constants resolve
+// strings once per plan, never per row -- while the map form cost ~50
+// bytes per atom resident (45.7 MB of SF1's footprint for its 909k
+// atoms, against 3.6 MB for the permutation).
 type Atoms struct {
 	strings []string
-	index   map[string]uint32
+	// sorted holds every atom id ordered by (string, id): binary search
+	// by string, then the first hit is the smallest id -- preserving the
+	// duplicates-keep-smallest-id contract the map form had.
+	sorted []uint32
 }
 
 // NewAtoms builds the table from an id-ordered string slice. When the slice
 // contains duplicates, the smallest id wins reverse lookups.
 func NewAtoms(strings []string) *Atoms {
-	index := make(map[string]uint32, len(strings))
-	for id, s := range strings {
-		if _, seen := index[s]; !seen {
-			index[s] = uint32(id)
-		}
+	sorted := make([]uint32, len(strings))
+	for i := range sorted {
+		sorted[i] = uint32(i)
 	}
-	return &Atoms{strings: strings, index: index}
+	sort.Slice(sorted, func(i, j int) bool {
+		a, b := strings[sorted[i]], strings[sorted[j]]
+		if a != b {
+			return a < b
+		}
+		return sorted[i] < sorted[j]
+	})
+	return &Atoms{strings: strings, sorted: sorted}
 }
 
 // Len is the number of atoms.
@@ -38,8 +55,13 @@ func (a *Atoms) Resolve(id uint32) (string, bool) {
 
 // ID returns the atom id for a string; ok is false when never interned.
 func (a *Atoms) ID(s string) (uint32, bool) {
-	id, ok := a.index[s]
-	return id, ok
+	i := sort.Search(len(a.sorted), func(i int) bool {
+		return a.strings[a.sorted[i]] >= s
+	})
+	if i < len(a.sorted) && a.strings[a.sorted[i]] == s {
+		return a.sorted[i], true
+	}
+	return 0, false
 }
 
 // Strings exposes the id-ordered table (for serialization). Callers must
