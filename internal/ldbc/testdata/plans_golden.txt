@@ -439,9 +439,9 @@ Segment 0
   NodeByProperty (s:Account {id = 4877400870343548146})
   Argument (s)
   VarExpand (s)<-[:transfer*1..3]-(o) [mono createTime desc]
-  Project [s, o, p, ts]
+  Project [s, o, __prels_p, ts]
 Segment 1
-  Project [s, o, p, ts]
+  Project [s, o, __prels_p, ts]
 Segment 2
   Aggregate (group=[o]; min(size(ts)))
 Segment 3
@@ -457,9 +457,9 @@ Segment 0
   Expand (per)-[:own]->(oa)
   Argument (oa)
   VarExpand (oa)<-[:transfer*1..3]-(acct) [mono createTime desc]
-  Project [per, oa, acct, p, ts]
+  Project [per, oa, acct, __prels_p, ts]
 Segment 1
-  Project [per, oa, acct, p, ts]
+  Project [per, oa, acct, __prels_p, ts]
   Filter (acct <> oa)
 Segment 2
   Distinct Project [oa, acct]
