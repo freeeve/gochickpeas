@@ -49,7 +49,8 @@ func TestRunRangeHintMatchesFullSearch(t *testing.T) {
 		if n > 0 {
 			offsets[n] = uint32(len(nbrs))
 		}
-		r := buildTypedRuns(offsets, nbrs, types, nil, 1, len(nbrs))
+		rt := compressRelTypes(types)
+		r := buildTypedRuns(offsets, nbrs, &rt, nil, 1, len(nbrs))
 		// Every id in range, plus ids past the hint's coverage.
 		for id := 0; id <= n+130; id++ {
 			wantLo, wantHi := refRunRange(r.nodes, NodeID(id))

@@ -29,10 +29,10 @@ type Snapshot struct {
 
 	outOffsets []uint32
 	outNbrs    []NodeID
-	outTypes   []RelType
+	outTypes   relTypes
 	inOffsets  []uint32
 	inNbrs     []NodeID
-	inTypes    []RelType
+	inTypes    relTypes
 
 	// inToOut maps an incoming CSR position to the outgoing CSR position of
 	// the same rel, so rel properties (stored by outgoing position) read
@@ -211,7 +211,7 @@ func (g *Snapshot) getInToOut() []uint32 {
 	g.inToOutOnce.Do(func() {
 		if g.inToOut == nil {
 			g.inToOut = computeInToOutFromCSR(
-				g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
+				g.outOffsets, g.outNbrs, &g.outTypes, g.inOffsets, g.inNbrs, &g.inTypes)
 		}
 	})
 	return g.inToOut
@@ -239,7 +239,7 @@ func (g *Snapshot) buildRelStats() map[string]RelStats {
 	for u := 0; u < n; u++ {
 		lo, hi := g.outOffsets[u], g.outOffsets[u+1]
 		for i := lo; i < hi; i++ {
-			t := g.outTypes[i]
+			t := g.outTypes.At(i)
 			e, ok := byType[t]
 			if !ok {
 				e = &acc{src: nodeset.New(), tgt: nodeset.New()}

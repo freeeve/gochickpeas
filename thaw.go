@@ -108,7 +108,7 @@ func thawRels(b *Builder, g *Snapshot) []uint32 {
 	srcOf := ownersFromOffsets(g.outOffsets)
 	for _, outPos := range order {
 		u, v := srcOf[outPos], g.outNbrs[outPos]
-		idx, err := b.addRelTyped(u, v, g.outTypes[outPos])
+		idx, err := b.addRelTyped(u, v, g.outTypes.At(outPos))
 		thawMust(err)
 		outToStaging[outPos] = uint32(idx)
 	}
@@ -140,7 +140,7 @@ func thawRelOrder(g *Snapshot) []uint32 {
 	inToOut := g.inToOut
 	if inToOut == nil {
 		inToOut = computeInToOutFromCSR(
-			g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
+			g.outOffsets, g.outNbrs, &g.outTypes, g.inOffsets, g.inNbrs, &g.inTypes)
 	}
 	outToIn := make([]uint32, m)
 	for inPos, outPos := range inToOut {

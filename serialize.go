@@ -30,8 +30,8 @@ import (
 // replaces the former per-group map (one entry plus a slice per distinct
 // rel key -- the dominant load-time cost at tens of millions of rels)
 // with a handful of flat arrays.
-func computeInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes []RelType,
-	inOffsets []uint32, inNbrs []NodeID, inTypes []RelType) []uint32 {
+func computeInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes *relTypes,
+	inOffsets []uint32, inNbrs []NodeID, inTypes *relTypes) []uint32 {
 	m := len(outNbrs)
 	inToOut := make([]uint32, m)
 	if m == 0 {
@@ -41,8 +41,8 @@ func computeInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes []Rel
 	outSrc := ownersOf(outOffsets, m)
 	inDst := ownersOf(inOffsets, m)
 	maxType := RelType(0)
-	for _, t := range outTypes {
-		maxType = max(maxType, t)
+	for p := uint32(0); int(p) < outTypes.Len(); p++ {
+		maxType = max(maxType, outTypes.At(p))
 	}
 
 	outPos := ascending(m)
@@ -51,10 +51,10 @@ func computeInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes []Rel
 	counts := make([]uint32, max(n, int(maxType)+1)+1)
 	// LSD: least-significant key first, so the LAST pass's key is most
 	// significant; both sides end in the same (src, dst, type) order.
-	countingPass(outPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(outTypes[p]) })
+	countingPass(outPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(outTypes.At(p)) })
 	countingPass(outPos, tmp, counts, n, func(p uint32) uint32 { return uint32(outNbrs[p]) })
 	countingPass(outPos, tmp, counts, n, func(p uint32) uint32 { return outSrc[p] })
-	countingPass(inPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(inTypes[p]) })
+	countingPass(inPos, tmp, counts, int(maxType)+1, func(p uint32) uint32 { return uint32(inTypes.At(p)) })
 	countingPass(inPos, tmp, counts, n, func(p uint32) uint32 { return inDst[p] })
 	countingPass(inPos, tmp, counts, n, func(p uint32) uint32 { return uint32(inNbrs[p]) })
 
@@ -273,13 +273,13 @@ func (g *Snapshot) graphSectionWith(nodeCols, relCols bool) *rcpg.GraphSection {
 		return out
 	}
 
-	outTypes := make([]uint32, len(g.outTypes))
-	for i, t := range g.outTypes {
-		outTypes[i] = t.ID()
+	outTypes := make([]uint32, g.outTypes.Len())
+	for i := range outTypes {
+		outTypes[i] = g.outTypes.At(uint32(i)).ID()
 	}
-	inTypes := make([]uint32, len(g.inTypes))
-	for i, t := range g.inTypes {
-		inTypes[i] = t.ID()
+	inTypes := make([]uint32, g.inTypes.Len())
+	for i := range inTypes {
+		inTypes[i] = g.inTypes.At(uint32(i)).ID()
 	}
 
 	// The existence section is emitted only for a genuinely sparse id
@@ -321,14 +321,8 @@ func FromGraphSection(section *rcpg.GraphSection) *Snapshot {
 	g.inOffsets = section.InOffsets
 	g.inNbrs = section.InNbrs
 
-	g.outTypes = make([]RelType, len(section.OutTypes))
-	for i, t := range section.OutTypes {
-		g.outTypes[i] = RelType(t)
-	}
-	g.inTypes = make([]RelType, len(section.InTypes))
-	for i, t := range section.InTypes {
-		g.inTypes[i] = RelType(t)
-	}
+	g.outTypes = compressRelTypesU32(section.OutTypes)
+	g.inTypes = compressRelTypesU32(section.InTypes)
 
 	if section.Existence != nil {
 		g.existence = nodeset.FromBitmap(section.Existence)

@@ -103,7 +103,7 @@ func (g *Snapshot) WriteNQuads(w io.Writer) error {
 			relTerm := rdf.NewIRI(nqRelIDPrefix + strconv.FormatUint(uint64(pos), 10))
 			buf = enc.AppendQuad(buf, rdf.Quad{
 				S: subj,
-				P: typeTerms[g.outTypes[pos]],
+				P: typeTerms[g.outTypes.At(pos)],
 				O: rdf.NewIRI(nqNodePrefix + strconv.FormatUint(uint64(g.outNbrs[pos]), 10)),
 				G: relTerm,
 			})

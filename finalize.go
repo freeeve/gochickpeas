@@ -227,8 +227,9 @@ func buildCSRDirection(n int, rels [][2]NodeID, relTypes []RelType, deg []uint32
 // 96243bb).
 func buildTypeIndex(g *Snapshot) {
 	byType := map[RelType][]uint32{}
-	for pos, t := range g.outTypes {
-		byType[t] = append(byType[t], uint32(pos))
+	for pos := uint32(0); int(pos) < g.outTypes.Len(); pos++ {
+		t := g.outTypes.At(pos)
+		byType[t] = append(byType[t], pos)
 	}
 	for t, positions := range byType {
 		bm := roaring.New()
@@ -384,14 +385,18 @@ func (b *Builder) Finalize(indexProperties ...string) *Snapshot {
 		// state, so they run as a parallel join; results are deterministic.
 		parallel.Join(
 			func() {
-				g.outOffsets, g.outNbrs, g.outTypes, relToOutCSR =
+				var wide []RelType
+				g.outOffsets, g.outNbrs, wide, relToOutCSR =
 					buildCSRDirection(n, b.rels, b.relTypes, b.degOut, 0)
+				g.outTypes = compressRelTypes(wide)
 			},
 			func() {
 				// The in-direction rel->CSR map fed only the eager inToOut
 				// build, now lazy (getInToOut re-derives from the CSR).
-				g.inOffsets, g.inNbrs, g.inTypes, _ =
+				var wide []RelType
+				g.inOffsets, g.inNbrs, wide, _ =
 					buildCSRDirection(n, b.rels, b.relTypes, b.degIn, 1)
+				g.inTypes = compressRelTypes(wide)
 			},
 			func() {
 				b.finalizeLabels(g, n, plan)

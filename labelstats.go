@@ -33,12 +33,12 @@ func (g *Snapshot) labelDegreeStats(l Label) *labelDegreeEntry {
 			u := int(id)
 			if u+1 < len(g.outOffsets) {
 				for i := g.outOffsets[u]; i < g.outOffsets[u+1]; i++ {
-					e.out[g.outTypes[i]]++
+					e.out[g.outTypes.At(i)]++
 				}
 			}
 			if u+1 < len(g.inOffsets) {
 				for i := g.inOffsets[u]; i < g.inOffsets[u+1]; i++ {
-					e.in[g.inTypes[i]]++
+					e.in[g.inTypes.At(i)]++
 				}
 			}
 		}

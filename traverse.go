@@ -186,7 +186,7 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 				dst = append(dst, tr.nbrs[rlo:rhi]...)
 			} else {
 				for k := lo; k < hi; k++ {
-					if m.matches(g.outTypes[k]) {
+					if m.matches(g.outTypes.At(uint32(k))) {
 						dst = append(dst, g.outNbrs[k])
 					}
 				}
@@ -208,7 +208,7 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 				dst = append(dst, tr.nbrs[rlo:rhi]...)
 			} else {
 				for k := lo; k < hi; k++ {
-					if m.matches(g.inTypes[k]) {
+					if m.matches(g.inTypes.At(uint32(k))) {
 						dst = append(dst, g.inNbrs[k])
 					}
 				}
@@ -245,7 +245,7 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 				}
 			} else {
 				for k := lo; k < hi; k++ {
-					if m.matches(g.outTypes[k]) && !yield(g.outNbrs[k]) {
+					if m.matches(g.outTypes.At(uint32(k))) && !yield(g.outNbrs[k]) {
 						return
 					}
 				}
@@ -275,7 +275,7 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 				}
 			} else {
 				for k := lo; k < hi; k++ {
-					if m.matches(g.inTypes[k]) && !yield(g.inNbrs[k]) {
+					if m.matches(g.inTypes.At(uint32(k))) && !yield(g.inNbrs[k]) {
 						return
 					}
 				}
@@ -328,7 +328,7 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 				}
 			} else {
 				for k := lo; k < hi; k++ {
-					t := g.outTypes[k]
+					t := g.outTypes.At(uint32(k))
 					if !m.matches(t) {
 						continue
 					}
@@ -363,7 +363,7 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 			} else {
 				ito := g.getInToOut() // nil (no rel props) leaves raw positions
 				for k := lo; k < hi; k++ {
-					t := g.inTypes[k]
+					t := g.inTypes.At(uint32(k))
 					if !m.matches(t) {
 						continue
 					}

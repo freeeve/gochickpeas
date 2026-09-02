@@ -16,6 +16,15 @@ import (
 // refInToOutFromCSR is the original map-based pairing, retained as the
 // reference: the k-th (src, dst, type) rel of the incoming CSR pairs with
 // the k-th of the outgoing CSR.
+// relTypesWide materializes a vector's wide form for reference-model use.
+func relTypesWide(r *relTypes) []RelType {
+	out := make([]RelType, r.Len())
+	for i := range out {
+		out[i] = r.At(uint32(i))
+	}
+	return out
+}
+
 func refInToOutFromCSR(outOffsets []uint32, outNbrs []NodeID, outTypes []RelType,
 	inOffsets []uint32, inNbrs []NodeID, inTypes []RelType) []uint32 {
 	type relKey struct {
@@ -71,8 +80,8 @@ func TestComputeInToOutFromCSRMatchesReference(t *testing.T) {
 			}
 		}
 		g := b.Finalize()
-		got := computeInToOutFromCSR(g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
-		want := refInToOutFromCSR(g.outOffsets, g.outNbrs, g.outTypes, g.inOffsets, g.inNbrs, g.inTypes)
+		got := computeInToOutFromCSR(g.outOffsets, g.outNbrs, &g.outTypes, g.inOffsets, g.inNbrs, &g.inTypes)
+		want := refInToOutFromCSR(g.outOffsets, g.outNbrs, relTypesWide(&g.outTypes), g.inOffsets, g.inNbrs, relTypesWide(&g.inTypes))
 		if len(got) != len(want) {
 			t.Fatalf("round %d: len %d vs %d", round, len(got), len(want))
 		}

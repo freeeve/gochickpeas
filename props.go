@@ -71,10 +71,10 @@ func (g *Snapshot) RelEndpoints(pos uint32) (source, target NodeID, ok bool) {
 // RelProp. O(1): a direct index into the outgoing-CSR type array, then the
 // atom table resolves the id to its interned name.
 func (g *Snapshot) RelTypeAt(pos uint32) (string, bool) {
-	if int(pos) >= len(g.outTypes) {
+	if int(pos) >= g.outTypes.Len() {
 		return "", false
 	}
-	return g.atoms.Resolve(uint32(g.outTypes[pos]))
+	return g.atoms.Resolve(uint32(g.outTypes.At(pos)))
 }
 
 // Col resolves a reader for the node property key; ok is false when no such

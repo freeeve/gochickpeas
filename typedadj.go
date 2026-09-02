@@ -113,7 +113,7 @@ func (p *typedPair) view(out bool) *typedCSR {
 	if out {
 		p.outOnce.Do(func() {
 			if p.g.typedAboveFloor(p.t) {
-				p.out = buildTypedCSR(p.g.outOffsets, p.g.outNbrs, p.g.outTypes, nil, p.t)
+				p.out = buildTypedCSR(p.g.outOffsets, p.g.outNbrs, &p.g.outTypes, nil, p.t)
 			}
 		})
 		return p.out
@@ -123,7 +123,7 @@ func (p *typedPair) view(out bool) *typedCSR {
 			// The incoming view bakes the inToOut position mapping in, so
 			// property reads index the stored (outgoing) positions directly;
 			// an absent mapping keeps raw indexes, mirroring relsYield.
-			p.in = buildTypedCSR(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.getInToOut(), p.t)
+			p.in = buildTypedCSR(p.g.inOffsets, p.g.inNbrs, &p.g.inTypes, p.g.getInToOut(), p.t)
 		}
 	})
 	return p.in
@@ -141,14 +141,14 @@ func (p *typedPair) runs(out bool) *typedRuns {
 	if out {
 		p.outRunsOnce.Do(func() {
 			if !p.g.typedAboveFloor(p.t) {
-				p.outRuns = buildTypedRuns(p.g.outOffsets, p.g.outNbrs, p.g.outTypes, nil, p.t, p.typeCount())
+				p.outRuns = buildTypedRuns(p.g.outOffsets, p.g.outNbrs, &p.g.outTypes, nil, p.t, p.typeCount())
 			}
 		})
 		return p.outRuns
 	}
 	p.inRunsOnce.Do(func() {
 		if !p.g.typedAboveFloor(p.t) {
-			p.inRuns = buildTypedRuns(p.g.inOffsets, p.g.inNbrs, p.g.inTypes, p.g.getInToOut(), p.t, p.typeCount())
+			p.inRuns = buildTypedRuns(p.g.inOffsets, p.g.inNbrs, &p.g.inTypes, p.g.getInToOut(), p.t, p.typeCount())
 		}
 	})
 	return p.inRuns
@@ -166,7 +166,7 @@ func (p *typedPair) typeCount() int {
 // linear pass, keeping the owning node per entry, then indexes the owner
 // array with the bucket hint. poss carries each kept relationship's
 // property-read position, mapped like buildTypedCSR's.
-func buildTypedRuns(offsets []uint32, nbrs []NodeID, types []RelType, posMap []uint32, t RelType, count int) *typedRuns {
+func buildTypedRuns(offsets []uint32, nbrs []NodeID, types *relTypes, posMap []uint32, t RelType, count int) *typedRuns {
 	r := &typedRuns{
 		nodes: make([]uint32, 0, count),
 		nbrs:  make([]NodeID, 0, count),
@@ -178,7 +178,7 @@ func buildTypedRuns(offsets []uint32, nbrs []NodeID, types []RelType, posMap []u
 	}
 	for u := 0; u < n; u++ {
 		for k := int(offsets[u]); k < int(offsets[u+1]); k++ {
-			if types[k] == t {
+			if types.At(uint32(k)) == t {
 				pos := uint32(k)
 				if k < len(posMap) {
 					pos = posMap[k]
@@ -266,14 +266,14 @@ func (g *Snapshot) typedPairFor(t RelType) *typedPair {
 // linear pass, preserving per-node relative order. poss carries each kept
 // relationship's property-read position: the raw index, or posMap[index]
 // when a mapping is supplied (the incoming direction's inToOut).
-func buildTypedCSR(offsets []uint32, nbrs []NodeID, types []RelType, posMap []uint32, t RelType) *typedCSR {
+func buildTypedCSR(offsets []uint32, nbrs []NodeID, types *relTypes, posMap []uint32, t RelType) *typedCSR {
 	n := len(offsets) - 1
 	if n < 0 {
 		return &typedCSR{offsets: []uint32{0}}
 	}
 	count := 0
-	for _, x := range types {
-		if x == t {
+	for p := uint32(0); int(p) < types.Len(); p++ {
+		if types.At(p) == t {
 			count++
 		}
 	}
@@ -285,7 +285,7 @@ func buildTypedCSR(offsets []uint32, nbrs []NodeID, types []RelType, posMap []ui
 	for u := 0; u < n; u++ {
 		tc.offsets[u] = uint32(len(tc.nbrs))
 		for k := int(offsets[u]); k < int(offsets[u+1]); k++ {
-			if types[k] == t {
+			if types.At(uint32(k)) == t {
 				pos := uint32(k)
 				if k < len(posMap) {
 					pos = posMap[k]

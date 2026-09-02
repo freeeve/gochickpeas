@@ -148,7 +148,7 @@ func (g *Snapshot) checkFunctionalVia(t RelType, dir Direction) bool {
 	for v := 0; v+1 < len(offsets); v++ {
 		n := 0
 		for k := offsets[v]; k < offsets[v+1]; k++ {
-			if types[k] == t {
+			if types.At(k) == t {
 				n++
 				if n > 1 {
 					return false
@@ -175,7 +175,7 @@ func (g *Snapshot) checkTerminalOnly(t RelType, dir Direction, l Label) bool {
 			continue
 		}
 		for k := offsets[id]; k < offsets[id+1]; k++ {
-			if types[k] == t {
+			if types.At(k) == t {
 				return false
 			}
 		}

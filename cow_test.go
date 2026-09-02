@@ -46,6 +46,15 @@ func firstSlicePointer(v reflect.Value) uintptr {
 
 // cowSource builds the snapshot the copy-on-write tests thaw from: two
 // labels, node columns of two dtypes, a rel column, and parallel rels.
+// relTypesShareBacking reports whether two relTypes vectors share their
+// dominant backing array (idx for the palette form, wide otherwise).
+func relTypesShareBacking(a, b *relTypes) bool {
+	if a.wide != nil || b.wide != nil {
+		return sameBacking(a.wide, b.wide)
+	}
+	return sameBacking(a.idx, b.idx)
+}
+
 func cowSource(t testing.TB) *Snapshot {
 	t.Helper()
 	b := NewBuilder(8, 8)
@@ -111,10 +120,10 @@ func assertCSRAliased(t *testing.T, got, src *Snapshot, want bool) {
 	}{
 		{"outOffsets", sameBacking(got.outOffsets, src.outOffsets)},
 		{"outNbrs", sameBacking(got.outNbrs, src.outNbrs)},
-		{"outTypes", sameBacking(got.outTypes, src.outTypes)},
+		{"outTypes", relTypesShareBacking(&got.outTypes, &src.outTypes)},
 		{"inOffsets", sameBacking(got.inOffsets, src.inOffsets)},
 		{"inNbrs", sameBacking(got.inNbrs, src.inNbrs)},
-		{"inTypes", sameBacking(got.inTypes, src.inTypes)},
+		{"inTypes", relTypesShareBacking(&got.inTypes, &src.inTypes)},
 		{"inToOut", sameBacking(got.inToOut, src.inToOut)},
 	}
 	for _, c := range checks {
