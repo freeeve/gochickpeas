@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -276,6 +277,7 @@ func TestCacheSizeHeuristicCalibration(t *testing.T) {
 		runtime.ReadMemStats(&ms)
 		return ms.HeapAlloc
 	}
+	var ratios []float64
 	c := NewPlanCache(DefaultCacheBytes)
 	if _, err := c.Run(g, "MATCH (x:Person) RETURN count(x) AS n"); err != nil {
 		t.Fatal(err)
@@ -301,10 +303,15 @@ func TestCacheSizeHeuristicCalibration(t *testing.T) {
 		totalRet += after - before
 		totalEst += cp.estBytes
 		kept++
+		ratios = append(ratios, float64(cp.estBytes)/float64(after-before))
+		t.Logf("  plan %2d: est %6d retained %7d ratio %.2f", kept, cp.estBytes, after-before, float64(cp.estBytes)/float64(after-before))
 	}
 	if kept < 10 {
 		t.Fatalf("only %d measured fills -- measures nothing", kept)
 	}
+	sort.Float64s(ratios)
+	t.Logf("per-query ratio spread: min %.2f  median %.2f  max %.2f",
+		ratios[0], ratios[len(ratios)/2], ratios[len(ratios)-1])
 	ratio := float64(totalEst) / float64(totalRet)
 	t.Logf("%d plans: est %d vs retained %d -> est/actual %.2fx (mean retained %.1f KB/plan)",
 		kept, totalEst, totalRet, ratio, float64(totalRet)/float64(kept)/1024)
