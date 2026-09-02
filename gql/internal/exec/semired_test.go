@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"slices"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -71,10 +72,11 @@ func TestConstChainAbsorb(t *testing.T) {
 	if got != 5 {
 		t.Fatalf("absorbed rows = %d, want 5", got)
 	}
+	absorbed := runQueryRows(t, g, q)
 	disableConstChainAbsorb = true
 	defer func() { disableConstChainAbsorb = false }()
-	if general := runQuery(t, g, q); general != got {
-		t.Fatalf("general evaluation kept %d rows, absorbed kept %d", general, got)
+	if general := runQueryRows(t, g, q); !slices.Equal(general, absorbed) {
+		t.Fatalf("absorption changes results:\ngeneral:  %v\nabsorbed: %v", general, absorbed)
 	}
 }
 
@@ -86,11 +88,14 @@ func TestConstChainAbsorbCommaIdentity(t *testing.T) {
 	g := semiredFixture(t)
 	q := "MATCH (x:Country {name: 'India'}) RETURN x NEXT " +
 		"MATCH (a:Person)-[:KNOWS]-(b:Person), (b)-[:LOC]->(:City)-[:PART]->(x) RETURN DISTINCT a, b"
-	got := runQuery(t, g, q)
+	absorbed := runQueryRows(t, g, q)
+	if len(absorbed) != 5 {
+		t.Fatalf("comma form absorbed rows = %d, want 5", len(absorbed))
+	}
 	disableConstChainAbsorb = true
 	defer func() { disableConstChainAbsorb = false }()
-	if general := runQuery(t, g, q); general != got || got != 5 {
-		t.Fatalf("comma form: absorbed=%d general=%d, want 5=5", got, general)
+	if general := runQueryRows(t, g, q); !slices.Equal(general, absorbed) {
+		t.Fatalf("comma form absorption changes results:\ngeneral:  %v\nabsorbed: %v", general, absorbed)
 	}
 }
 

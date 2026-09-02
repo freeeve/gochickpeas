@@ -35,14 +35,26 @@ func topkFixture(t *testing.T, n int) *chickpeas.Snapshot {
 }
 
 // runGateBoth runs q with the payload gate on, then off, returning both
-// row lists -- the true differential (runBoth's knob is colagg's).
+// row lists in engine order (the fixtures' ORDER BY is the contract
+// under test). Both legs are vacuity-checked: the gated leg must build
+// payloads through the gate, the ungated leg must not touch it -- a
+// switch that failed to reach its mechanism would otherwise compare a
+// path against itself forever.
 func runGateBoth(t *testing.T, g *chickpeas.Snapshot, q string) (gated, ungated []string) {
 	t.Helper()
+	before := topkPayloadBuilds
 	disableTopkGate = false
-	gated, _ = runBoth(t, g, q)
+	gated, _ = runBothOrdered(t, g, q)
+	if topkPayloadBuilds == before {
+		t.Fatal("gated leg never built through the gate -- the differential would be vacuous")
+	}
+	before = topkPayloadBuilds
 	disableTopkGate = true
-	ungated, _ = runBoth(t, g, q)
+	ungated, _ = runBothOrdered(t, g, q)
 	disableTopkGate = false
+	if topkPayloadBuilds != before {
+		t.Fatal("ungated leg reached the gate -- the off switch is not isolating the mechanism")
+	}
 	return gated, ungated
 }
 
@@ -50,7 +62,7 @@ func TestTopKPayloadGate(t *testing.T) {
 	g := topkFixture(t, 500)
 	before := topkPayloadBuilds
 	disableTopkGate = false
-	rows, _ := runBoth(t, g,
+	rows, _ := runBothOrdered(t, g,
 		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 5")
 	if len(rows) != 5 {
 		t.Fatalf("rows = %d, want 5", len(rows))
@@ -93,7 +105,7 @@ func TestTopKRowEvalKeyGated(t *testing.T) {
 	g := topkFixture(t, 500)
 	before := topkPayloadBuilds
 	disableTopkGate = false
-	rows, _ := runBoth(t, g,
+	rows, _ := runBothOrdered(t, g,
 		"MATCH (m:N) RETURN m.name AS name ORDER BY m.v + 1 ASC LIMIT 4")
 	if len(rows) != 4 {
 		t.Fatalf("rows = %d, want 4", len(rows))
@@ -123,8 +135,19 @@ func TestTopKRowEvalKeyGated(t *testing.T) {
 // general sort.
 func TestTopKComputedAliasKeyUngated(t *testing.T) {
 	g := topkFixture(t, 100)
-	gated, ungated := runGateBoth(t, g,
-		"MATCH (m:N) RETURN m.v + 1 AS w ORDER BY w + 1 DESC LIMIT 4")
+	// A decline pin, not a neutrality differential: the shape must not
+	// gate on EITHER leg (both run build-then-offer, so the comparison
+	// below only guards the switch's no-op-ness on unguarded shapes).
+	q := "MATCH (m:N) RETURN m.v + 1 AS w ORDER BY w + 1 DESC LIMIT 4"
+	before := topkPayloadBuilds
+	disableTopkGate = false
+	gated, _ := runBothOrdered(t, g, q)
+	disableTopkGate = true
+	ungated, _ := runBothOrdered(t, g, q)
+	disableTopkGate = false
+	if topkPayloadBuilds != before {
+		t.Fatal("computed-alias key gated -- the decline pin no longer holds")
+	}
 	if fmt.Sprint(gated) != fmt.Sprint(ungated) {
 		t.Fatalf("computed-alias-key path diverged:\n%v\nvs\n%v", gated, ungated)
 	}
@@ -162,14 +185,21 @@ func TestSPScratchEpochSafety(t *testing.T) {
 }
 
 // runTypedBoth runs q with the typed prefilter on, then off (boxed gated
-// flow), returning both row lists in engine order.
+// flow), returning both row lists in engine order. The off leg is
+// vacuity-checked at zero rejects; the on leg's engagement is asserted
+// by the callers that expect it (an unclassifiable key set legitimately
+// runs boxed on both legs).
 func runTypedBoth(t *testing.T, g *chickpeas.Snapshot, q string) (typed, boxed []string) {
 	t.Helper()
 	disableTypedSink = false
-	typed, _ = runBoth(t, g, q)
+	typed, _ = runBothOrdered(t, g, q)
+	before := typedSinkRejects
 	disableTypedSink = true
-	boxed, _ = runBoth(t, g, q)
+	boxed, _ = runBothOrdered(t, g, q)
 	disableTypedSink = false
+	if typedSinkRejects != before {
+		t.Fatal("disabled leg took typed rejects -- the off switch is not isolating the mechanism")
+	}
 	return typed, boxed
 }
 
@@ -180,7 +210,7 @@ func runTypedBoth(t *testing.T, g *chickpeas.Snapshot, q string) (typed, boxed [
 func TestTypedSinkPrefilter(t *testing.T) {
 	g := topkFixture(t, 500)
 	before := typedSinkRejects
-	rows, _ := runBoth(t, g,
+	rows, _ := runBothOrdered(t, g,
 		"MATCH (m:N) RETURN m.v AS v, m.name AS name ORDER BY v ASC LIMIT 5")
 	if len(rows) != 5 {
 		t.Fatalf("rows = %d, want 5", len(rows))

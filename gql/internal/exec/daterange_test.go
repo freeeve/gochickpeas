@@ -1,6 +1,9 @@
 package exec
 
 import (
+	"fmt"
+	"slices"
+	"sort"
 	"testing"
 
 	chickpeas "github.com/freeeve/gochickpeas"
@@ -43,6 +46,32 @@ func dateRangeFixture(t *testing.T) graph.Graph {
 }
 
 // runQuery plans and executes q, returning the row count.
+// runQueryRows renders every row -- neutrality differentials compare
+// VALUES, not counts: a mechanism that yields the right number of rows
+// with a wrong cell (the rel-var-binding bug's exact signature) passes
+// any count comparison.
+func runQueryRows(t *testing.T, g graph.Graph, q string) []string {
+	t.Helper()
+	ast, err := parser.Parse(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan.Build(ast, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Execute(&eval.Ctx{G: g}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fmt.Sprint(r))
+	}
+	sort.Strings(out)
+	return out
+}
+
 func runQuery(t *testing.T, g graph.Graph, q string) int {
 	t.Helper()
 	ast, err := parser.Parse(q)
@@ -78,10 +107,11 @@ func TestDateEqRangeRewrite(t *testing.T) {
 		t.Fatalf("rewritten form kept %d rows, want 3 (midnight, last-ms, mid-day)", got)
 	}
 
+	rewritten := runQueryRows(t, g, q)
 	disableDateRangeRewrite = true
 	defer func() { disableDateRangeRewrite = false }()
-	if general := runQuery(t, g, q); general != got {
-		t.Fatalf("general evaluation kept %d rows, rewrite kept %d -- the rewrite changes results", general, got)
+	if general := runQueryRows(t, g, q); !slices.Equal(general, rewritten) {
+		t.Fatalf("rewrite changes results:\ngeneral: %v\nrewrite: %v", general, rewritten)
 	}
 }
 

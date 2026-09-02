@@ -59,8 +59,21 @@ func colAggFixture(t *testing.T) *chickpeas.Snapshot {
 	return b.Finalize("colagg")
 }
 
-// runBoth runs q fused and general, returning both row sets rendered.
+// runBoth runs q fused and general, returning both row sets rendered as
+// sorted multisets -- for shapes whose output order is NOT contractual.
+// A query carrying ORDER BY belongs on runBothOrdered instead: sorting
+// both sides of an ordered contract discards the ordering half of what
+// the differential proves (the engagement-vs-neutrality audit's rule).
 func runBoth(t *testing.T, g *chickpeas.Snapshot, q string) (fused, general []string) {
+	return runBothCmp(t, g, q, false)
+}
+
+// runBothOrdered is runBoth in engine order, for ORDER BY contracts.
+func runBothOrdered(t *testing.T, g *chickpeas.Snapshot, q string) (fused, general []string) {
+	return runBothCmp(t, g, q, true)
+}
+
+func runBothCmp(t *testing.T, g *chickpeas.Snapshot, q string, ordered bool) (fused, general []string) {
 	t.Helper()
 	run := func() []string {
 		t.Helper()
@@ -81,7 +94,9 @@ func runBoth(t *testing.T, g *chickpeas.Snapshot, q string) (fused, general []st
 		for _, r := range rows {
 			out = append(out, fmt.Sprint(r))
 		}
-		sort.Strings(out)
+		if !ordered {
+			sort.Strings(out)
+		}
 		return out
 	}
 	disableColAgg = false
