@@ -52,3 +52,74 @@ func TestCanonCellVMatchesCanonCell(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyNormVAndVerifyCellV covers the value-side norm ops (msday
+// column fold, round3 recursion into lists, unwrap1, chaining, the
+// error cases) and the verify entry: hash-match, mismatch detail, and
+// norm-error propagation.
+func TestApplyNormVAndVerifyCellV(t *testing.T) {
+	day := int64(86_400_000)
+	rows := [][]value.Value{
+		{value.Int(3*day + 5), value.Float(1.23456), value.List([]value.Value{value.Float(2.71828), value.Int(7)})},
+	}
+	normed, err := ApplyNormV(rows, "col0:msday, round3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := normed[0][0].AsInt(); d != 3 {
+		t.Fatalf("msday fold = %d, want 3", d)
+	}
+	if f, _ := normed[0][1].AsFloat(); f != 1.235 {
+		t.Fatalf("round3 = %v, want 1.235", f)
+	}
+	inner, _ := normed[0][2].AsList()
+	if f, _ := inner[0].AsFloat(); f != 2.718 {
+		t.Fatalf("round3 in list = %v, want 2.718", f)
+	}
+	if n, _ := inner[1].AsInt(); n != 7 {
+		t.Fatalf("int in list changed: %v", inner[1])
+	}
+	// Identity norms return the rows as-is.
+	if same, _ := ApplyNormV(rows, "-"); &same[0] != &rows[0] {
+		t.Fatal("identity norm copied rows")
+	}
+	// unwrap1 lifts a single list cell into the row.
+	wrapped := [][]value.Value{{value.List([]value.Value{value.Int(1), value.Int(2)})}}
+	un, err := ApplyNormV(wrapped, "unwrap1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(un[0]) != 2 {
+		t.Fatalf("unwrap1 row width = %d, want 2", len(un[0]))
+	}
+	for _, bad := range []string{"colX:msday", "nope", "unwrap1"} {
+		src := rows
+		if bad == "unwrap1" {
+			src = [][]value.Value{{value.Int(1), value.Int(2)}} // two cells: needs one
+		}
+		if _, err := ApplyNormV(src, bad); err == nil {
+			t.Fatalf("norm %q accepted", bad)
+		}
+	}
+
+	// VerifyCellV: build the expected hash via the same machinery, then
+	// check match, mismatch detail, and error propagation.
+	cells := [][]value.Value{{value.Int(1), value.Str("x")}}
+	h, err := RowsHashV(cells)
+	if err != nil {
+		t.Fatal(err)
+	}
+	okRow := ManifestRow{RefHash: h, Norm: "-"}
+	match, detail, err := VerifyCellV(okRow, cells)
+	if err != nil || !match {
+		t.Fatalf("match = %v (%s, %v), want true", match, detail, err)
+	}
+	badRow := ManifestRow{RefHash: "0000000000000000", Norm: "-"}
+	match, detail, err = VerifyCellV(badRow, cells)
+	if err != nil || match || detail == "" {
+		t.Fatalf("mismatch = (%v, %q, %v), want false with detail", match, detail, err)
+	}
+	if _, _, err := VerifyCellV(ManifestRow{RefHash: h, Norm: "nope"}, cells); err == nil {
+		t.Fatal("bad norm verified without error")
+	}
+}
