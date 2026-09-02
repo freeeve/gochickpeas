@@ -278,33 +278,58 @@ func TestCacheSizeHeuristicCalibration(t *testing.T) {
 		return ms.HeapAlloc
 	}
 	var ratios []float64
-	c := NewPlanCache(DefaultCacheBytes)
-	if _, err := c.Run(g, "MATCH (x:Person) RETURN count(x) AS n"); err != nil {
-		t.Fatal(err)
-	}
-	var totalEst, kept int
+	var totalEst, kept, unstable int
 	var totalRet uint64
 	for _, q := range queries {
 		if _, err := RunUncached(g, q); err != nil {
 			continue
 		}
-		before := heap()
-		if _, err := c.Run(g, q); err != nil {
+		// Three repeats into FRESH caches per query: a one-pass spread
+		// cannot tell a genuinely wide ratio from an unstable
+		// measurement (the Rust sibling's per-query repeats found a
+		// ~20% swing that invalidated their aggregate). The median is
+		// the calibration input; a >1.2x max/min swing is logged as
+		// unstable and counted.
+		var rets []uint64
+		var est int
+		for r := 0; r < 3; r++ {
+			c := NewPlanCache(DefaultCacheBytes)
+			if _, err := c.Run(g, "MATCH (x:Person) RETURN count(x) AS n"); err != nil {
+				t.Fatal(err)
+			}
+			before := heap()
+			if _, err := c.Run(g, q); err != nil {
+				break
+			}
+			after := heap()
+			if after <= before {
+				continue
+			}
+			cp, _, ok := c.l1Lookup(q)
+			if !ok {
+				continue
+			}
+			rets = append(rets, after-before)
+			est = cp.estBytes
+		}
+		if len(rets) < 3 || est <= 0 {
 			continue
 		}
-		after := heap()
-		if after <= before {
-			continue
+		sort.Slice(rets, func(i, j int) bool { return rets[i] < rets[j] })
+		med := rets[1]
+		swing := float64(rets[2]) / float64(rets[0])
+		if swing > 1.2 {
+			unstable++
+			t.Logf("  UNSTABLE plan: est %d retained %v (%.2fx swing)", est, rets, swing)
 		}
-		cp, _, ok := c.l1Lookup(q)
-		if !ok {
-			continue
-		}
-		totalRet += after - before
-		totalEst += cp.estBytes
+		totalRet += med
+		totalEst += est
 		kept++
-		ratios = append(ratios, float64(cp.estBytes)/float64(after-before))
-		t.Logf("  plan %2d: est %6d retained %7d ratio %.2f", kept, cp.estBytes, after-before, float64(cp.estBytes)/float64(after-before))
+		ratios = append(ratios, float64(est)/float64(med))
+		t.Logf("  plan %2d: est %6d retained-median %7d ratio %.2f (swing %.2fx)", kept, est, med, float64(est)/float64(med), swing)
+	}
+	if unstable > kept/4 {
+		t.Fatalf("%d of %d plans unstable across repeats -- the calibration aggregate would pin noise", unstable, kept)
 	}
 	if kept < 10 {
 		t.Fatalf("only %d measured fills -- measures nothing", kept)
