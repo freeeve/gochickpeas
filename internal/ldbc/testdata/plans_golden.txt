@@ -443,7 +443,7 @@ Segment 0
 Segment 1
   Project [s, o, __prels_p, ts]
 Segment 2
-  Aggregate (group=[o]; min(size(ts)))
+  Aggregate (group=[o]; min(size(__prels_p)))
 Segment 3
   Argument (o)
   Expand (o)<-[:signIn]-(m)

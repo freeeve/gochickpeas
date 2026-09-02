@@ -152,6 +152,7 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	lowerColumnarAggs(segments)
 	linkScanCSE(segments)
 	elidePathBinds(segments)
+	reduceDeadLets(segments)
 	return segments, seg.Proj.Columns, nil
 }
 
