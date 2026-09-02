@@ -5,11 +5,16 @@ package gql
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
+	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
+	"github.com/freeeve/gochickpeas/internal/ldbc"
 )
 
 func TestAutoParamSharesPlanAcrossInlineLiterals(t *testing.T) {
@@ -225,5 +230,85 @@ func TestPlanCacheConcurrent(t *testing.T) {
 	}
 	if c.Len() != 1 {
 		t.Fatalf("four literals of one template share one plan, Len = %d", c.Len())
+	}
+}
+
+// TestCacheSizeHeuristicCalibration measures the estBytes heuristic
+// against GC-settled retained bytes per cached plan over the manifest's
+// BI corpus (the Rust sibling's method, their two traps applied: warm
+// on a query outside the measured set, exclude non-positive deltas --
+// a cache hit's zero looks like a tiny plan -- plus one of ours: each
+// query runs uncached FIRST so lazy property indexes and atom state
+// build outside the measured window). Gated like the parity gate; run
+// under the local-cpu lock (loads SF1). The assertion is a wide sanity
+// band, not a tuning target: est must be within [0.5x, 4x] of retained
+// in aggregate, so a representation change that silently re-scales the
+// heuristic (their near-shipped 8.7x under-estimate) fails loudly.
+func TestCacheSizeHeuristicCalibration(t *testing.T) {
+	manifest := os.Getenv("GOCHICKPEAS_GQL_MANIFEST")
+	if manifest == "" {
+		t.Skip("GOCHICKPEAS_GQL_MANIFEST unset")
+	}
+	rows, err := ldbc.LoadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sf1 = "sf1_canonical.rcpg"
+	var g *chickpeas.Snapshot
+	var queries []string
+	for _, r := range rows {
+		if r.Family == "BI" && strings.HasSuffix(r.Graph, sf1) && !r.Blocked() {
+			if g == nil {
+				if g, err = chickpeas.ReadRCPGFile(r.Graph); err != nil {
+					t.Fatal(err)
+				}
+			}
+			queries = append(queries, r.GQL)
+		}
+	}
+	if len(queries) < 10 {
+		t.Fatalf("only %d manifest queries -- measures nothing", len(queries))
+	}
+	heap := func() uint64 {
+		runtime.GC()
+		runtime.GC()
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		return ms.HeapAlloc
+	}
+	c := NewPlanCache(DefaultCacheBytes)
+	if _, err := c.Run(g, "MATCH (x:Person) RETURN count(x) AS n"); err != nil {
+		t.Fatal(err)
+	}
+	var totalEst, kept int
+	var totalRet uint64
+	for _, q := range queries {
+		if _, err := RunUncached(g, q); err != nil {
+			continue
+		}
+		before := heap()
+		if _, err := c.Run(g, q); err != nil {
+			continue
+		}
+		after := heap()
+		if after <= before {
+			continue
+		}
+		cp, _, ok := c.l1Lookup(q)
+		if !ok {
+			continue
+		}
+		totalRet += after - before
+		totalEst += cp.estBytes
+		kept++
+	}
+	if kept < 10 {
+		t.Fatalf("only %d measured fills -- measures nothing", kept)
+	}
+	ratio := float64(totalEst) / float64(totalRet)
+	t.Logf("%d plans: est %d vs retained %d -> est/actual %.2fx (mean retained %.1f KB/plan)",
+		kept, totalEst, totalRet, ratio, float64(totalRet)/float64(kept)/1024)
+	if ratio < 0.5 || ratio > 4 {
+		t.Fatalf("estBytes is %.2fx of retained bytes -- the heuristic's constant and its input have drifted apart (recalibrate them together)", ratio)
 	}
 }

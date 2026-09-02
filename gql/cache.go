@@ -133,7 +133,14 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 		if err != nil {
 			return nil, wrapStage(err)
 		}
-		cp = &cachedPlan{plan: p, mode: q.Mode, key: key, estBytes: 2048 + len(key)*8}
+		// estBytes is calibrated against GC-settled retained bytes over
+		// the BI corpus (TestCacheSizeHeuristicCalibration): slightly
+		// OVER actual (~1.05x), the right direction for a byte budget.
+		// The constant and its input are one unit -- changing the key
+		// representation (e.g. to a fixed-size hash) silently re-scales
+		// the estimate and must re-derive the constant in the same
+		// change; the calibration test's band fails loudly on drift.
+		cp = &cachedPlan{plan: p, mode: q.Mode, key: key, estBytes: 4096 + len(key)*12}
 		// Flip detection, once per template: compare the tree the cache
 		// would execute (post adaptive choice for this call's values)
 		// against sighted planning of the literal text. One extra plan
