@@ -177,6 +177,11 @@ func (d *distinctSet) addEntity(id uint32, isRel bool, m *flatset.U32Set) bool {
 			}
 		}
 		if d.smRel == isRel {
+			// The spill proves the group is past the inline size and still
+			// growing: seed the probe table at 64 slots (48 adds before the
+			// first grow), skipping the 16- and 32-slot rungs every spilled
+			// group otherwise climbs through.
+			m.Presize(64)
 			for _, s := range d.small[:d.nSmall] {
 				m.Add(s)
 			}
