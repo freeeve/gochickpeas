@@ -94,6 +94,33 @@ func (s *U32Set) Add(id uint32) bool {
 	return true
 }
 
+// Presize materializes an empty probe table with n slots (a power of
+// two), so a caller that knows the set is about to receive a burst --
+// e.g. an inline fast path spilling over -- skips the bottom rungs of
+// the growth ladder. No-op once any slot array exists; n slots accept
+// 3n/4 adds before the first grow.
+func (s *U32Set) Presize(n int) {
+	if s.slots != nil || n <= 16 {
+		return
+	}
+	if s.slots = s.Rec.take(n); s.slots == nil {
+		s.slots = make([]uint32, n)
+	}
+	s.mask = uint32(n - 1)
+}
+
+// Release files the slot array with the recycler and detaches it,
+// leaving the set empty-and-unbuilt. For owners that outlive one use of
+// their sets (a pooled accumulator), releasing at the end of a use makes
+// every array -- including each set's FINAL size, which grow never
+// returns -- available to the next use's ladder.
+func (s *U32Set) Release() {
+	s.Rec.put(s.slots)
+	s.slots = nil
+	s.mask = 0
+	s.count = 0
+}
+
 // Has reports whether id was added.
 func (s *U32Set) Has(id uint32) bool {
 	if s.slots == nil {

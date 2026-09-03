@@ -260,3 +260,81 @@ func TestU64MapForEach(t *testing.T) {
 		t.Fatal("Get of an absent key reported a hit")
 	}
 }
+
+func TestU32SetPresize(t *testing.T) {
+	var s U32Set
+	s.Presize(64)
+	if !s.Built() {
+		t.Fatal("Presize did not materialize the table")
+	}
+	allocs := testing.AllocsPerRun(1, func() {
+		s2 := U32Set{}
+		s2.Presize(64)
+		for i := uint32(0); i < 48; i++ {
+			s2.Add(i)
+		}
+	})
+	if allocs != 1 {
+		t.Fatalf("presized 48-add fill allocated %.0f, want 1 (the table)", allocs)
+	}
+	// Semantics unchanged: adds, dups, growth past the presized table.
+	var s3 U32Set
+	s3.Presize(64)
+	for i := uint32(0); i < 200; i++ {
+		if !s3.Add(i) {
+			t.Fatalf("Add(%d) reported dup", i)
+		}
+		if s3.Add(i) {
+			t.Fatalf("re-Add(%d) reported new", i)
+		}
+	}
+	if s3.Len() != 200 {
+		t.Fatalf("Len = %d, want 200", s3.Len())
+	}
+	// No-op on a built set and on tiny hints.
+	before := len(s3.slots)
+	s3.Presize(1024)
+	if len(s3.slots) != before {
+		t.Fatal("Presize resized a built set")
+	}
+	var s4 U32Set
+	s4.Presize(16)
+	if s4.Built() {
+		t.Fatal("Presize(16) should defer to Add's default table")
+	}
+}
+
+func TestU32SetRelease(t *testing.T) {
+	rec := &Recycle{}
+	a := U32Set{Rec: rec}
+	for i := uint32(0); i < 100; i++ {
+		a.Add(i)
+	}
+	final := len(a.slots)
+	a.Release()
+	if a.Built() || a.Len() != 0 {
+		t.Fatal("Release left the set built")
+	}
+	// The released FINAL array feeds the next set's ladder at its class.
+	b := U32Set{Rec: rec}
+	b.Presize(final)
+	got := len(b.slots)
+	if got != final {
+		t.Fatalf("presize after release allocated %d slots, want recycled %d", got, final)
+	}
+	for i := uint32(1000); i < 1100; i++ {
+		b.Add(i)
+	}
+	for i := uint32(1000); i < 1100; i++ {
+		if !b.Has(i) {
+			t.Fatalf("recycled table lost %d", i)
+		}
+	}
+	if b.Has(5) {
+		t.Fatal("recycled table leaked a stale entry")
+	}
+	// Releasing an unbuilt set is a no-op.
+	var c U32Set
+	c.Rec = rec
+	c.Release()
+}

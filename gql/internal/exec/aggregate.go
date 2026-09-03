@@ -8,6 +8,7 @@ package exec
 
 import (
 	"math"
+	"sync"
 
 	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
@@ -177,6 +178,11 @@ func (d *distinctSet) addEntity(id uint32, isRel bool, m *flatset.U32Set) bool {
 			}
 		}
 		if d.smRel == isRel {
+			// The spill proves the group is past the inline size and still
+			// growing: seed the probe table at 64 slots (48 adds before the
+			// first grow), skipping the 16- and 32-slot rungs every spilled
+			// group otherwise climbs through.
+			m.Presize(64)
 			for _, s := range d.small[:d.nSmall] {
 				m.Add(s)
 			}
@@ -237,8 +243,34 @@ type aggregator struct {
 	// groups: thousands of per-group sets climb the same growth ladder,
 	// and without pooling every doubling's outgrown array is garbage --
 	// the dominant allocation of entity-DISTINCT aggregations over large
-	// groups.
-	rec flatset.Recycle
+	// groups. Drawn from recPool on the first DISTINCT slab (non-distinct
+	// aggregations never touch the pool) so the arrays ALSO survive
+	// across aggregations: finalize harvests every set's final array back
+	// into it (grow only ever returns outgrown ones), so a warm run's
+	// ladder re-fills on recycled memory.
+	rec *flatset.Recycle
+}
+
+// recPool carries distinct-set recyclers -- and the slot arrays they
+// hold -- across aggregator lifetimes.
+var recPool = sync.Pool{New: func() any { return &flatset.Recycle{} }}
+
+// releaseDistinct returns every distinct set's slot array to the
+// recycler and the recycler to the pool. Called at finalize, which never
+// reads the sets (accumulators already hold their counts); the
+// aggregator must not route further rows after it.
+func (a *aggregator) releaseDistinct() {
+	if a.rec == nil {
+		return
+	}
+	for _, seen := range a.seenChunks {
+		for i := range seen {
+			seen[i].nodes.Release()
+			seen[i].rels.Release()
+		}
+	}
+	recPool.Put(a.rec)
+	a.rec = nil
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
@@ -376,10 +408,13 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
 		a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
 		if a.hasDistinct {
+			if a.rec == nil {
+				a.rec = recPool.Get().(*flatset.Recycle)
+			}
 			seen := make([]distinctSet, n*len(a.aggC))
 			for i := range seen {
-				seen[i].nodes.Rec = &a.rec
-				seen[i].rels.Rec = &a.rec
+				seen[i].nodes.Rec = a.rec
+				seen[i].rels.Rec = a.rec
 			}
 			a.seenChunks = append(a.seenChunks, seen)
 		}
