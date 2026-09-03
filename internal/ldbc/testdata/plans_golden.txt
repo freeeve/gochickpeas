@@ -187,9 +187,9 @@ Segment 0
   Project [s, expert, message, tag]
 Segment 1
   ShortestPath (s)-[*]-(expert)
-  Project [s, expert, message, tag, p, dist]
+  Project [s, expert, message, tag, __plen_p, dist]
 Segment 2
-  Project [s, expert, message, tag, p, dist]
+  Project [s, expert, message, tag, __plen_p, dist]
   Filter (dist >= 3)
 Segment 3
   Aggregate (group=[eid, tagName]; count(DISTINCT message))

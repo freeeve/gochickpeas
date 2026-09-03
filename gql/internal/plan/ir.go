@@ -293,6 +293,11 @@ type SpStage struct {
 	// expression (bound per candidate hop).
 	WeightVar string
 	RelPred   *RelHopPred
+	// LengthOnly marks a stage whose bound path is read only as
+	// length(p): the path slot binds the hop count as an integer and no
+	// path is materialized (no node chain, no relationship positions).
+	// Set by the plan-level elision; single unweighted form only.
+	LengthOnly bool
 }
 
 // ProcKind discriminates a CallProc.

@@ -146,6 +146,10 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	// WHERE (derived form), and a LET/FILTER split across segments
 	// (cross-segment form) uniformly.
 	pushMonoPreds(segments)
+	// The shortest-path materialization elision runs before gate
+	// injection so a hoisted GateStage copies the marked stage and the
+	// rewritten filter chain.
+	elideSpMaterialization(segments)
 	// Early shortest-path row gating runs after every other segment
 	// rewrite so it sees the final stage and boundary shapes.
 	injectSPGates(segments)

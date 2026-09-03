@@ -7,6 +7,8 @@
 package exec
 
 import (
+	"sync"
+
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -26,6 +28,10 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 	}
 	rm := ctx.G.CompileRelMatcher(sp.Types)
 	scr := newSPScratch()
+	defer spScratchPool.Put(scr)
+	if sp.LengthOnly {
+		return runSPLength(ctx, sp, rm, hop, scr, rows)
+	}
 	var out [][]value.Value
 
 	if sp.All {
@@ -158,6 +164,65 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 	return out
 }
 
+// runSPLength executes a LengthOnly stage: the path slot binds the
+// minimum hop count as an integer and nothing is materialized -- no node
+// chain, no relationship-position scan, no Path value, no per-pair path
+// memo. A source shared by two or more rows answers every one of its
+// targets off ONE bounded frontier walk (reading distances straight from
+// the scratch arrays before the next walk restamps them); a single-row
+// source keeps the cheaper early-exit bidirectional search.
+func runSPLength(ctx *eval.Ctx, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch, rows [][]value.Value) [][]value.Value {
+	srcTargets := map[graph.NodeID][]graph.NodeID{}
+	for _, row := range rows {
+		if a, ok1 := row[sp.From].AsNode(); ok1 {
+			if b, ok2 := row[sp.To].AsNode(); ok2 {
+				srcTargets[a] = append(srcTargets[a], b)
+			}
+		}
+	}
+	type pairKey struct{ a, b graph.NodeID }
+	dists := map[pairKey]uint32{}
+	for a, targets := range srcTargets {
+		if len(targets) < 2 {
+			continue
+		}
+		spWalk(ctx, a, sp, rm, hop, scr, func(v, u graph.NodeID, d uint64) bool {
+			scr.dist[v] = uint32(d)
+			return false
+		}, nil)
+		fs := scr.cur // the walk's forward stamp; a itself carries it too
+		for _, b := range targets {
+			if scr.gen[b] == fs {
+				dists[pairKey{a, b}] = scr.dist[b]
+			}
+		}
+	}
+	var out [][]value.Value
+	for _, row := range rows {
+		d := int64(-1)
+		if a, ok1 := row[sp.From].AsNode(); ok1 {
+			if b, ok2 := row[sp.To].AsNode(); ok2 {
+				if len(srcTargets[a]) >= 2 {
+					if dv, seen := dists[pairKey{a, b}]; seen {
+						d = int64(dv)
+					}
+				} else if dv, found := shortestDist(ctx, a, b, sp, rm, hop, scr); found {
+					d = int64(dv)
+				}
+			}
+		}
+		switch {
+		case d >= 0:
+			row[sp.PathSlot] = value.Int(d)
+			out = append(out, row)
+		case sp.Optional:
+			row[sp.PathSlot] = value.Null()
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 // nodesRels is one materialized path.
 type nodesRels struct {
 	nodes []graph.NodeID
@@ -193,7 +258,16 @@ type spScratch struct {
 	preds map[graph.NodeID][]graph.NodeID
 }
 
-func newSPScratch() *spScratch { return &spScratch{} }
+// spScratchPool recycles search state across stage runs: the dense
+// arrays are id-space sized (~36MB at SF1), so a fresh scratch per run
+// dominated a path stage's allocated bytes. Reuse is safe by
+// construction -- generation stamps invalidate stale slots (across
+// graphs too: a foreign stamp never matches a new one, and wraparound
+// clears), the frontier buffers are length-reset per walk, and the path
+// slabs only ever append past handed-out regions.
+var spScratchPool = sync.Pool{New: func() any { return &spScratch{} }}
+
+func newSPScratch() *spScratch { return spScratchPool.Get().(*spScratch) }
 
 // nodeSlice hands out a full-capacity n-slice from the node slab.
 func (scr *spScratch) nodeSlice(n int) []graph.NodeID {
@@ -364,6 +438,32 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 	if a == b {
 		return nodesRels{nodes: []graph.NodeID{a}}, true
 	}
+	fMeet, bMeet, found := shortestMeet(ctx, a, b, sp, rm, hop, scr)
+	if !found {
+		return nodesRels{}, false
+	}
+	nodes := stitchPath(scr, a, b, fMeet, bMeet)
+	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
+}
+
+// shortestDist is shortestPath without materialization: the minimum hop
+// count a..b, read off the meet's two half-depths. Backs the LengthOnly
+// stage form for single-row sources.
+func shortestDist(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch) (uint32, bool) {
+	if a == b {
+		return 0, true
+	}
+	fMeet, bMeet, found := shortestMeet(ctx, a, b, sp, rm, hop, scr)
+	if !found {
+		return 0, false
+	}
+	return scr.dist[fMeet] + scr.dist[bMeet] + 1, true
+}
+
+// shortestMeet runs the bidirectional frontier walk for a != b, leaving
+// the meet's forward- and backward-stamped nodes (with their half-depths
+// in scr.dist) for the caller to stitch or measure.
+func shortestMeet(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.RelMatcher, hop *hopFilter, scr *spScratch) (graph.NodeID, graph.NodeID, bool) {
 	fs := scr.begin(int(ctx.G.IDSpace()))
 	bs := fs + 1
 	scr.gen[a], scr.dist[a], scr.parent[a] = fs, 0, a
@@ -435,11 +535,7 @@ func shortestPath(ctx *eval.Ctx, a, b graph.NodeID, sp *plan.SpStage, rm *graph.
 			db++
 		}
 	}
-	if !found {
-		return nodesRels{}, false
-	}
-	nodes := stitchPath(scr, a, b, fMeet, bMeet)
-	return nodesRels{nodes: nodes, rels: pathRelPositions(ctx, scr, nodes, sp.Dir, rm, hop)}, true
+	return fMeet, bMeet, found
 }
 
 // stitchPath joins the forward parent chain a..fMeet and the backward
