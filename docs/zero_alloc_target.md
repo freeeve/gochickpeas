@@ -161,6 +161,17 @@ techniques land; cite the commit that proved the win.
     escape for per-row-work effects: a reproducible 1.3x timing win
     can carry an allocation delta of exactly zero.
 
+8. **A floor claim is a claim with a date and an instrument attached.**
+   Re-price standing floor/diagnosis notes when the MEASUREMENT METHOD
+   improves, not only when the code changes -- an attribution that
+   predates the current instrument is unverified by it. CR1's "fill
+   floor" note stood false for weeks because it predated the rate-1
+   delta-profile method; the re-price found 86.6k of 87.3k allocs/op in
+   two per-row allocations and removed 99% of them (411b7ed). Same-day
+   second instance: Q17's "diffuse" note hid a flipped cache template
+   re-planning per hit (71cf3ac, 13 queries). Convention shared with
+   rustychickpeas (their re-pricing-trigger framing; our finding).
+
 ## Where Go allocates, and what to do about it
 
 ### 1. Built-in maps in hot loops
@@ -214,6 +225,11 @@ lookups). Cures, roughly in order of effort:
   copies the backing but retained sub-slices stay valid). Here: the
   hash-join build table and group-join side table, Q17 -79% / Q12 -85%
   (058361a).
+
+- **Count maps (`m[k]++`) flatten the same way**: an `Inc` on the flat
+  u64 table (mint at 1, else `val++`) replaces the Go map's bucket
+  churn with one slice allocation per doubling. Here: the decorrelated
+  COUNT side tables, IC10 917 -> 400 allocs/op (374f69c).
 
 ### 2. Scratch allocated per call / per iteration
 
@@ -395,6 +411,48 @@ the honest label, not a latency claim; the same measurement showed the
 madvise CPU share was cross-thread scavenger work that best-of wall
 never saw. Proving commit: the aggregate slab-tier change (task 205
 round 5).
+
+### 12. Cross-run scratch: GC-lifetime pools vs bounded strong banks
+
+`sync.Pool` reuse works when the scratch's consumers run hot relative
+to collection cadence (the shortest-path search arrays, 2e5616d). It is
+structurally unfit when each USE allocates enough to force a collection
+between uses: the pool's two-GC lifetime frees the contents before the
+next use arrives -- measured 2% hit rate on aggregation distinct-set
+tables at ~79MB allocated per run (the instrumented failure is
+preserved on research/agg-rec-pool). The fix is a bounded,
+strongly-referenced bank (N items, max held bytes each, mutex on
+checkout/checkin -- two touches per use, not per element), with a
+harvest pass at every terminal returning each structure's FINAL backing
+array, which growth-time recycling alone never recovers (0358fc9: Q9
+2974 -> 282, Q4 3744 -> 1082, five more riders). Two portable details:
+check out lazily so non-users never touch the store (an early version
+leaked the full bank to non-users who never returned it), and harvest
+at ALL emitting terminals, not just the common one.
+
+### 13. Don't materialize what is only measured
+
+A value built per row so that a later expression can take its LENGTH is
+an integer wearing a container: when plan-level analysis proves every
+read of a path/list variable is `length(x)`/`size(x)`, bind the count
+and skip the construction entirely (shortest-path form: 2e5616d, Q10
+8801 -> 936; var-expand rel-list form: 411b7ed, CR1 87302 -> 758). The
+elision pass must run AFTER the reduction passes that collapse derived
+reads (comprehension-length, path-alias rewrites) to the bare size
+read, or it is sound but fireless; a live path bind is a hidden
+consumer no expression scan sees and must decline. Two-phase trial
+rewrite (all sites convert or none do) with an engagement counter, so
+differential tests cannot pass vacuously on a silent decline.
+
+### 14. An escape hatch that routes around a cache is a cache-shaped hole
+
+A "detected hazard -> bypass the cache" route re-pays the cached work
+per hit, forever, once a key is hazard-marked -- priced as rare when
+built, permanent in effect. If the routed work is deterministic per key
+(here: sighted planning per verbatim query text against a fixed
+snapshot), cache ITS result on the key's entry instead of exempting the
+key (71cf3ac: the flip-detection routing re-parsed and re-planned 13 of
+89 corpus queries on every hit; headline Q17 1383 -> 863).
 
 ## Anti-patterns and honest labels
 
