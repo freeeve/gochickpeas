@@ -395,3 +395,33 @@ func (m *U64Map) grow() {
 		m.slots[i] = sl
 	}
 }
+
+// Inc adds one to key's counter, minting it at 1 -- the flat-table
+// replacement for a Go count map's `m[k]++`, whose bucket churn
+// dominates table-building loops.
+func (m *U64Map) Inc(key uint64) {
+	if m.slots == nil {
+		m.slots = make([]u64Slot, 16)
+		m.mask = 15
+	}
+	if m.count*4 >= len(m.slots)*3 {
+		m.grow()
+	}
+	i := u64Hash(key) & m.mask
+	for m.slots[i].used {
+		if m.slots[i].key == key {
+			m.slots[i].val++
+			return
+		}
+		i = (i + 1) & m.mask
+	}
+	m.slots[i] = u64Slot{key: key, val: 1, used: true}
+	m.count++
+}
+
+// At is Get without the presence flag: absent keys read zero, matching a
+// Go count map's zero-value read.
+func (m *U64Map) At(key uint64) int {
+	v, _ := m.Get(key)
+	return v
+}

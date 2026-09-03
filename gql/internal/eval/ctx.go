@@ -5,6 +5,7 @@
 package eval
 
 import (
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -56,7 +57,7 @@ type Ctx struct {
 	// embed parameter slots stay valid for the Ctx's lifetime. DecorBuilds
 	// counts table builds across the execution -- tests assert a shared
 	// identity builds once, not once per sibling.
-	DecorTables map[DecorTableKey]map[graph.NodeID]int
+	DecorTables map[DecorTableKey]*flatset.U64Map
 	DecorBuilds int
 	// ScanCSE memoizes a CSE-marked recorder segment's filtered-scan
 	// survivor ids for later consumer segments in the same execution,

@@ -103,12 +103,12 @@ func TestSubqueryGroupCountMatchesPerEntity(t *testing.T) {
 					t.Fatalf("p%d naive count = %d, want %d", i+1, naive, tc.want[i])
 				}
 				// The decorrelation invariant: bucketed count == per-entity count.
-				if got := table[graph.NodeID(p)]; got != naive {
+				if got := table.At(uint64(p)); got != naive {
 					t.Fatalf("p%d decorrelated count = %d, per-entity = %d (must match)", i+1, got, naive)
 				}
 			}
 			// No spurious buckets (p3 authored an untagged message).
-			if got := table[graph.NodeID(persons[2])]; got != 0 {
+			if got := table.At(uint64(persons[2])); got != 0 {
 				t.Fatalf("p3 must not appear in the table, got %d", got)
 			}
 		})
@@ -151,7 +151,7 @@ func TestSubqueryGroupCountParallelEdges(t *testing.T) {
 	if naive != 2 {
 		t.Fatalf("naive count over two parallel HAS_CREATOR edges = %d, want 2", naive)
 	}
-	if got := table[graph.NodeID(p)]; got != naive {
+	if got := table.At(uint64(p)); got != naive {
 		t.Fatalf("decorrelated count = %d, naive = %d (parallel-edge multiplicity must match)", got, naive)
 	}
 }

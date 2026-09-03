@@ -141,7 +141,7 @@ type cSubquery struct {
 	// per-node: the canon is fixed once decided, so the anchor id alone
 	// determines the table.
 	decorLastAnchor uint32
-	decorLastTbl    map[chickpeas.NodeID]int
+	decorLastTbl    *flatset.U64Map
 	decorProbes     int
 }
 

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"reflect"
 
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -310,7 +311,7 @@ var subqWhereCompiles int
 // pattern, WHERE, and anchor share one table (see task 084 / rustychickpeas
 // 091). The result for a given entity equals SubqueryCount with that entity
 // bound -- the invariant the decor parity test asserts.
-func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []value.Value, outerSlots map[string]int, anchorVar, groupVar string) map[graph.NodeID]int {
+func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow []value.Value, outerSlots map[string]int, anchorVar, groupVar string) *flatset.U64Map {
 	// Anchor only anchorVar: a reduced outer scope that drops groupVar so the
 	// group endpoint enumerates through the DFS instead of binding.
 	outer := make(map[string]int, len(outerSlots))
@@ -324,7 +325,10 @@ func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow
 	for i := len(outerRow); i < len(s.row); i++ {
 		s.row[i] = value.Null()
 	}
-	out := map[graph.NodeID]int{}
+	// The count table is a flat probe map: a Go map's bucket churn while
+	// the table fills dominated the build's allocations (IC10: 531 of 917
+	// warm allocs/op were inserts here).
+	out := &flatset.U64Map{}
 	gslot, ok := s.slots[groupVar]
 	if !ok {
 		return out
@@ -333,7 +337,7 @@ func SubqueryGroupCount(ctx *Ctx, pattern *ast.Pattern, where ast.Expr, outerRow
 	s.dfs(ctx, 0, func() bool {
 		if wf == nil || wf(ctx, s.row).IsTruthy() {
 			if gid, ok := s.row[gslot].AsNode(); ok {
-				out[gid]++
+				out.Inc(uint64(gid))
 			}
 		}
 		return false

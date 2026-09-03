@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	chickpeas "github.com/freeeve/gochickpeas"
+	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/value"
@@ -289,7 +290,7 @@ func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string
 	// integer compare; only an anchor CHANGE consults the shared store
 	// (whose key hashes the canonical identity string).
 	if n.decorLastTbl != nil && n.decorLastAnchor == uint32(anchorNode) {
-		return n.decorLastTbl[groupNode], true
+		return n.decorLastTbl.At(uint64(groupNode)), true
 	}
 	key := eval.DecorTableKey{Canon: n.decorCanon, Anchor: uint32(anchorNode)}
 	n.decorProbes++
@@ -301,14 +302,14 @@ func decorCount(ctx *eval.Ctx, n *cSubquery, row []value.Value, slots map[string
 		}
 		tbl = eval.SubqueryGroupCount(ctx, n.pattern, n.where, row, slots, anchorVar, groupVar)
 		if ctx.DecorTables == nil {
-			ctx.DecorTables = map[eval.DecorTableKey]map[chickpeas.NodeID]int{}
+			ctx.DecorTables = map[eval.DecorTableKey]*flatset.U64Map{}
 		}
 		ctx.DecorTables[key] = tbl
 		n.decorBuilds++
 		ctx.DecorBuilds++
 	}
 	n.decorLastAnchor, n.decorLastTbl = uint32(anchorNode), tbl
-	return tbl[groupNode], true
+	return tbl.At(uint64(groupNode)), true
 }
 
 // cevalBin mirrors the interpreter's binary dispatch over compiled
