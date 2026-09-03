@@ -153,6 +153,7 @@ func (a *aggregator) forEachGroup(ctx *eval.Ctx, proj *plan.ProjPlan, fn func(ro
 	postSlots, postC := a.postCompile(ctx, proj)
 	stride := nCols + proj.NHidden
 	scratch := make([]value.Value, stride)
+	a.releaseDistinct()
 	for idx := 0; idx < a.nGroups; idx++ {
 		clear(scratch)
 		a.emitGroup(ctx, proj, idx, scratch, postC, postSlots)
@@ -167,6 +168,7 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
 		a.appendGroup(nil)
 	}
+	a.releaseDistinct()
 	nCols := len(proj.Returns)
 	postSlots, postC := a.postCompile(ctx, proj)
 	stride := nCols + proj.NHidden

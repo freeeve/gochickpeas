@@ -242,8 +242,37 @@ type aggregator struct {
 	// groups: thousands of per-group sets climb the same growth ladder,
 	// and without pooling every doubling's outgrown array is garbage --
 	// the dominant allocation of entity-DISTINCT aggregations over large
-	// groups.
-	rec flatset.Recycle
+	// groups. Checked out of aggRecBank on the first DISTINCT slab and
+	// checked back in -- with every set's FINAL array harvested -- at the
+	// terminals, so the arrays survive across aggregations too: a warm
+	// run's spill tables come from the previous run instead of the heap.
+	rec *flatset.Recycle
+}
+
+// aggRecBank carries distinct-set recyclers across aggregator lifetimes.
+// A strong bounded store, not a sync.Pool: aggregation-heavy queries
+// allocate enough per run that a GC lands between runs, and sync.Pool's
+// two-GC lifetime then frees the arrays before the next run can reuse
+// them (measured 2% hit rate; the full attempt is preserved on
+// research/agg-rec-pool). Bounds: 8 recyclers, 16MB filed each.
+var aggRecBank = flatset.NewRecycleBank(8, 16<<20)
+
+// releaseDistinct harvests every distinct set's slot array into the
+// recycler and banks it. Called at the group-emitting terminals, which
+// never read the sets (accumulators already hold their counts); the
+// aggregator must not route further rows after it.
+func (a *aggregator) releaseDistinct() {
+	if a.rec == nil {
+		return
+	}
+	for _, seen := range a.seenChunks {
+		for i := range seen {
+			seen[i].nodes.Release()
+			seen[i].rels.Release()
+		}
+	}
+	aggRecBank.Checkin(a.rec)
+	a.rec = nil
 }
 
 func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *aggregator {
@@ -381,10 +410,13 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
 		a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
 		if a.hasDistinct {
+			if a.rec == nil {
+				a.rec = aggRecBank.Checkout()
+			}
 			seen := make([]distinctSet, n*len(a.aggC))
 			for i := range seen {
-				seen[i].nodes.Rec = &a.rec
-				seen[i].rels.Rec = &a.rec
+				seen[i].nodes.Rec = a.rec
+				seen[i].rels.Rec = a.rec
 			}
 			a.seenChunks = append(a.seenChunks, seen)
 		}

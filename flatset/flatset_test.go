@@ -303,3 +303,92 @@ func TestU32SetPresize(t *testing.T) {
 		t.Fatal("Presize(16) should defer to Add's default table")
 	}
 }
+
+func TestU32SetRelease(t *testing.T) {
+	rec := &Recycle{}
+	a := U32Set{Rec: rec}
+	for i := uint32(0); i < 100; i++ {
+		a.Add(i)
+	}
+	final := len(a.slots)
+	a.Release()
+	if a.Built() || a.Len() != 0 {
+		t.Fatal("Release left the set built")
+	}
+	if rec.HeldBytes() < 4*final {
+		t.Fatalf("HeldBytes = %d, want at least the released %d", rec.HeldBytes(), 4*final)
+	}
+	// The released FINAL array feeds the next set's ladder at its class.
+	b := U32Set{Rec: rec}
+	b.Presize(final)
+	if len(b.slots) != final {
+		t.Fatalf("presize after release allocated %d slots, want recycled %d", len(b.slots), final)
+	}
+	for i := uint32(1000); i < 1100; i++ {
+		b.Add(i)
+	}
+	for i := uint32(1000); i < 1100; i++ {
+		if !b.Has(i) {
+			t.Fatalf("recycled table lost %d", i)
+		}
+	}
+	if b.Has(5) {
+		t.Fatal("recycled table leaked a stale entry")
+	}
+	// Releasing an unbuilt set is a no-op.
+	var c U32Set
+	c.Rec = rec
+	c.Release()
+}
+
+func TestRecycleBank(t *testing.T) {
+	bank := NewRecycleBank(2, 1<<20)
+	r1 := bank.Checkout()
+	s := U32Set{Rec: r1}
+	for i := uint32(0); i < 100; i++ {
+		s.Add(i)
+	}
+	s.Release()
+	held := r1.HeldBytes()
+	if held == 0 {
+		t.Fatal("release filed nothing")
+	}
+	bank.Checkin(r1)
+	if got := bank.Checkout(); got != r1 || got.HeldBytes() != held {
+		t.Fatal("checkout did not return the banked recycler intact")
+	}
+	// Capacity bound: only keep recyclers are retained.
+	bank.Checkin(r1)
+	r2, r3 := bank.Checkout(), &Recycle{}
+	_ = r2
+	bank.Checkin(r1)
+	bank.Checkin(r2)
+	bank.Checkin(r3) // third checkin dropped
+	a, b, c := bank.Checkout(), bank.Checkout(), bank.Checkout()
+	banked := 0
+	for _, r := range []*Recycle{a, b, c} {
+		if r == r1 || r == r2 {
+			banked++
+		}
+		if r == r3 {
+			t.Fatal("over-cap checkin was retained")
+		}
+	}
+	if banked != 2 {
+		t.Fatalf("retained %d banked recyclers, want 2", banked)
+	}
+	// Held-bytes bound: an over-sized recycler is dropped.
+	small := NewRecycleBank(2, 64)
+	big := small.Checkout()
+	bs := U32Set{Rec: big}
+	for i := uint32(0); i < 1000; i++ {
+		bs.Add(i)
+	}
+	bs.Release()
+	small.Checkin(big)
+	if got := small.Checkout(); got == big {
+		t.Fatal("over-held checkin was retained")
+	}
+	// Nil checkin is a no-op.
+	small.Checkin(nil)
+}

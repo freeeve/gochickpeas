@@ -7,6 +7,8 @@
 // aggregation path and the native benchmark kernels.
 package flatset
 
+import "sync"
+
 // U32Set is an open-addressing set of uint32 ids. Slots store id+1 so
 // zero marks empty -- an id of ^uint32(0) cannot occur for array-indexed
 // ids (node ids, CSR positions).
@@ -29,7 +31,13 @@ type U32Set struct {
 // purely the allocation and its GC/scavenger shadow.
 type Recycle struct {
 	byLog [26][][]uint32
+	// held tracks the bytes currently filed, so a bank can bound what a
+	// checked-in recycler retains.
+	held int
 }
+
+// HeldBytes is the total size of the filed arrays.
+func (r *Recycle) HeldBytes() int { return r.held }
 
 // take returns a zeroed array of exactly n slots (n a power of two), or
 // nil when the class is empty.
@@ -44,6 +52,7 @@ func (r *Recycle) take(n int) []uint32 {
 	}
 	a := free[len(free)-1]
 	r.byLog[lg] = free[:len(free)-1]
+	r.held -= 4 * len(a)
 	clear(a)
 	return a
 }
@@ -55,6 +64,7 @@ func (r *Recycle) put(a []uint32) {
 	}
 	lg := logOf(len(a))
 	r.byLog[lg] = append(r.byLog[lg], a)
+	r.held += 4 * len(a)
 }
 
 // logOf is log2 for the power-of-two slot sizes, clamped into byLog.
@@ -92,6 +102,67 @@ func (s *U32Set) Add(id uint32) bool {
 	s.slots[i] = k
 	s.count++
 	return true
+}
+
+// Release files the slot array with the recycler and detaches it,
+// leaving the set empty-and-unbuilt. For owners that outlive one use of
+// their sets (a banked recycler), releasing at the end of a use makes
+// every array -- including each set's FINAL size, which grow never
+// returns -- available to the next use's ladder.
+func (s *U32Set) Release() {
+	s.Rec.put(s.slots)
+	s.slots = nil
+	s.mask = 0
+	s.count = 0
+}
+
+// RecycleBank is a bounded, strongly-referenced store of recyclers,
+// carrying their filed arrays across the short-lived owners that use
+// them (one aggregation's distinct sets, say). A strong store -- unlike
+// sync.Pool -- survives garbage collections: measured on repeated
+// aggregation-heavy runs, sync.Pool's two-GC lifetime freed the arrays
+// between runs and the hit rate was ~2%, so every run re-allocated
+// every spilled set's table. The bounds are the memory contract: at
+// most keep recyclers are retained, and a checkin holding more than
+// maxHeld bytes is dropped for the collector instead.
+type RecycleBank struct {
+	mu      sync.Mutex
+	free    []*Recycle
+	keep    int
+	maxHeld int
+}
+
+// NewRecycleBank bounds the store at keep recyclers of at most maxHeld
+// filed bytes each.
+func NewRecycleBank(keep, maxHeld int) *RecycleBank {
+	return &RecycleBank{keep: keep, maxHeld: maxHeld}
+}
+
+// Checkout hands out a recycler -- a banked one when available, else
+// fresh. The caller owns it exclusively until Checkin.
+func (b *RecycleBank) Checkout() *Recycle {
+	b.mu.Lock()
+	if n := len(b.free); n > 0 {
+		r := b.free[n-1]
+		b.free = b.free[:n-1]
+		b.mu.Unlock()
+		return r
+	}
+	b.mu.Unlock()
+	return &Recycle{}
+}
+
+// Checkin returns a recycler to the bank; over-cap recyclers (count or
+// held bytes) are dropped for the collector.
+func (b *RecycleBank) Checkin(r *Recycle) {
+	if r == nil || r.held > b.maxHeld {
+		return
+	}
+	b.mu.Lock()
+	if len(b.free) < b.keep {
+		b.free = append(b.free, r)
+	}
+	b.mu.Unlock()
 }
 
 // Presize materializes an empty probe table with n slots (a power of
