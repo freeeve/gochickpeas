@@ -215,18 +215,34 @@ func stageMentionsVar(st Stage, name string) bool {
 // Rewritten spines are fresh nodes; untouched subtrees (and any
 // expression kind not modeled here that provably does not mention p)
 // pass through shared.
+// Rewrite modes: rwPath maps rels(p)/length(p) onto a rel-list column
+// (the named-path elision); rwPathLen admits ONLY length(p) -> synth (an
+// integer column); rwListSize admits ONLY size(x) -> synth over a list
+// variable (the rel-list length elision).
+const (
+	rwPath = iota
+	rwPathLen
+	rwListSize
+)
+
 func rewritePathUses(e ast.Expr, pv, synth string) (ast.Expr, bool) {
-	return rewritePathUsesM(e, pv, synth, false)
+	return rewritePathUsesM(e, pv, synth, rwPath)
 }
 
 // rewriteLenUses is the length-only form used by the shortest-path
 // materialization elision: length(p) -> synth (an integer column bound by
 // the stage), with ANY other read of p -- including rels(p) -- declining.
 func rewriteLenUses(e ast.Expr, pv, synth string) (ast.Expr, bool) {
-	return rewritePathUsesM(e, pv, synth, true)
+	return rewritePathUsesM(e, pv, synth, rwPathLen)
 }
 
-func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, bool) {
+// rewriteSizeUses is the list analogue: size(x) -> synth, with any other
+// read of the list variable declining.
+func rewriteSizeUses(e ast.Expr, pv, synth string) (ast.Expr, bool) {
+	return rewritePathUsesM(e, pv, synth, rwListSize)
+}
+
+func rewritePathUsesM(e ast.Expr, pv, synth string, mode int) (ast.Expr, bool) {
 	if e == nil {
 		return nil, true
 	}
@@ -251,8 +267,14 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 	case *ast.Func:
 		if !n.Star && len(n.Args) == 1 {
 			if v, isVar := n.Args[0].(*ast.Var); isVar && v.Name == pv {
-				if lenOnly {
+				switch mode {
+				case rwPathLen:
 					if eqFold(n.Name, "length") {
+						return &ast.Var{Name: synth}, true
+					}
+					return nil, false
+				case rwListSize:
+					if eqFold(n.Name, "size") {
 						return &ast.Var{Name: synth}, true
 					}
 					return nil, false
@@ -266,7 +288,7 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 				return nil, false
 			}
 		}
-		args, changed, ok := rewriteAllM(n.Args, pv, synth, lenOnly)
+		args, changed, ok := rewriteAllM(n.Args, pv, synth, mode)
 		if !ok {
 			return nil, false
 		}
@@ -275,8 +297,8 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.Func{Name: n.Name, Distinct: n.Distinct, Star: n.Star, Args: args}, true
 	case *ast.Binary:
-		l, lok := rewritePathUsesM(n.LHS, pv, synth, lenOnly)
-		r, rok := rewritePathUsesM(n.RHS, pv, synth, lenOnly)
+		l, lok := rewritePathUsesM(n.LHS, pv, synth, mode)
+		r, rok := rewritePathUsesM(n.RHS, pv, synth, mode)
 		if !lok || !rok {
 			return nil, false
 		}
@@ -285,7 +307,7 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.Binary{Op: n.Op, LHS: l, RHS: r}, true
 	case *ast.Unary:
-		x, ok := rewritePathUsesM(n.Expr, pv, synth, lenOnly)
+		x, ok := rewritePathUsesM(n.Expr, pv, synth, mode)
 		if !ok {
 			return nil, false
 		}
@@ -294,7 +316,7 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.Unary{Op: n.Op, Expr: x}, true
 	case *ast.IsNull:
-		x, ok := rewritePathUsesM(n.Expr, pv, synth, lenOnly)
+		x, ok := rewritePathUsesM(n.Expr, pv, synth, mode)
 		if !ok {
 			return nil, false
 		}
@@ -303,8 +325,8 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.IsNull{Expr: x, Negated: n.Negated}, true
 	case *ast.In:
-		x, xok := rewritePathUsesM(n.Expr, pv, synth, lenOnly)
-		l, lok := rewritePathUsesM(n.List, pv, synth, lenOnly)
+		x, xok := rewritePathUsesM(n.Expr, pv, synth, mode)
+		l, lok := rewritePathUsesM(n.List, pv, synth, mode)
 		if !xok || !lok {
 			return nil, false
 		}
@@ -313,8 +335,8 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.In{Expr: x, List: l}, true
 	case *ast.Index:
-		b, bok := rewritePathUsesM(n.Base, pv, synth, lenOnly)
-		i, iok := rewritePathUsesM(n.Idx, pv, synth, lenOnly)
+		b, bok := rewritePathUsesM(n.Base, pv, synth, mode)
+		i, iok := rewritePathUsesM(n.Idx, pv, synth, mode)
 		if !bok || !iok {
 			return nil, false
 		}
@@ -323,7 +345,7 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.Index{Base: b, Idx: i}, true
 	case *ast.ListExpr:
-		els, changed, ok := rewriteAllM(n.Elems, pv, synth, lenOnly)
+		els, changed, ok := rewriteAllM(n.Elems, pv, synth, mode)
 		if !ok {
 			return nil, false
 		}
@@ -335,8 +357,8 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		if n.Var == pv {
 			return e, true // shadowed inside
 		}
-		l, lok := rewritePathUsesM(n.List, pv, synth, lenOnly)
-		p, pok := rewritePathUsesM(n.Pred, pv, synth, lenOnly)
+		l, lok := rewritePathUsesM(n.List, pv, synth, mode)
+		p, pok := rewritePathUsesM(n.Pred, pv, synth, mode)
 		if !lok || !pok {
 			return nil, false
 		}
@@ -348,9 +370,9 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		if n.Var == pv {
 			return e, true
 		}
-		l, lok := rewritePathUsesM(n.List, pv, synth, lenOnly)
-		f, fok := rewritePathUsesM(n.Filter, pv, synth, lenOnly)
-		m, mok := rewritePathUsesM(n.Map, pv, synth, lenOnly)
+		l, lok := rewritePathUsesM(n.List, pv, synth, mode)
+		f, fok := rewritePathUsesM(n.Filter, pv, synth, mode)
+		m, mok := rewritePathUsesM(n.Map, pv, synth, mode)
 		if !lok || !fok || !mok {
 			return nil, false
 		}
@@ -359,16 +381,16 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 		}
 		return &ast.ListComp{Var: n.Var, List: l, Filter: f, Map: m}, true
 	case *ast.Case:
-		op, ook := rewritePathUsesM(n.Operand, pv, synth, lenOnly)
-		el, eok := rewritePathUsesM(n.Else, pv, synth, lenOnly)
+		op, ook := rewritePathUsesM(n.Operand, pv, synth, mode)
+		el, eok := rewritePathUsesM(n.Else, pv, synth, mode)
 		if !ook || !eok {
 			return nil, false
 		}
 		changed := op != n.Operand || el != n.Else
 		whens := n.Whens
 		for i := range n.Whens {
-			c, cok := rewritePathUsesM(n.Whens[i].Cond, pv, synth, lenOnly)
-			r, rok := rewritePathUsesM(n.Whens[i].Result, pv, synth, lenOnly)
+			c, cok := rewritePathUsesM(n.Whens[i].Cond, pv, synth, mode)
+			r, rok := rewritePathUsesM(n.Whens[i].Result, pv, synth, mode)
 			if !cok || !rok {
 				return nil, false
 			}
@@ -395,11 +417,11 @@ func rewritePathUsesM(e ast.Expr, pv, synth string, lenOnly bool) (ast.Expr, boo
 	}
 }
 
-func rewriteAllM(es []ast.Expr, pv, synth string, lenOnly bool) ([]ast.Expr, bool, bool) {
+func rewriteAllM(es []ast.Expr, pv, synth string, mode int) ([]ast.Expr, bool, bool) {
 	out := es
 	changed := false
 	for i, c := range es {
-		r, ok := rewritePathUsesM(c, pv, synth, lenOnly)
+		r, ok := rewritePathUsesM(c, pv, synth, mode)
 		if !ok {
 			return nil, false, false
 		}

@@ -196,11 +196,17 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 			}
 			if ops[cur].Kind == plan.OpVarExpand && ops[cur].RelSlot != plan.NoSlot {
 				rng := scratch.candRange[cur][p]
-				rels := make([]value.Value, rng[1])
-				for i := range rng[1] {
-					rels[i] = value.Rel(scratch.candData[cur][rng[0]+i])
+				if ops[cur].RelLenOnly {
+					// Every read is size(x): bind the trail's hop count
+					// and skip the per-row rel slice and List box.
+					row[ops[cur].RelSlot] = value.Int(int64(rng[1]))
+				} else {
+					rels := make([]value.Value, rng[1])
+					for i := range rng[1] {
+						rels[i] = value.Rel(scratch.candData[cur][rng[0]+i])
+					}
+					row[ops[cur].RelSlot] = value.List(rels)
 				}
-				row[ops[cur].RelSlot] = value.List(rels)
 			}
 			// PROFILE: the binding counts before the level filters prune,
 			// so pushdown effectiveness is visible per op (a swept level

@@ -157,6 +157,10 @@ func planPart(part *ast.QueryPart, initInCols []string, g graph.Graph, pc *planC
 	linkScanCSE(segments)
 	elidePathBinds(segments)
 	reduceDeadLets(segments)
+	// Last: the path elision and dead-LET reductions above collapse
+	// rels(p)-derived reads to size(<rel-list column>), which is the form
+	// the rel-list length elision removes.
+	elideRelListLens(segments)
 	return segments, seg.Proj.Columns, nil
 }
 

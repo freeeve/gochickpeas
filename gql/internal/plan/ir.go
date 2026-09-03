@@ -114,9 +114,13 @@ type BindOp struct {
 	Props  []ast.PropEntry
 
 	// OpVarExpand only.
-	Min            uint64
-	Max            *uint64 // nil = unbounded
-	RelVar         string  // the pattern's rel variable name ("" anonymous)
+	Min    uint64
+	Max    *uint64 // nil = unbounded
+	RelVar string  // the pattern's rel variable name ("" anonymous)
+	// RelLenOnly marks a bound rel slot read only as size(x): the op
+	// binds the trail's hop count as an integer instead of materializing
+	// the relationship list. Set by the plan-level elision.
+	RelLenOnly     bool
 	RelPred        *RelHopPred
 	MonoHop        *MonoHopSpec
 	DedupEndpoints bool
