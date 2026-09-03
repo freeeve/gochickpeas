@@ -26,7 +26,7 @@ func runSPStage(ctx *eval.Ctx, sp *plan.SpStage, rows [][]value.Value) [][]value
 		scope := map[string]int{sp.RelPred.Var: 0}
 		hop = &hopFilter{eval: compileEval(ctx, sp.RelPred.Pred, scope), scope: scope}
 	}
-	rm := ctx.G.CompileRelMatcher(sp.Types)
+	rm := ctx.Matchers.CompileRelMatcher(ctx.G, sp.Types)
 	scr := newSPScratch()
 	defer spScratchPool.Put(scr)
 	if sp.LengthOnly {

@@ -58,6 +58,11 @@ type Ctx struct {
 	// counts table builds across the execution -- tests assert a shared
 	// identity builds once, not once per sibling.
 	DecorTables map[DecorTableKey]*flatset.U64Map
+
+	// Matchers memoizes compiled node/rel matchers across executions of
+	// one snapshot's cached plans (set by the PlanCache; nil on uncached
+	// runs, where every compile is fresh).
+	Matchers    *graph.MatcherMemo
 	DecorBuilds int
 	// ScanCSE memoizes a CSE-marked recorder segment's filtered-scan
 	// survivor ids for later consumer segments in the same execution,

@@ -153,7 +153,7 @@ func (s *subqueryShape) nodeMatcherFor(ctx *Ctx, level int) *graph.NodeMatcher {
 		for i, p := range node.Props {
 			props[i] = graph.PropSpec{Key: p.Key, Val: LitValue(ctx, p.Val)}
 		}
-		s.nodeMatchers[level] = ctx.G.CompileNodeMatcher(node.Labels, props)
+		s.nodeMatchers[level] = ctx.Matchers.CompileNodeMatcher(ctx.G, node.Labels, props)
 	}
 	return s.nodeMatchers[level]
 }
@@ -165,7 +165,7 @@ func (s *subqueryShape) matcherFor(ctx *Ctx, hop int) *graph.RelMatcher {
 		s.matchers = make([]*graph.RelMatcher, len(s.pattern.Hops))
 	}
 	if s.matchers[hop] == nil {
-		s.matchers[hop] = ctx.G.CompileRelMatcher(s.pattern.Hops[hop].Rel.Types)
+		s.matchers[hop] = ctx.Matchers.CompileRelMatcher(ctx.G, s.pattern.Hops[hop].Rel.Types)
 	}
 	return s.matchers[hop]
 }

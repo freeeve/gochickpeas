@@ -6,6 +6,8 @@
 package graph
 
 import (
+	"sync"
+
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/value"
 	"github.com/freeeve/gochickpeas/nodeset"
@@ -266,4 +268,140 @@ func (s *SnapshotGraph) colReader(col chickpeas.Col) func(pos uint32) (value.Val
 			return value.Str(txt), true
 		}
 	}
+}
+
+// Shareable reports whether the compiled matcher is safe to reuse across
+// concurrent executions: a labelTest backed by a dense bitmap (or by
+// nothing -- an unknown label rejects immutably) never mutates, while a
+// set-backed test carries the per-execution probe counter and
+// self-densifying swap that make it single-run only. Property predicates
+// are immutable after compile in every form. The snapshot's label-bitmap
+// cache self-warms (one hot execution densifies for every later
+// compile), so warm-path matchers converge to shareable.
+func (m *NodeMatcher) Shareable() bool {
+	for i := range m.labels {
+		t := &m.labels[i]
+		if t.bits == nil && t.set != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// matcherMemoCap bounds the memo; past it, compiles stay fresh. The
+// corpus census measured 69 distinct node keys and 37 rel keys across
+// 89 queries, so the cap is a runaway backstop, not a working limit.
+const matcherMemoCap = 4096
+
+// MatcherMemo carries compiled matchers across executions -- matcher
+// compilation re-resolved labels, columns, and interned values per stage
+// per run. One memo serves ONE snapshot (it adopts the first it sees and
+// bypasses for any other); node matchers are stored only when Shareable.
+// Keys encode the resolved VALUES (lifted parameters bake values into
+// predicates at compile), so literal variants sharing a template plan
+// never share a mismatched matcher.
+type MatcherMemo struct {
+	mu   sync.Mutex
+	snap *chickpeas.Snapshot
+	node map[string]*NodeMatcher
+	rel  map[string]*RelMatcher
+	// scratch backs key construction so a HIT allocates nothing: the
+	// map lookup uses the compiler's non-allocating map[string(bytes)]
+	// form, and only a store materializes the key string.
+	scratch []byte
+}
+
+// adopt binds the memo to its first snapshot; reports whether s is owned.
+func (mm *MatcherMemo) adopt(s *SnapshotGraph) bool {
+	if mm.snap == nil {
+		mm.snap = s.g
+		mm.node = map[string]*NodeMatcher{}
+		mm.rel = map[string]*RelMatcher{}
+	}
+	return mm.snap == s.g
+}
+
+// asSnapshot narrows the graph interface; only snapshot graphs memoize.
+func asSnapshot(g Graph) (*SnapshotGraph, bool) {
+	s, ok := g.(*SnapshotGraph)
+	return s, ok
+}
+
+// appendNodeKey encodes labels and resolved property values into b.
+func appendNodeKey(b []byte, labels []string, props []PropSpec) []byte {
+	for _, l := range labels {
+		b = append(b, l...)
+		b = append(b, 0)
+	}
+	b = append(b, 1)
+	for _, p := range props {
+		b = append(b, p.Key...)
+		b = append(b, 0)
+		b = value.AppendKey(b, p.Val)
+		b = append(b, 0)
+	}
+	return b
+}
+
+// CompileNodeMatcher is the memoized form; a nil memo, a foreign
+// snapshot, an over-cap memo, or a non-shareable result all fall back to
+// a fresh compile.
+func (mm *MatcherMemo) CompileNodeMatcher(g Graph, labels []string, props []PropSpec) *NodeMatcher {
+	s, isSnap := asSnapshot(g)
+	if mm == nil || !isSnap {
+		return g.CompileNodeMatcher(labels, props)
+	}
+	mm.mu.Lock()
+	if !mm.adopt(s) {
+		mm.mu.Unlock()
+		return s.CompileNodeMatcher(labels, props)
+	}
+	mm.scratch = appendNodeKey(mm.scratch[:0], labels, props)
+	if m, ok := mm.node[string(mm.scratch)]; ok {
+		mm.mu.Unlock()
+		return m
+	}
+	mm.mu.Unlock()
+	m := s.CompileNodeMatcher(labels, props)
+	if m.Shareable() {
+		mm.mu.Lock()
+		if len(mm.node) < matcherMemoCap {
+			mm.node[string(appendNodeKey(mm.scratch[:0], labels, props))] = m
+		}
+		mm.mu.Unlock()
+	}
+	return m
+}
+
+// CompileRelMatcher is the memoized form; RelMatcher is immutable, so
+// every result stores.
+func (mm *MatcherMemo) CompileRelMatcher(g Graph, types []string) *RelMatcher {
+	s, isSnap := asSnapshot(g)
+	if mm == nil || !isSnap {
+		return g.CompileRelMatcher(types)
+	}
+	mm.mu.Lock()
+	if !mm.adopt(s) {
+		mm.mu.Unlock()
+		return s.CompileRelMatcher(types)
+	}
+	b := mm.scratch[:0]
+	for _, t := range types {
+		b = append(b, t...)
+		b = append(b, 0)
+	}
+	mm.scratch = b
+	if m, ok := mm.rel[string(b)]; ok {
+		mm.mu.Unlock()
+		return m
+	}
+	key := string(b)
+	mm.mu.Unlock()
+	m := s.CompileRelMatcher(types)
+	mm.mu.Lock()
+	if len(mm.rel) < matcherMemoCap {
+		mm.rel[key] = m
+	}
+	mm.mu.Unlock()
+	return m
 }

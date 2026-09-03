@@ -97,6 +97,11 @@ type PlanCache struct {
 	hitsL1 uint64
 	hitsL2 uint64
 	misses uint64
+
+	// matchers memoizes compiled node/rel matchers across this cache's
+	// executions (the cache is per-snapshot by contract; the memo adopts
+	// the first snapshot it sees and bypasses any other).
+	matchers graph.MatcherMemo
 }
 
 // NewPlanCache is an empty cache bounded to maxBytes of approximate
@@ -202,11 +207,11 @@ func (c *PlanCache) runFlipped(g *chickpeas.Snapshot, query string, params map[s
 			c.evict()
 		}
 		c.mu.Unlock()
-		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers}
 		return execPlan(gr, se.plan, se.mode, 0, ctx)
 	}
 	gr := graph.New(g)
-	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers}
 	return execPlan(gr, se.plan, se.mode, 0, ctx)
 }
 
@@ -214,7 +219,7 @@ func (c *PlanCache) runFlipped(g *chickpeas.Snapshot, query string, params map[s
 // named parameters (cached EXPLAIN/PROFILE renders show no planning time,
 // matching the Rust engine).
 func (c *PlanCache) execCached(gr *graph.SnapshotGraph, cp *cachedPlan, lifted []value.Value, named map[string]value.Value) (*Rows, error) {
-	ctx := &eval.Ctx{G: gr, Params: lifted, Named: named, ForceInterp: forceInterp}
+	ctx := &eval.Ctx{G: gr, Params: lifted, Named: named, ForceInterp: forceInterp, Matchers: &c.matchers}
 	return execPlan(gr, chooseAdaptivePlan(cp.plan, ctx, gr), cp.mode, 0, ctx)
 }
 

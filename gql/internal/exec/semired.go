@@ -184,14 +184,14 @@ func chainMembers(ctx *eval.Ctx, chain []plan.BindOp, constNode graph.NodeID) []
 	for i, p := range last.Props {
 		props[i] = graph.PropSpec{Key: p.Key, Val: eval.LitValue(ctx, p.Val)}
 	}
-	if !ctx.G.NodeMatcherAccepts(ctx.G.CompileNodeMatcher(last.Labels, props), constNode) {
+	if !ctx.G.NodeMatcherAccepts(ctx.Matchers.CompileNodeMatcher(ctx.G, last.Labels, props), constNode) {
 		return nil
 	}
 	frontier := []graph.NodeID{constNode}
 	var next []graph.NodeID
 	for k := len(chain) - 1; k >= 0; k-- {
 		op := &chain[k]
-		rm := ctx.G.CompileRelMatcher(op.Types)
+		rm := ctx.Matchers.CompileRelMatcher(ctx.G, op.Types)
 		var nm *graph.NodeMatcher
 		if k > 0 {
 			p := &chain[k-1]
@@ -199,7 +199,7 @@ func chainMembers(ctx *eval.Ctx, chain []plan.BindOp, constNode graph.NodeID) []
 			for i, pe := range p.Props {
 				pp[i] = graph.PropSpec{Key: pe.Key, Val: eval.LitValue(ctx, pe.Val)}
 			}
-			nm = ctx.G.CompileNodeMatcher(p.Labels, pp)
+			nm = ctx.Matchers.CompileNodeMatcher(ctx.G, p.Labels, pp)
 		}
 		next = next[:0]
 		for _, f := range frontier {

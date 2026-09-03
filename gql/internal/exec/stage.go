@@ -69,8 +69,8 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 		for j, p := range op.Props {
 			props[j] = graph.PropSpec{Key: p.Key, Val: eval.LitValue(ctx, p.Val)}
 		}
-		sc.matchers[i] = ctx.G.CompileNodeMatcher(op.Labels, props)
-		sc.relMatchers[i] = ctx.G.CompileRelMatcher(op.Types)
+		sc.matchers[i] = ctx.Matchers.CompileNodeMatcher(ctx.G, op.Labels, props)
+		sc.relMatchers[i] = ctx.Matchers.CompileRelMatcher(ctx.G, op.Types)
 		if op.Kind == plan.OpScan && op.Source.Kind == plan.ScanExistsSeed {
 			sc.seedRel[i] = make([][]*graph.RelMatcher, len(op.Source.Seeds))
 			sc.seedNode[i] = make([][]*graph.NodeMatcher, len(op.Source.Seeds))
@@ -79,8 +79,8 @@ func compileStage(ctx *eval.Ctx, stage *plan.MatchStage, slots map[string]int, c
 				sc.seedRel[i][ci] = make([]*graph.RelMatcher, len(hops))
 				sc.seedNode[i][ci] = make([]*graph.NodeMatcher, len(hops))
 				for hi := range hops {
-					sc.seedRel[i][ci][hi] = ctx.G.CompileRelMatcher(hops[hi].Types)
-					sc.seedNode[i][ci][hi] = ctx.G.CompileNodeMatcher(hops[hi].Labels, nil)
+					sc.seedRel[i][ci][hi] = ctx.Matchers.CompileRelMatcher(ctx.G, hops[hi].Types)
+					sc.seedNode[i][ci][hi] = ctx.Matchers.CompileNodeMatcher(ctx.G, hops[hi].Labels, nil)
 				}
 			}
 		}

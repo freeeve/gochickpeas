@@ -115,8 +115,8 @@ func newHashJoinSink(ctx *eval.Ctx, seg *plan.Segment, hj *plan.HashJoinStage, n
 	h := &hashJoinSink{
 		ctx: ctx, hj: hj, seg: seg, slots: seg.Slots,
 		buf: make([]value.Value, seg.RowWidth), next: next, uniq: uniq,
-		probeM:  ctx.G.CompileNodeMatcher(hj.Probe.Labels, props),
-		probeRM: ctx.G.CompileRelMatcher(hj.Probe.Types),
+		probeM:  ctx.Matchers.CompileNodeMatcher(ctx.G, hj.Probe.Labels, props),
+		probeRM: ctx.Matchers.CompileRelMatcher(ctx.G, hj.Probe.Types),
 		tables:  map[string]*hjTable{},
 		count:   count,
 	}
