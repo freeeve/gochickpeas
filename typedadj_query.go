@@ -55,9 +55,18 @@ func (g *Snapshot) countDirMatch(u, v NodeID, out bool, m RelMatch) int {
 	}
 	lo, hi := relRange(offsets, u)
 	n := 0
-	for k := lo; k < hi; k++ {
-		if nbrs[k] == v && m.matches(types.At(uint32(k))) {
-			n++
+	if m.kind == 0 {
+		for k := lo; k < hi; k++ {
+			if nbrs[k] == v {
+				n++
+			}
+		}
+	} else if hi > lo {
+		keep := typeTest(m, &types, out)
+		for k := lo; k < hi; k++ {
+			if nbrs[k] == v && keep(uint32(k)) {
+				n++
+			}
 		}
 	}
 	return n
@@ -178,13 +187,16 @@ func (g *Snapshot) appendDirPosMatch(dst []uint32, u, v NodeID, out bool, m RelM
 		offsets, nbrs, types, posMap = g.inOffsets, g.inNbrs, g.inTypes, g.getInToOut()
 	}
 	lo, hi := relRange(offsets, u)
-	for k := lo; k < hi; k++ {
-		if nbrs[k] == v && m.matches(types.At(uint32(k))) {
-			pos := uint32(k)
-			if k < len(posMap) {
-				pos = posMap[k]
+	if hi > lo {
+		keep := typeTest(m, &types, out)
+		for k := lo; k < hi; k++ {
+			if nbrs[k] == v && keep(uint32(k)) {
+				pos := uint32(k)
+				if k < len(posMap) {
+					pos = posMap[k]
+				}
+				dst = append(dst, pos)
 			}
-			dst = append(dst, pos)
 		}
 	}
 	return dst

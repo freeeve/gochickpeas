@@ -121,6 +121,15 @@ type Snapshot struct {
 	// relStats builds the per-type count store once on first access.
 	relStats func() map[string]RelStats
 
+	// schemaIDs is the O(1) reverse index over SCHEMA-namespace atoms only
+	// (labels, rel types, property keys) -- the names hot paths resolve per
+	// call, e.g. Match on every string-typed Neighbors call. The full atom
+	// table's reverse index is a binary search (atoms.go) sized for per-plan
+	// value interning; paying its ~20 string compares per traversal call
+	// regressed native kernels ~3x. Schema names number in the dozens, so
+	// this map costs KBs where the all-atoms map form cost 45.7 MB at SF1.
+	schemaIDs func() map[string]uint32
+
 	// labelDegrees caches per-label conditional degree counts (labelstats.go),
 	// built lazily per consulted label.
 	labelDegreeMu sync.Mutex
@@ -163,6 +172,7 @@ func newSnapshot() *Snapshot {
 		labelDegrees:   map[Label]*labelDegreeEntry{},
 	}
 	g.relStats = sync.OnceValue(g.buildRelStats)
+	g.schemaIDs = sync.OnceValue(g.buildSchemaIDs)
 	return g
 }
 

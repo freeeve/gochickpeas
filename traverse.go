@@ -184,12 +184,8 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 			if tr != nil {
 				rlo, rhi := tr.runRange(node)
 				dst = append(dst, tr.nbrs[rlo:rhi]...)
-			} else {
-				for k := lo; k < hi; k++ {
-					if m.matches(g.outTypes.At(uint32(k))) {
-						dst = append(dst, g.outNbrs[k])
-					}
-				}
+			} else if hi > lo {
+				dst = appendNbrsTyped(dst, g.outNbrs, &g.outTypes, m, true, lo, hi)
 			}
 		}
 	}
@@ -206,12 +202,8 @@ func (g *Snapshot) AppendNeighborsEach(dst []NodeID, node NodeID, dir Direction,
 			if tr != nil {
 				rlo, rhi := tr.runRange(node)
 				dst = append(dst, tr.nbrs[rlo:rhi]...)
-			} else {
-				for k := lo; k < hi; k++ {
-					if m.matches(g.inTypes.At(uint32(k))) {
-						dst = append(dst, g.inNbrs[k])
-					}
-				}
+			} else if hi > lo {
+				dst = appendNbrsTyped(dst, g.inNbrs, &g.inTypes, m, false, lo, hi)
 			}
 		}
 	}
@@ -243,11 +235,9 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 						return
 					}
 				}
-			} else {
-				for k := lo; k < hi; k++ {
-					if m.matches(g.outTypes.At(uint32(k))) && !yield(g.outNbrs[k]) {
-						return
-					}
+			} else if hi > lo {
+				if !yieldNbrsTyped(g.outNbrs, &g.outTypes, m, true, lo, hi, yield) {
+					return
 				}
 			}
 		}
@@ -273,11 +263,9 @@ func (g *Snapshot) neighborsYield(node NodeID, dir Direction, m RelMatch, yield 
 						return
 					}
 				}
-			} else {
-				for k := lo; k < hi; k++ {
-					if m.matches(g.inTypes.At(uint32(k))) && !yield(g.inNbrs[k]) {
-						return
-					}
+			} else if hi > lo {
+				if !yieldNbrsTyped(g.inNbrs, &g.inTypes, m, false, lo, hi, yield) {
+					return
 				}
 			}
 		}
@@ -327,8 +315,9 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 					}
 				}
 			} else {
+				at := g.outTypes.reader()
 				for k := lo; k < hi; k++ {
-					t := g.outTypes.At(uint32(k))
+					t := at(uint32(k))
 					if !m.matches(t) {
 						continue
 					}
@@ -362,8 +351,9 @@ func (g *Snapshot) relsYield(node NodeID, dir Direction, m RelMatch, yield func(
 				}
 			} else {
 				ito := g.getInToOut() // nil (no rel props) leaves raw positions
+				at := g.inTypes.reader()
 				for k := lo; k < hi; k++ {
-					t := g.inTypes.At(uint32(k))
+					t := at(uint32(k))
 					if !m.matches(t) {
 						continue
 					}

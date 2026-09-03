@@ -94,3 +94,190 @@ func compressRelTypesU32(ts []uint32) relTypes {
 	}
 	return relTypes{palette: palette, idx: idx}
 }
+
+// paletteIndexOf is t's index in r's narrow palette; -1 when absent from
+// it or when r is wide (no palette to index).
+func paletteIndexOf(r *relTypes, t RelType) int16 {
+	if r.wide != nil {
+		return -1
+	}
+	for i, pt := range r.palette {
+		if pt == t {
+			return int16(i)
+		}
+	}
+	return -1
+}
+
+// typeTest hoists a RelMatch's per-position test over one direction's
+// type vector: the representation branch, the palette resolution of the
+// sought type(s), and the match-all case all resolve ONCE per traversal
+// call, leaving the per-relationship work at a u8 (narrow) or u32 (wide)
+// load -- the naive m.matches(r.At(k)) form paid the branch and a palette
+// dereference on every relationship of every traversal. A snapshot-built
+// matcher carries its palette index precomputed on the typed holder, so
+// the per-call cost is the closure alone; only a snapshot-less MatchType
+// pays a palette scan here. The returned closure captures only slices and
+// scalars, so it stays on the stack in a direct loop.
+func typeTest(m RelMatch, r *relTypes, out bool) func(pos uint32) bool {
+	switch m.kind {
+	case 0:
+		return func(uint32) bool { return true }
+	case 1:
+		if r.wide != nil {
+			w, t := r.wide, m.one
+			return func(pos uint32) bool { return w[pos] == t }
+		}
+		ti := m.palIndex(r, out)
+		if ti < 0 {
+			return func(uint32) bool { return false }
+		}
+		idx, b := r.idx, uint8(ti)
+		return func(pos uint32) bool { return idx[pos] == b }
+	}
+	if len(m.many) == 0 {
+		return func(uint32) bool { return false }
+	}
+	if r.wide == nil {
+		// Pre-resolve the sought set into palette-index space: one
+		// 256-bit membership word set, then a u8 load + bit test per
+		// relationship.
+		var mask [4]uint64
+		any := false
+		for i, pt := range r.palette {
+			for _, t := range m.many {
+				if pt == t {
+					mask[i>>6] |= 1 << (uint(i) & 63)
+					any = true
+				}
+			}
+		}
+		if !any {
+			return func(uint32) bool { return false }
+		}
+		idx := r.idx
+		return func(pos uint32) bool {
+			b := idx[pos]
+			return mask[b>>6]&(1<<(uint(b)&63)) != 0
+		}
+	}
+	w, many := r.wide, m.many
+	return func(pos uint32) bool {
+		t := w[pos]
+		for _, mt := range many {
+			if mt == t {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// palIndex resolves m.one's palette index for one direction: the holder's
+// precomputed value when the matcher came from Snapshot.Match, a palette
+// scan for a snapshot-less MatchType. -1 = absent (no rel matches).
+func (m RelMatch) palIndex(r *relTypes, out bool) int {
+	if m.tp != nil {
+		if out {
+			return int(m.tp.outPal)
+		}
+		return int(m.tp.inPal)
+	}
+	return int(paletteIndexOf(r, m.one))
+}
+
+// appendNbrsTyped appends nbrs[k] for each k in [lo, hi) whose type
+// matches m, with the representation dispatch hoisted and each variant's
+// loop body a direct compare -- no per-relationship indirect call. The
+// closure form (typeTest) costs ~2-3ns per relationship in call overhead,
+// which dominates below-floor scans that test every relationship of a
+// node's mixed run.
+func appendNbrsTyped(dst []NodeID, nbrs []NodeID, r *relTypes, m RelMatch, out bool, lo, hi int) []NodeID {
+	switch m.kind {
+	case 0:
+		return append(dst, nbrs[lo:hi]...)
+	case 1:
+		if w := r.wide; w != nil {
+			t := m.one
+			for k := lo; k < hi; k++ {
+				if w[k] == t {
+					dst = append(dst, nbrs[k])
+				}
+			}
+			return dst
+		}
+		ti := m.palIndex(r, out)
+		if ti < 0 {
+			return dst
+		}
+		idx, b := r.idx, uint8(ti)
+		for k := lo; k < hi; k++ {
+			if idx[k] == b {
+				dst = append(dst, nbrs[k])
+			}
+		}
+		return dst
+	}
+	keep := typeTest(m, r, out)
+	for k := lo; k < hi; k++ {
+		if keep(uint32(k)) {
+			dst = append(dst, nbrs[k])
+		}
+	}
+	return dst
+}
+
+// yieldNbrsTyped is appendNbrsTyped's early-stop form: yields matching
+// neighbors in CSR order, returning false when yield stopped the
+// iteration. The type test stays a direct compare; only matches pay the
+// yield call.
+func yieldNbrsTyped(nbrs []NodeID, r *relTypes, m RelMatch, out bool, lo, hi int, yield func(NodeID) bool) bool {
+	switch m.kind {
+	case 0:
+		for k := lo; k < hi; k++ {
+			if !yield(nbrs[k]) {
+				return false
+			}
+		}
+		return true
+	case 1:
+		if w := r.wide; w != nil {
+			t := m.one
+			for k := lo; k < hi; k++ {
+				if w[k] == t && !yield(nbrs[k]) {
+					return false
+				}
+			}
+			return true
+		}
+		ti := m.palIndex(r, out)
+		if ti < 0 {
+			return true
+		}
+		idx, b := r.idx, uint8(ti)
+		for k := lo; k < hi; k++ {
+			if idx[k] == b && !yield(nbrs[k]) {
+				return false
+			}
+		}
+		return true
+	}
+	keep := typeTest(m, r, out)
+	for k := lo; k < hi; k++ {
+		if keep(uint32(k)) && !yield(nbrs[k]) {
+			return false
+		}
+	}
+	return true
+}
+
+// reader hoists At's representation branch: one closure per loop, one
+// load (plus a palette lookup on the narrow form) per position.
+func (r *relTypes) reader() func(pos uint32) RelType {
+	if r.wide != nil {
+		w := r.wide
+		return func(pos uint32) RelType { return w[pos] }
+	}
+	idx, palette := r.idx, r.palette
+	return func(pos uint32) RelType { return palette[idx[pos]] }
+}

@@ -91,6 +91,20 @@ type typedPair struct {
 	outRunsOnce     sync.Once
 	inRunsOnce      sync.Once
 	outRuns, inRuns *typedRuns
+	// outPal/inPal are t's index in each direction's narrow type palette,
+	// resolved once at holder creation; -1 = absent from that palette (or
+	// wide representation, which typeTest never consults these for). They
+	// keep the palette scan out of the per-traversal-call path.
+	outPal, inPal int16
+}
+
+// newTypedPair creates a type's holder with its palette indexes resolved.
+func newTypedPair(g *Snapshot, t RelType) *typedPair {
+	return &typedPair{
+		g: g, t: t,
+		outPal: paletteIndexOf(&g.outTypes, t),
+		inPal:  paletteIndexOf(&g.inTypes, t),
+	}
 }
 
 // typedFloor: a type builds its view only when its relationship count is
@@ -233,7 +247,7 @@ func (g *Snapshot) typedPairFor(t RelType) *typedPair {
 		if p := slots[t].Load(); p != nil {
 			return p
 		}
-		p := &typedPair{g: g, t: t}
+		p := newTypedPair(g, t)
 		if !slots[t].CompareAndSwap(nil, p) {
 			p = slots[t].Load()
 		}
@@ -256,7 +270,7 @@ func (g *Snapshot) typedPairFor(t RelType) *typedPair {
 	if old != nil {
 		maps.Copy(next, *old)
 	}
-	p := &typedPair{g: g, t: t}
+	p := newTypedPair(g, t)
 	next[t] = p
 	g.typedAdj.Store(&next)
 	return p

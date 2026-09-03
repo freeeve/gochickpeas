@@ -197,15 +197,53 @@ func (g *Snapshot) ResolveString(id uint32) (string, bool) {
 	return g.atoms.Resolve(id)
 }
 
+// buildSchemaIDs collects the schema-namespace atoms into the O(1)
+// reverse index. Each name canonicalizes through the full-table lookup so
+// a duplicated atom string keeps the smallest id, exactly as Atoms.ID
+// resolves it.
+func (g *Snapshot) buildSchemaIDs() map[string]uint32 {
+	m := make(map[string]uint32, len(g.labelIndex)+len(g.typeIndex)+len(g.columns)+len(g.relColumns))
+	add := func(id uint32) {
+		if name, ok := g.atoms.Resolve(id); ok {
+			if cid, ok := g.atoms.ID(name); ok {
+				m[name] = cid
+			}
+		}
+	}
+	for l := range g.labelIndex {
+		add(l.ID())
+	}
+	for t := range g.typeIndex {
+		add(t.ID())
+	}
+	for k := range g.columns {
+		add(uint32(k))
+	}
+	for k := range g.relColumns {
+		add(uint32(k))
+	}
+	return m
+}
+
+// schemaID resolves a name through the schema index, falling back to the
+// full-table binary search so names interned only as property values
+// resolve identically to before the index existed.
+func (g *Snapshot) schemaID(name string) (uint32, bool) {
+	if id, ok := g.schemaIDs()[name]; ok {
+		return id, true
+	}
+	return g.atoms.ID(name)
+}
+
 // PropertyKey resolves a property-key name to its atom; ok is false when
 // the key was never interned.
 func (g *Snapshot) PropertyKey(key string) (PropertyKey, bool) {
-	return g.atoms.ID(key)
+	return g.schemaID(key)
 }
 
 // Label resolves a label name to its atom; ok is false when unknown.
 func (g *Snapshot) Label(name string) (Label, bool) {
-	id, ok := g.atoms.ID(name)
+	id, ok := g.schemaID(name)
 	return Label(id), ok
 }
 
@@ -213,7 +251,7 @@ func (g *Snapshot) Label(name string) (Label, bool) {
 // unknown. Resolve once and pass to MatchType in a hot loop to skip the
 // per-call string lookup.
 func (g *Snapshot) RelType(name string) (RelType, bool) {
-	id, ok := g.atoms.ID(name)
+	id, ok := g.schemaID(name)
 	return RelType(id), ok
 }
 
