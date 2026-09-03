@@ -66,6 +66,19 @@ type l1Entry struct {
 	params []value.Value
 	bytes  int
 	tick   uint64
+	// sighted is a FLIPPED template's per-verbatim-text literal plan:
+	// identical text has identical literals, so sighted planning is
+	// deterministic per (text, snapshot) and reusable -- removing the
+	// full parse + plan the flip routing otherwise pays on every run.
+	// Built lazily on the first flipped L1 hit; Run mode only (EXPLAIN /
+	// PROFILE keep the uncached route and its rendered planning time).
+	sighted *sightedEntry
+}
+
+// sightedEntry is the flipped route's cached literal plan.
+type sightedEntry struct {
+	plan *plan.Plan
+	mode ast.QueryMode
 }
 
 // PlanCache is a size-bounded cache of auto-parameterized plans, safe for
@@ -113,7 +126,7 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 	// L1: a verbatim repeat skips parse + plan.
 	if cp, lifted, ok := c.l1Lookup(query); ok {
 		if cp.flipped {
-			return RunUncachedWithParams(g, query, params)
+			return c.runFlipped(g, query, params)
 		}
 		return c.execCached(gr, cp, lifted, params)
 	}
@@ -153,6 +166,48 @@ func (c *PlanCache) RunWithParams(g *chickpeas.Snapshot, query string, params ma
 		return RunUncachedWithParams(g, query, params)
 	}
 	return c.execCached(gr, cp, lifted, params)
+}
+
+// runFlipped executes a flipped template's verbatim text through the L1
+// entry's cached sighted plan, planning it once on first need. The plan
+// is exactly what RunUncachedWithParams would build (same text, same
+// snapshot), so results and shape are identical to the unrouted flip
+// path -- only the per-run parse + plan disappears.
+func (c *PlanCache) runFlipped(g *chickpeas.Snapshot, query string, params map[string]value.Value) (*Rows, error) {
+	c.mu.Lock()
+	var se *sightedEntry
+	if e, ok := c.byQuery[query]; ok {
+		se = e.sighted
+	}
+	c.mu.Unlock()
+	if se == nil {
+		q, gr, p, planTime, err := prepare(g, query)
+		if err != nil {
+			return nil, err
+		}
+		if q.Mode != ast.Run {
+			ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+			return execPlan(gr, p, q.Mode, planTime, ctx)
+		}
+		se = &sightedEntry{plan: p, mode: q.Mode}
+		c.mu.Lock()
+		if e, ok := c.byQuery[query]; ok && e.sighted == nil {
+			e.sighted = se
+			// Same estimate unit as the template charge (calibrated in
+			// TestCacheSizeHeuristicCalibration); the entry now holds a
+			// second plan, so it is charged a second time.
+			extra := 4096 + len(query)*12
+			e.bytes += extra
+			c.bytes += extra
+			c.evict()
+		}
+		c.mu.Unlock()
+		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+		return execPlan(gr, se.plan, se.mode, 0, ctx)
+	}
+	gr := graph.New(g)
+	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp}
+	return execPlan(gr, se.plan, se.mode, 0, ctx)
 }
 
 // execCached executes a cached plan with this call's lifted values and

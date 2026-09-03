@@ -138,3 +138,61 @@ func TestCanonicalRenderStableAndTimeFree(t *testing.T) {
 		}
 	}
 }
+
+// TestFlippedTemplateSightedPlanCached pins the flipped route's plan
+// reuse: the first L1 hit plans the literal text once and stores it on
+// the entry; later hits execute it without re-planning, with rows
+// identical to the uncached path.
+func TestFlippedTemplateSightedPlanCached(t *testing.T) {
+	g := SocialGraph(t)
+	c := NewPlanCache(0)
+	q := "MATCH (p:Person) WHERE p.age > 30 RETURN p.name AS n ORDER BY n"
+	want := runRows(t, func() (*Rows, error) { return Run(g, q) })
+	_ = runRows(t, func() (*Rows, error) { return c.Run(g, q) }) // insert
+	for _, cp := range c.byTemplate {
+		cp.flipped = true
+	}
+	got := runRows(t, func() (*Rows, error) { return c.Run(g, q) }) // first flipped hit: builds sighted
+	c.mu.Lock()
+	e := c.byQuery[q]
+	c.mu.Unlock()
+	if e == nil || e.sighted == nil {
+		t.Fatal("first flipped L1 hit did not cache the sighted plan")
+	}
+	sp := e.sighted.plan
+	got2 := runRows(t, func() (*Rows, error) { return c.Run(g, q) }) // reuse
+	c.mu.Lock()
+	same := c.byQuery[q].sighted.plan == sp
+	c.mu.Unlock()
+	if !same {
+		t.Fatal("second flipped hit re-planned instead of reusing the sighted plan")
+	}
+	for _, rows := range [][]string{got, got2} {
+		if len(rows) != len(want) {
+			t.Fatalf("flipped rows = %d, want %d", len(rows), len(want))
+		}
+		for i := range want {
+			if rows[i] != want[i] {
+				t.Fatalf("flipped row %d = %q, want %q", i, rows[i], want[i])
+			}
+		}
+	}
+	// The entry was charged for the second plan.
+	if e.bytes <= l1Overhead+len(q) {
+		t.Fatalf("entry bytes %d do not include the sighted charge", e.bytes)
+	}
+	// EXPLAIN through a flipped entry keeps the uncached route (no
+	// sighted caching for render modes).
+	qe := "EXPLAIN " + q
+	_ = runRows(t, func() (*Rows, error) { return c.Run(g, qe) })
+	for _, cp := range c.byTemplate {
+		cp.flipped = true
+	}
+	_ = runRows(t, func() (*Rows, error) { return c.Run(g, qe) })
+	c.mu.Lock()
+	ee := c.byQuery[qe]
+	c.mu.Unlock()
+	if ee != nil && ee.sighted != nil {
+		t.Fatal("EXPLAIN cached a sighted plan; render modes must stay uncached")
+	}
+}
