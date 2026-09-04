@@ -193,6 +193,13 @@ func buildStageSink(ctx *eval.Ctx, seg *plan.Segment, st plan.Stage, next rowSin
 			slots: seg.Slots, buf: make([]value.Value, seg.RowWidth), next: next, uniq: uniq,
 		}
 		ms.emitFn = ms.emit
+		// The chunked final-level seam engages only when this stage's emit
+		// is a bare next.push: no path assembly, no post-path filters, no
+		// OPTIONAL fired tracking -- and the downstream sink accepts
+		// candidate batches (the aggregated terminal).
+		if bn, ok := next.(candidateSink); ok && s.PathBind == nil && !s.Optional {
+			ms.batchNext = bn
+		}
 		if s.Optional {
 			ms.orig = make([]value.Value, seg.RowWidth)
 		}

@@ -111,7 +111,14 @@ type reachScratch struct {
 // remaining candidates, retiring every level's pair pushes on the way out
 // so the shared uniqueness env is exactly as empty as a completed walk
 // leaves it.
-func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, uniq *uniqEnv, sink func([]value.Value) bool, scratch *genScratch, opRows []uint64) bool {
+// candidateSink is the chunked final-level seam: a terminal that can
+// consume a match level's remaining candidates in one call, given the
+// template row and the slot the level binds.
+type candidateSink interface {
+	pushCandidates(row []value.Value, slot int, cands []graph.NodeID) bool
+}
+
+func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageComp, slots map[string]int, uniq *uniqEnv, sink func([]value.Value) bool, cs candidateSink, scratch *genScratch, opRows []uint64) bool {
 	// New match-call epoch: a loop-invariant carried IN list hashes once
 	// for this call and reuses it across the call's candidates.
 	ctx.MatchEpoch++
@@ -152,6 +159,37 @@ func genMatches(ctx *eval.Ctx, ops []plan.BindOp, base []value.Value, sc *stageC
 	for {
 		switch {
 		case scratch.pos[cur] < len(scratch.cand[cur]):
+			// Chunked final level: when the last level's candidates are
+			// fully pre-filtered (swept or predicate-free, no compiled
+			// filters), carry no uniqueness participation, and the
+			// terminal accepts candidate batches, the whole remaining
+			// fill lands in one call -- the per-candidate loop's bind,
+			// dispatch, and bookkeeping disappear. Small fills stay
+			// per-row (the batch setup out-costs them; chunkFloor).
+			if cs != nil && cur+1 == n && scratch.pos[cur] == 0 &&
+				ops[cur].RelSlot == plan.NoSlot && ops[cur].Uniq == nil &&
+				(scratch.swept[cur] || len(sc.levelPreds[cur]) == 0) &&
+				len(sc.levelFilters[cur]) == 0 &&
+				len(scratch.cand[cur]) >= chunkFloor && !disableChunkedFinal {
+				cands := scratch.cand[cur]
+				retire(cur)
+				if !cs.pushCandidates(row, slotOf(&ops[cur]), cands) {
+					for ; cur > 0; cur-- {
+						retire(cur)
+					}
+					retire(0)
+					return false
+				}
+				chunkedFinalPushes += len(cands)
+				if opRows != nil {
+					if !scratch.swept[cur] {
+						opRows[cur] += uint64(len(cands))
+					}
+					opRows[n] += uint64(len(cands))
+				}
+				scratch.pos[cur] = len(cands)
+				continue
+			}
 			p := scratch.pos[cur]
 			node := scratch.cand[cur][p]
 			scratch.pos[cur]++

@@ -109,6 +109,10 @@ type matchSink struct {
 	// emitFn is the emit method bound once, so genMatches gets the same
 	// closure every push instead of a fresh method value.
 	emitFn func([]value.Value) bool
+	// batchNext is the downstream terminal's chunked seam, non-nil only
+	// when this stage's emit adds nothing a batch would skip: no path
+	// assembly, no post-path filters, no OPTIONAL fired tracking.
+	batchNext candidateSink
 }
 
 func (m *matchSink) push(row []value.Value) bool {
@@ -124,7 +128,7 @@ func (m *matchSink) push(row []value.Value) bool {
 	if m.stage.Optional {
 		copy(m.orig, row)
 		m.fired = false
-		more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.profRows())
+		more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, nil, &m.scratch, m.profRows())
 		m.scatterProf()
 		if more && !m.fired {
 			// The re-emitted row takes the path assembly and post-path
@@ -133,7 +137,7 @@ func (m *matchSink) push(row []value.Value) bool {
 		}
 		return more
 	}
-	more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, &m.scratch, m.profRows())
+	more := genMatches(m.ctx, m.comp.ops, m.buf, m.comp, m.slots, m.uniq, m.emitFn, m.batchNext, &m.scratch, m.profRows())
 	m.scatterProf()
 	return more
 }
