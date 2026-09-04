@@ -414,6 +414,15 @@ round 5).
 
 ### 12. Cross-run scratch: GC-lifetime pools vs bounded strong banks
 
+Applicability test first: this class exists only for scratch dimensioned
+by the ID SPACE (dense per-id arrays, bitmaps). Structures dimensioned
+by the REACHED SET (sparse maps growing to what a bounded walk touches)
+have per-use costs proportional to the work and nothing worth pooling --
+"you pay for the id space, or you pay for the reached set" decides
+whether the whole entry applies before any measurement (rustychickpeas'
+structural decline of the pool port, their 372; expires for them if
+their search ever goes dense).
+
 `sync.Pool` reuse works when the scratch's consumers run hot relative
 to collection cadence (the shortest-path search arrays, 2e5616d). It is
 structurally unfit when each USE allocates enough to force a collection
