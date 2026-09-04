@@ -19,25 +19,40 @@ type Atoms struct {
 	strings []string
 	// sorted holds every atom id ordered by (string, id): binary search
 	// by string, then the first hit is the smallest id -- preserving the
-	// duplicates-keep-smallest-id contract the map form had.
-	sorted []uint32
+	// duplicates-keep-smallest-id contract the map form had. Built
+	// LAZILY on the first reverse lookup: sorting ~1M strings costs
+	// hundreds of milliseconds, which moved graph LOAD 2.4x when built
+	// eagerly (the sweep's LOAD/BI cell, 322 -> 781ms) -- while a
+	// loaded-but-never-queried graph never needs the index at all, and
+	// the schema-name fast path answers most hot lookups without it.
+	sortedOnce sync.Once
+	sorted     []uint32
 }
 
-// NewAtoms builds the table from an id-ordered string slice. When the slice
-// contains duplicates, the smallest id wins reverse lookups.
+// NewAtoms wraps an id-ordered string slice; the reverse index builds on
+// first use. When the slice contains duplicates, the smallest id wins
+// reverse lookups.
 func NewAtoms(strings []string) *Atoms {
-	sorted := make([]uint32, len(strings))
-	for i := range sorted {
-		sorted[i] = uint32(i)
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		a, b := strings[sorted[i]], strings[sorted[j]]
-		if a != b {
-			return a < b
+	return &Atoms{strings: strings}
+}
+
+// sortedIndex builds the reverse permutation once, on first demand.
+func (a *Atoms) sortedIndex() []uint32 {
+	a.sortedOnce.Do(func() {
+		sorted := make([]uint32, len(a.strings))
+		for i := range sorted {
+			sorted[i] = uint32(i)
 		}
-		return sorted[i] < sorted[j]
+		sort.Slice(sorted, func(i, j int) bool {
+			x, y := a.strings[sorted[i]], a.strings[sorted[j]]
+			if x != y {
+				return x < y
+			}
+			return sorted[i] < sorted[j]
+		})
+		a.sorted = sorted
 	})
-	return &Atoms{strings: strings, sorted: sorted}
+	return a.sorted
 }
 
 // Len is the number of atoms.
@@ -55,11 +70,12 @@ func (a *Atoms) Resolve(id uint32) (string, bool) {
 
 // ID returns the atom id for a string; ok is false when never interned.
 func (a *Atoms) ID(s string) (uint32, bool) {
-	i := sort.Search(len(a.sorted), func(i int) bool {
-		return a.strings[a.sorted[i]] >= s
+	sorted := a.sortedIndex()
+	i := sort.Search(len(sorted), func(i int) bool {
+		return a.strings[sorted[i]] >= s
 	})
-	if i < len(a.sorted) && a.strings[a.sorted[i]] == s {
-		return a.sorted[i], true
+	if i < len(sorted) && a.strings[sorted[i]] == s {
+		return sorted[i], true
 	}
 	return 0, false
 }
