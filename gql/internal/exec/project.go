@@ -69,8 +69,11 @@ type projSink struct {
 	// Int-tier totalCmpF64 exactly, ties included) before any boxed
 	// evaluation. A failed typed read (null slot, absent property) or
 	// an unshadowable root falls back to the boxed flow per row.
-	kTyped    []func(row []value.Value) (float64, bool)
+	kTyped    []typedKey
 	kTypedBuf []float64
+	// ckVals/ckPresent back the chunked candidate path's bulk key reads.
+	ckVals    []int64
+	ckPresent []bool
 }
 
 // topkPayloadBuilds counts full projected payload constructions on the
@@ -92,30 +95,39 @@ var (
 	disableTypedSink bool
 )
 
+// typedKey is one classified ORDER BY key: a bare i64-column property
+// read of a node slot. fn is the per-row reader (the float64 conversion
+// OrderCmp's Int tier orders by); slot and col stay exposed so the
+// chunked candidate path can GetMany the column over a candidate slice
+// when the key reads the bound slot.
+type typedKey struct {
+	slot int
+	col  chickpeas.I64Col
+	fn   func(row []value.Value) (float64, bool)
+}
+
 // typedKeyReader classifies one ORDER BY key expression as a bare
-// i64-column property read of a node slot, returning a reader that
-// yields the column value through the same float64 conversion
-// OrderCmp's Int tier orders by. ok=false declines (any other shape,
-// dtype, or a missing column -- whose boxed reads would be Null).
-func typedKeyReader(ctx *eval.Ctx, e ast.Expr, slots map[string]int) (func(row []value.Value) (float64, bool), bool) {
+// i64-column property read of a node slot. ok=false declines (any other
+// shape, dtype, or a missing column -- whose boxed reads would be Null).
+func typedKeyReader(ctx *eval.Ctx, e ast.Expr, slots map[string]int) (typedKey, bool) {
 	prop, ok := e.(*ast.Prop)
 	if !ok {
-		return nil, false
+		return typedKey{}, false
 	}
 	slot, ok := slots[prop.Var]
 	if !ok {
-		return nil, false
+		return typedKey{}, false
 	}
 	native, ok := ctx.G.(graph.Native)
 	if !ok {
-		return nil, false
+		return typedKey{}, false
 	}
 	col, ok := native.Snapshot().ColIndexed(prop.Key)
 	if !ok || col.Dtype() != chickpeas.DtypeI64 {
-		return nil, false
+		return typedKey{}, false
 	}
 	r := col.I64()
-	return func(row []value.Value) (float64, bool) {
+	return typedKey{slot: slot, col: r, fn: func(row []value.Value) (float64, bool) {
 		id, ok := row[slot].AsNode()
 		if !ok {
 			return 0, false
@@ -125,7 +137,7 @@ func typedKeyReader(ctx *eval.Ctx, e ast.Expr, slots map[string]int) (func(row [
 			return 0, false
 		}
 		return float64(v), true
-	}, true
+	}}, true
 }
 
 func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width int) *projSink {
@@ -196,7 +208,7 @@ func newProjSink(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int, width
 				}
 			}
 			if p.kGate && !disableTypedSink {
-				typed := make([]func([]value.Value) (float64, bool), len(proj.OrderBy))
+				typed := make([]typedKey, len(proj.OrderBy))
 				allTyped := true
 				for k := range proj.OrderBy {
 					kexpr := proj.OrderBy[k].Expr
@@ -265,8 +277,8 @@ func (p *projSink) push(row []value.Value) bool {
 		// ties lose on both paths.
 		if p.kTyped != nil && p.topk.n == p.topk.bound && p.topk.thrValid {
 			typedOK := true
-			for k, rd := range p.kTyped {
-				v, ok := rd(row)
+			for k := range p.kTyped {
+				v, ok := p.kTyped[k].fn(row)
 				if !ok {
 					typedOK = false
 					break

@@ -88,3 +88,21 @@ func TestChunkedFinalMixedAggsAndDistinct(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(got))
 	}
 }
+
+func TestChunkedFinalTopKMatchesPerRow(t *testing.T) {
+	g := chunkGraph(t)
+	// Top-k gated projection over a big final fill: the typed bulk-key
+	// path must reproduce the per-row gate's rows exactly, order
+	// included, across a threshold that tightens mid-chunk.
+	q := "MATCH (h:Hub {hid: 1})-[:T]->(l:Leaf) RETURN l.v AS v ORDER BY v ASC LIMIT 5"
+	rows := chunkBoth(t, g, q)
+	if got := intCol(t, g, q, "v"); !slices.Equal(got, []int64{0, 1, 2, 3, 4}) {
+		t.Fatalf("top-k rows = %v", got)
+	}
+	_ = rows
+	// Descending too (threshold moves the other way).
+	chunkBoth(t, g, "MATCH (h:Hub {hid: 1})-[:T]->(l:Leaf) RETURN l.v AS v ORDER BY v DESC LIMIT 5")
+	// A key on the OUTER slot is chunk-constant; mixed with the
+	// candidate key it still must agree.
+	chunkBoth(t, g, "MATCH (h:Hub)-[:T]->(l:Leaf) RETURN h.hid AS hid, l.v AS v ORDER BY hid ASC, v DESC LIMIT 7")
+}

@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/value"
 )
 
@@ -210,4 +211,110 @@ func (t *topKRows) sorted() [][]value.Value {
 		outs[i] = t.outs[j]
 	}
 	return outs
+}
+
+// chunkKeyBatch is the bulk-key segment size for the chunked candidate
+// path: one GetMany dispatch per key per batch.
+const chunkKeyBatch = 1024
+
+// pushCandidates consumes a final match level's candidate fill against
+// the top-k gate: while the heap is hot (full, threshold valid) and
+// every key is typed, candidate-slot keys bulk-read via GetMany and
+// chunk-constant keys (other slots) read once, so a refused candidate
+// costs a float compare instead of a bind + dispatch + boxed key
+// evaluation. Survivors and every other regime route through the
+// per-row push, whose own prefilter re-checks against the CURRENT
+// threshold -- sequential semantics are exactly the per-row path's.
+func (p *projSink) pushCandidates(row []value.Value, slot int, cands []graph.NodeID) bool {
+	if !p.kGate || p.kTyped == nil || p.topk == nil {
+		for _, c := range cands {
+			row[slot] = value.Node(c)
+			if !p.push(row) {
+				return false
+			}
+		}
+		return true
+	}
+	nk := len(p.kTyped)
+	if cap(p.ckVals) < nk*chunkKeyBatch {
+		p.ckVals = make([]int64, nk*chunkKeyBatch)
+		p.ckPresent = make([]bool, nk*chunkKeyBatch)
+	}
+	constKey := make([]float64, nk)
+	i := 0
+	for i < len(cands) {
+		if !(p.topk.n == p.topk.bound && p.topk.thrValid) {
+			row[slot] = value.Node(cands[i])
+			if !p.push(row) {
+				return false
+			}
+			i++
+			continue
+		}
+		// Chunk-constant keys (reading slots other than the bound one)
+		// resolve once per batch; a failed read sends the whole batch
+		// per-row, mirroring the per-row prefilter's typedOK bail.
+		j := min(i+chunkKeyBatch, len(cands))
+		seg := cands[i:j]
+		constOK := true
+		for k := range p.kTyped {
+			if p.kTyped[k].slot != slot {
+				v, ok := p.kTyped[k].fn(row)
+				if !ok {
+					constOK = false
+					break
+				}
+				constKey[k] = v
+			}
+		}
+		if !constOK {
+			for _, c := range seg {
+				row[slot] = value.Node(c)
+				if !p.push(row) {
+					return false
+				}
+			}
+			i = j
+			continue
+		}
+		for k := range p.kTyped {
+			if p.kTyped[k].slot == slot {
+				p.kTyped[k].col.GetMany(seg, p.ckVals[k*chunkKeyBatch:], p.ckPresent[k*chunkKeyBatch:])
+			}
+		}
+		for ci, c := range seg {
+			ok := true
+			for k := range p.kTyped {
+				if p.kTyped[k].slot == slot {
+					if !p.ckPresent[k*chunkKeyBatch+ci] {
+						ok = false
+						break
+					}
+					p.kTypedBuf[k] = float64(p.ckVals[k*chunkKeyBatch+ci])
+				} else {
+					p.kTypedBuf[k] = constKey[k]
+				}
+			}
+			// The heap may have cooled mid-batch (a survivor invalidated
+			// the shadow); re-route the remainder through the hot-check.
+			if !ok || !(p.topk.n == p.topk.bound && p.topk.thrValid) {
+				row[slot] = value.Node(c)
+				if !p.push(row) {
+					return false
+				}
+				continue
+			}
+			if p.topk.typedReject(p.kTypedBuf) {
+				typedSinkRejects++
+				p.topk.seq++
+				continue
+			}
+			row[slot] = value.Node(c)
+			if !p.push(row) {
+				return false
+			}
+		}
+		i = j
+	}
+	return true
 }
