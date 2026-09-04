@@ -155,3 +155,35 @@ func TestSchemaIDMatchesAtomLookup(t *testing.T) {
 		t.Fatal("unknown name resolved")
 	}
 }
+
+// TestCompressRelTypesHugeIDFallback pins the direct-index palette
+// builder's bound: a type atom id at or past denseTypeBound routes to
+// the wide form even with few distinct types (the table would be
+// id-space huge), for both compress entries.
+func TestCompressRelTypesHugeIDFallback(t *testing.T) {
+	huge := RelType(denseTypeBound + 5)
+	r := compressRelTypes([]RelType{huge, huge, 1})
+	if r.wide == nil {
+		t.Fatal("compressRelTypes kept the palette past denseTypeBound")
+	}
+	if r.At(0) != huge || r.At(2) != 1 {
+		t.Fatal("wide fallback misread")
+	}
+	r2 := compressRelTypesU32([]uint32{uint32(huge), 7})
+	if r2.wide == nil {
+		t.Fatal("compressRelTypesU32 kept the palette past denseTypeBound")
+	}
+	if r2.At(0) != huge || r2.At(1) != 7 {
+		t.Fatal("u32 wide fallback misread")
+	}
+	// The overflow fallback mid-pass (palette cap) reuses ts for the
+	// typed form and copies for the u32 form; both read back exactly.
+	var many []uint32
+	for i := uint32(0); i < relTypePaletteMax+8; i++ {
+		many = append(many, i)
+	}
+	r3 := compressRelTypesU32(many)
+	if r3.wide == nil || r3.At(uint32(relTypePaletteMax+2)) != RelType(relTypePaletteMax+2) {
+		t.Fatal("u32 palette-overflow fallback wrong")
+	}
+}
