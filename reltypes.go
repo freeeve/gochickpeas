@@ -42,55 +42,86 @@ func (r *relTypes) Len() int {
 // palette form when the distinct types fit, else the wide form holding
 // ts itself (no copy).
 func compressRelTypes(ts []RelType) relTypes {
-	seen := map[RelType]uint8{}
+	// Single pass over a direct-index table (rel-type atoms intern
+	// early, so ids are small); see compressRelTypesU32 for the
+	// measurement that killed the per-position map form. Huge ids and
+	// palette overflow fall back to the wide form, reusing ts.
+	maxT := RelType(0)
 	for _, t := range ts {
-		if _, ok := seen[t]; !ok {
-			if len(seen) >= relTypePaletteMax {
-				return relTypes{wide: ts}
-			}
-			seen[t] = uint8(len(seen))
+		if t > maxT {
+			maxT = t
 		}
 	}
-	palette := make([]RelType, len(seen))
-	for t, i := range seen {
-		palette[i] = t
+	if maxT >= denseTypeBound {
+		return relTypes{wide: ts}
 	}
+	lut := make([]int16, int(maxT)+1)
+	for i := range lut {
+		lut[i] = -1
+	}
+	var palette []RelType
 	idx := make([]uint8, len(ts))
 	for pos, t := range ts {
-		idx[pos] = seen[t]
+		pi := lut[t]
+		if pi < 0 {
+			if len(palette) >= relTypePaletteMax {
+				return relTypes{wide: ts}
+			}
+			pi = int16(len(palette))
+			lut[t] = pi
+			palette = append(palette, t)
+		}
+		idx[pos] = uint8(pi)
 	}
 	return relTypes{palette: palette, idx: idx}
 }
+
+// denseTypeBound caps the direct-index palette table: a rel-type atom id
+// at or past it (never seen in practice -- type names intern before the
+// value flood) routes to the wide representation.
+const denseTypeBound = 1 << 16
 
 // compressRelTypesU32 is compressRelTypes over the on-disk u32 form,
 // building the narrow representation without materializing a wide
 // []RelType first (the load path's peak matters).
 func compressRelTypesU32(ts []uint32) relTypes {
-	seen := map[uint32]uint8{}
-	small := true
+	// One pass over a direct-index table instead of two passes of map
+	// probes: the map form's per-position hashing was 53% of FinBench
+	// SF10's load CPU (~670ms of mapaccess/memhash over 26M positions,
+	// the sweep's LOAD regression after the storage pair landed).
+	maxT := uint32(0)
 	for _, t := range ts {
-		if _, ok := seen[t]; !ok {
-			if len(seen) >= relTypePaletteMax {
-				small = false
-				break
-			}
-			seen[t] = uint8(len(seen))
+		if t > maxT {
+			maxT = t
 		}
 	}
-	if !small {
+	wideOut := func() relTypes {
 		wide := make([]RelType, len(ts))
 		for i, t := range ts {
 			wide[i] = RelType(t)
 		}
 		return relTypes{wide: wide}
 	}
-	palette := make([]RelType, len(seen))
-	for t, i := range seen {
-		palette[i] = RelType(t)
+	if maxT >= denseTypeBound {
+		return wideOut()
 	}
+	lut := make([]int16, int(maxT)+1)
+	for i := range lut {
+		lut[i] = -1
+	}
+	var palette []RelType
 	idx := make([]uint8, len(ts))
 	for pos, t := range ts {
-		idx[pos] = seen[t]
+		pi := lut[t]
+		if pi < 0 {
+			if len(palette) >= relTypePaletteMax {
+				return wideOut()
+			}
+			pi = int16(len(palette))
+			lut[t] = pi
+			palette = append(palette, RelType(t))
+		}
+		idx[pos] = uint8(pi)
 	}
 	return relTypes{palette: palette, idx: idx}
 }
