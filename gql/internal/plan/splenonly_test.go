@@ -32,6 +32,12 @@ func TestSpLenOnlyFires(t *testing.T) {
 		 NEXT MATCH p = ANY SHORTEST (s)-[:KNOWS]-{1,4}(e)
 		 FILTER length(p) >= 2
 		 RETURN e.pid AS pid`,
+		// Unbounded quantifier: {1,} has no Max and must still fire
+		// (the rustychickpeas corpus IC13 shape; their 365).
+		`MATCH (s:Person {pid: 0}) MATCH (e:Person)-[:KNOWS]-(:Person {pid: 3})
+		 RETURN s, e
+		 NEXT MATCH p = ANY SHORTEST (s)-[:KNOWS]-{1,}(e)
+		 RETURN e.pid AS pid, length(p) AS dist ORDER BY pid`,
 		// length(p) as an output expression.
 		`MATCH (s:Person {pid: 0}) MATCH (e:Person)-[:KNOWS]-(:Person {pid: 3})
 		 RETURN s, e
