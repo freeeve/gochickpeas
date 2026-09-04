@@ -54,12 +54,25 @@ func TestCompiledMemo(t *testing.T) {
 	if p1 == p2 {
 		t.Fatal("parameter-bearing expression was memoized")
 	}
-	// A function call (cFunc's reused argv) is tree-unshareable.
+	// A small-arity function call evaluates through the stack buffer,
+	// carries no reused argv, and shares.
 	ef := ast.Expr(&ast.Func{Name: "abs", Args: []ast.Expr{&ast.Prop{Var: "n", Key: "age"}}})
 	f1 := mm.NewFor(ctx, ef, slots, g)
 	f2 := mm.NewFor(ctx, ef, slots, g)
-	if f1 == f2 {
-		t.Fatal("cFunc-bearing tree was shared")
+	if f1 != f2 {
+		t.Fatal("stack-arity cFunc tree did not share")
+	}
+	// Past the stack threshold the per-node argv returns and the tree
+	// declines.
+	var wide []ast.Expr
+	for i := 0; i < cFuncStackArgs+1; i++ {
+		wide = append(wide, &ast.Prop{Var: "n", Key: "age"})
+	}
+	ew := ast.Expr(&ast.Func{Name: "coalesce", Args: wide})
+	w1 := mm.NewFor(ctx, ew, slots, g)
+	w2 := mm.NewFor(ctx, ew, slots, g)
+	if w1 == w2 {
+		t.Fatal("over-threshold cFunc tree was shared")
 	}
 	// Nil memo compiles fresh.
 	var nilMM *Memo

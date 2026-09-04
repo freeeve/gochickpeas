@@ -102,8 +102,20 @@ func treeShareable(c cnode) bool {
 			}
 		}
 		return true
+	case *cFunc:
+		// Stack-arity function nodes carry no reused argv and are
+		// immutable; larger arities keep the per-node row and decline.
+		if len(n.args) > cFuncStackArgs {
+			return false
+		}
+		for _, a := range n.args {
+			if !treeShareable(a) {
+				return false
+			}
+		}
+		return true
 	}
-	return false // cSubquery, cInCarried, cFunc, unknown kinds
+	return false // cSubquery, cInCarried, unknown kinds
 }
 
 // memoCap bounds the compiled-expression memo (a runaway backstop; the

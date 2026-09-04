@@ -158,6 +158,20 @@ func ceval(ctx *eval.Ctx, c cnode, g *chickpeas.Snapshot, row []value.Value, slo
 		}
 		return value.Null()
 	case *cFunc:
+		// Small arities evaluate through a stack buffer: no ApplyFunc arm
+		// retains the argument slice, so the buffer never escapes, and
+		// with no reused argv the node is immutable -- which is what lets
+		// function-bearing trees into the cross-execution memo. Larger
+		// arities (rare) keep the lazily allocated per-node row and stay
+		// per-run.
+		if len(n.args) <= cFuncStackArgs {
+			var buf [cFuncStackArgs]value.Value
+			argv := buf[:len(n.args)]
+			for i, a := range n.args {
+				argv[i] = ceval(ctx, a, g, row, slots)
+			}
+			return eval.ApplyFunc(n.op, argv)
+		}
 		if n.argv == nil {
 			n.argv = make([]value.Value, len(n.args))
 		}
