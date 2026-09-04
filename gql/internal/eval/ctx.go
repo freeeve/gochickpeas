@@ -62,7 +62,11 @@ type Ctx struct {
 	// Matchers memoizes compiled node/rel matchers across executions of
 	// one snapshot's cached plans (set by the PlanCache; nil on uncached
 	// runs, where every compile is fresh).
-	Matchers    *graph.MatcherMemo
+	Matchers *graph.MatcherMemo
+	// CompMemo is the compiled-expression memo (*compile.Memo, held as
+	// any because compile sits above this package; the executor
+	// asserts). Same lifecycle as Matchers.
+	CompMemo    any
 	DecorBuilds int
 	// ScanCSE memoizes a CSE-marked recorder segment's filtered-scan
 	// survivor ids for later consumer segments in the same execution,

@@ -43,6 +43,9 @@ func compileEval(ctx *eval.Ctx, e ast.Expr, slots map[string]int) RowEval {
 		return interpExpr{e}
 	}
 	if n, ok := ctx.G.(graph.Native); ok {
+		if mm, ok2 := ctx.CompMemo.(*compile.Memo); ok2 {
+			return mm.NewFor(ctx, e, slots, n.Snapshot())
+		}
 		return compile.New(ctx, e, slots, n.Snapshot())
 	}
 	return interpExpr{e}

@@ -26,6 +26,7 @@ import (
 
 	chickpeas "github.com/freeeve/gochickpeas"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
+	"github.com/freeeve/gochickpeas/gql/internal/compile"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
 	"github.com/freeeve/gochickpeas/gql/internal/graph"
 	"github.com/freeeve/gochickpeas/gql/internal/plan"
@@ -102,6 +103,9 @@ type PlanCache struct {
 	// executions (the cache is per-snapshot by contract; the memo adopts
 	// the first snapshot it sees and bypasses any other).
 	matchers graph.MatcherMemo
+	// compMemo memoizes shareable compiled expression trees the same way
+	// (keys carry the snapshot, so no adoption needed).
+	compMemo compile.Memo
 }
 
 // NewPlanCache is an empty cache bounded to maxBytes of approximate
@@ -207,11 +211,11 @@ func (c *PlanCache) runFlipped(g *chickpeas.Snapshot, query string, params map[s
 			c.evict()
 		}
 		c.mu.Unlock()
-		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers}
+		ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers, CompMemo: &c.compMemo}
 		return execPlan(gr, se.plan, se.mode, 0, ctx)
 	}
 	gr := graph.New(g)
-	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers}
+	ctx := &eval.Ctx{G: gr, Named: params, ForceInterp: forceInterp, Matchers: &c.matchers, CompMemo: &c.compMemo}
 	return execPlan(gr, se.plan, se.mode, 0, ctx)
 }
 
@@ -219,7 +223,7 @@ func (c *PlanCache) runFlipped(g *chickpeas.Snapshot, query string, params map[s
 // named parameters (cached EXPLAIN/PROFILE renders show no planning time,
 // matching the Rust engine).
 func (c *PlanCache) execCached(gr *graph.SnapshotGraph, cp *cachedPlan, lifted []value.Value, named map[string]value.Value) (*Rows, error) {
-	ctx := &eval.Ctx{G: gr, Params: lifted, Named: named, ForceInterp: forceInterp, Matchers: &c.matchers}
+	ctx := &eval.Ctx{G: gr, Params: lifted, Named: named, ForceInterp: forceInterp, Matchers: &c.matchers, CompMemo: &c.compMemo}
 	return execPlan(gr, chooseAdaptivePlan(cp.plan, ctx, gr), cp.mode, 0, ctx)
 }
 
