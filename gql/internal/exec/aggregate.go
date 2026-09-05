@@ -8,6 +8,7 @@ package exec
 
 import (
 	"math"
+	"sync"
 
 	chickpeas "github.com/freeeve/gochickpeas"
 
@@ -326,6 +327,9 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 // generic-path group demotes the whole table (demoteKeys).
 func (a *aggregator) appendGroupPacked(gk64 uint64) int {
 	idx := a.appendGroupSlots(true)
+	if a.packedKeys == nil {
+		a.packedKeys = packedKeyBank.checkout()
+	}
 	a.packedKeys = append(a.packedKeys, gk64)
 	aggPackedKeyGroups++
 	return idx
@@ -386,6 +390,7 @@ func (a *aggregator) demoteKeys() {
 		}
 		a.keysChunks[c] = appendUnpackedKey(a.keysChunks[c], gk, nk)
 	}
+	packedKeyBank.checkin(a.packedKeys)
 	a.packedKeys = nil
 	aggKeyDemotions++
 }
@@ -466,6 +471,59 @@ func (a *aggregator) groupIdx(keys []value.Value) int {
 	}
 	a.gkScratch = gk
 	return a.index.GetOrCreate(gk, func() int { return a.appendGroup(keys) })
+}
+
+// packedKeyBank carries packedKeys backing slices across aggregator
+// lifetimes: the []uint64 grows one geometric ladder per aggregation
+// (~log2(groups) allocations to 1M on Q4) and is discarded whole at
+// finalize -- and on a demotion the whole ladder becomes garbage (the
+// mixed-type-key case, Q12/Q5). A bounded STRONG store, not a
+// sync.Pool: Q4 allocates ~208 MB/run so a GC lands between runs and
+// the pool's two-GC lifetime would drop the slabs (the task-360
+// finding). Bounds: 4 slabs, 32 MiB (4M keys) each.
+var packedKeyBank = newU64SlabBank(4, 4<<20)
+
+type u64SlabBank struct {
+	mu      sync.Mutex
+	free    [][]uint64
+	keep    int
+	maxKeep int
+}
+
+func newU64SlabBank(keep, maxKeep int) *u64SlabBank {
+	return &u64SlabBank{keep: keep, maxKeep: maxKeep}
+}
+
+func (b *u64SlabBank) checkout() []uint64 {
+	b.mu.Lock()
+	if n := len(b.free); n > 0 {
+		s := b.free[n-1]
+		b.free = b.free[:n-1]
+		b.mu.Unlock()
+		return s[:0]
+	}
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *u64SlabBank) checkin(s []uint64) {
+	if s == nil || cap(s) > b.maxKeep {
+		return
+	}
+	b.mu.Lock()
+	if len(b.free) < b.keep {
+		b.free = append(b.free, s)
+	}
+	b.mu.Unlock()
+}
+
+// releasePackedKeys banks the packed-key backing (retaining capacity)
+// and detaches it -- called once every group has been emitted.
+func (a *aggregator) releasePackedKeys() {
+	if a.packedKeys != nil {
+		packedKeyBank.checkin(a.packedKeys)
+		a.packedKeys = nil
+	}
 }
 
 // aggPackedKeyGroups / aggKeyDemotions / disablePackedKeys are the

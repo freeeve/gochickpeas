@@ -161,6 +161,7 @@ func (a *aggregator) postCompile(ctx *eval.Ctx, proj *plan.ProjPlan) (map[string
 // no input still emits its zeroed row). The row is only valid for the
 // duration of the call.
 func (a *aggregator) forEachGroup(ctx *eval.Ctx, proj *plan.ProjPlan, fn func(row []value.Value)) {
+	defer a.releasePackedKeys()
 	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
 		a.appendGroup(nil)
 	}
@@ -180,6 +181,7 @@ func (a *aggregator) forEachGroup(ctx *eval.Ctx, proj *plan.ProjPlan, fn func(ro
 // over no input), applies the nested-aggregate scalar wrappers over the
 // hidden slots, then orders and paginates.
 func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) [][]value.Value {
+	defer a.releasePackedKeys()
 	if a.nGroups == 0 && len(proj.GroupIdx) == 0 {
 		a.appendGroup(nil)
 	}
