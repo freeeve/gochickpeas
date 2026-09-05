@@ -182,10 +182,23 @@ techniques land; cite the commit that proved the win.
    rules: an A/B's legs must share a merge-base with current main,
    checked BEFORE the run (`git rev-list --count $(git merge-base A
    B)..A` -- a nonzero count on either leg voids the comparison;
-   the sibling's one-liner, adopted verbatim); and a conclusion drawn from someone else's
+   the sibling's one-liner, adopted verbatim -- the sharp part being
+   WHY existing gates miss it: a CLEAN timing verdict, a quiet-box
+   lock, non-overlapping legs, and byte-identical rows all validate
+   the RUN, and none of them inspect what the binaries CONTAIN); and a conclusion drawn from someone else's
    number carries that number's instrument note, so a retraction
    upstream can be traced and unwound downstream (ours was, same-day
-   -- tasks 376/377/610/611).
+   -- tasks 376/377/610/611). Three corollaries from the sibling's
+   full write-up (their 44/45): a parked branch's status label is a
+   claim with a date on it -- price a revival by BUILDING in a
+   worktree, not by reading the label; a port of a result-identical
+   optimization cannot be validated by the identity oracle (a prune
+   wired to a stale threshold still returns correct rows, just
+   without pruning) -- re-verify ENGAGEMENT on the new base before
+   timing; and an engagement counter on the wrong side of a
+   `continue`-based reject reads as absence -- ours count the offered
+   side with rejects on a separate counter, and any new counter must
+   state which side it samples.
 
 ## Where Go allocates, and what to do about it
 
