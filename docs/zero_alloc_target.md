@@ -211,7 +211,13 @@ techniques land; cite the commit that proved the win.
     also what a deleted mechanism produces -- so the ASC twin asserts a
     PREDICTED reject count alongside the engagement count (their 381
     flag, adopted). A number without its engagement reading is not yet
-    a measurement of the thing named.
+    a measurement of the thing named. And a cross-engine (or
+    cross-component) counter comparison is valid only when both
+    counters sample the SAME SEAM: two engines' "ic11 candidates"
+    differed 17x -- one counted a distinct-terminal fill, the other a
+    top-k sink -- while the true populations matched to the unit once
+    the seams aligned (their 384/our 616); query name and dataset are
+    not enough to make two counters comparable.
 
 11. **When a fix has an exact discrete signature, pin the signature,
     not the resource it happened to consume.** The sibling's flip-memo
