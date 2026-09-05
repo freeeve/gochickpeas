@@ -9,6 +9,8 @@ package exec
 import (
 	"math"
 
+	chickpeas "github.com/freeeve/gochickpeas"
+
 	"github.com/freeeve/gochickpeas/flatset"
 	"github.com/freeeve/gochickpeas/gql/internal/ast"
 	"github.com/freeeve/gochickpeas/gql/internal/eval"
@@ -144,7 +146,14 @@ type aggregator struct {
 	// dispatch. Same identity argument as keySlots.
 	argSlots []int
 
-	nGroups     int
+	nGroups int
+	// keysPacked marks the packed-key regime: group key tuples live only
+	// in packedKeys (one uint64 per group) and keysChunks stays empty
+	// until a demotion. Entered when the first group arrives through the
+	// packed index; left (forever, via demoteKeys) on the first group
+	// whose keys cannot pack.
+	keysPacked  bool
+	packedKeys  []uint64
 	keysChunks  [][]value.Value
 	stateChunks [][]aggState
 	seenChunks  [][]distinctSet   // filled only when a DISTINCT aggregate exists
@@ -300,14 +309,40 @@ func (a *aggregator) itemsOf(idx int) [][]value.Value {
 }
 
 // appendGroup claims the next slab windows for a new group, copying its
-// key tuple in.
+// key tuple in. The packed form (appendGroupPacked) claims the same
+// windows but stores only the 8-byte packed key.
 func (a *aggregator) appendGroup(keys []value.Value) int {
+	idx := a.appendGroupSlots(false)
+	c, _ := chunkWindow(idx)
+	a.keysChunks[c] = append(a.keysChunks[c], keys...)
+	return idx
+}
+
+// appendGroupPacked claims a group whose key tuple lives ONLY as its
+// packed uint64: two boxed key Values per group (40 B each) were ~35% of
+// a large group table's bytes (the sibling engine sized the identical
+// redundancy at 45% of theirs, their 387) and are fully reconstructible
+// from the pack tags. Sound only while every group packs; the first
+// generic-path group demotes the whole table (demoteKeys).
+func (a *aggregator) appendGroupPacked(gk64 uint64) int {
+	idx := a.appendGroupSlots(true)
+	a.packedKeys = append(a.packedKeys, gk64)
+	aggPackedKeyGroups++
+	return idx
+}
+
+// appendGroupSlots is the shared slab bookkeeping.
+func (a *aggregator) appendGroupSlots(packed bool) int {
 	idx := a.nGroups
 	a.nGroups++
 	c, w := chunkWindow(idx)
 	if w == 0 {
 		n := chunkCap(c)
-		a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
+		if !packed {
+			a.keysChunks = append(a.keysChunks, make([]value.Value, 0, n*len(a.groupC)))
+		} else {
+			a.keysChunks = append(a.keysChunks, nil)
+		}
 		a.stateChunks = append(a.stateChunks, make([]aggState, 0, n*len(a.aggC)))
 		if a.hasDistinct {
 			if a.rec == nil {
@@ -327,11 +362,32 @@ func (a *aggregator) appendGroup(keys []value.Value) int {
 			a.itemsChunks = append(a.itemsChunks, make([][]value.Value, n*len(a.aggC)))
 		}
 	}
-	a.keysChunks[c] = append(a.keysChunks[c], keys...)
 	for _, k := range a.kinds {
 		a.stateChunks[c] = append(a.stateChunks[c], aggState{kind: k})
 	}
 	return idx
+}
+
+// demoteKeys materializes every packed group's key tuple into the
+// keysChunks slabs (replaying appendGroup's chunk geometry exactly, so
+// emission order and window math are unchanged) and switches the
+// aggregator to the general form -- called when a row's keys fail to
+// pack after packed groups exist.
+func (a *aggregator) demoteKeys() {
+	if !a.keysPacked {
+		return
+	}
+	a.keysPacked = false
+	nk := len(a.groupC)
+	for idx, gk := range a.packedKeys {
+		c, w := chunkWindow(idx)
+		if w == 0 && a.keysChunks[c] == nil {
+			a.keysChunks[c] = make([]value.Value, 0, chunkCap(c)*nk)
+		}
+		a.keysChunks[c] = appendUnpackedKey(a.keysChunks[c], gk, nk)
+	}
+	a.packedKeys = nil
+	aggKeyDemotions++
 }
 
 // packGroupKey packs a group-key tuple into a uint64: a single entity id
@@ -410,4 +466,55 @@ func (a *aggregator) groupIdx(keys []value.Value) int {
 	}
 	a.gkScratch = gk
 	return a.index.GetOrCreate(gk, func() int { return a.appendGroup(keys) })
+}
+
+// aggPackedKeyGroups / aggKeyDemotions / disablePackedKeys are the
+// packed-key regime's engagement counters and differential pin
+// (sequential-reader constraint as documented on the chunk counters).
+var (
+	aggPackedKeyGroups int
+	aggKeyDemotions    int
+	disablePackedKeys  bool
+)
+
+// AggPackedKeyGroups exposes the engagement counter to tests.
+func AggPackedKeyGroups() int { return aggPackedKeyGroups }
+
+// AggKeyDemotions exposes the demotion counter to tests.
+func AggKeyDemotions() int { return aggKeyDemotions }
+
+// SetDisablePackedKeys pins comparisons to the materialized-key form.
+func SetDisablePackedKeys(v bool) { disablePackedKeys = v }
+
+// appendUnpackedKey reconstructs a packed group key's Value tuple from
+// its pack tags -- the exact inverse of packGroupKey1/packGroupKey2.
+func appendUnpackedKey(dst []value.Value, gk uint64, nk int) []value.Value {
+	if nk == 2 {
+		// Tag 3: two 31-bit (kind bit + 30-bit id) entities.
+		e1 := (gk >> 31) & (1<<31 - 1)
+		e2 := gk & (1<<31 - 1)
+		return append(dst, unpackEntity30(e1), unpackEntity30(e2))
+	}
+	switch gk >> 62 {
+	case 0:
+		// 62-bit two's-complement integer: sign-extend from bit 61.
+		v := gk & (1<<62 - 1)
+		if v&(1<<61) != 0 {
+			v |= uint64(0xC000000000000000)
+		}
+		return append(dst, value.Int(int64(v)))
+	case 1:
+		return append(dst, value.Node(chickpeas.NodeID(uint32(gk))))
+	default: // 2
+		return append(dst, value.Rel(uint32(gk)))
+	}
+}
+
+// unpackEntity30 is packedEntity30's inverse.
+func unpackEntity30(e uint64) value.Value {
+	id := uint32(e & (1<<30 - 1))
+	if e&(1<<30) != 0 {
+		return value.Rel(id)
+	}
+	return value.Node(chickpeas.NodeID(id))
 }

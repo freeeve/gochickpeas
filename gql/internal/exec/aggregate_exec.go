@@ -41,10 +41,24 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 			gk64, packed = packGroupKey2(m[a.keySlots[0]], m[a.keySlots[1]])
 		}
 		if packed {
-			// One probe covers both outcomes: a miss materializes the key
-			// values (identical to their evaluation -- bare slot reads) only
-			// to seed the new group.
+			// One probe covers both outcomes: a miss seeds the new group
+			// from the packed key alone (the boxed tuple reconstructs from
+			// the pack tags at emission; disablePackedKeys pins the
+			// materialized form for differentials).
 			idx = a.indexI.GetOrCreate(gk64, func() int {
+				if disablePackedKeys {
+					a.keyScratch = a.keyScratch[:0]
+					for _, s := range a.keySlots {
+						a.keyScratch = append(a.keyScratch, m[s])
+					}
+					return a.appendGroup(a.keyScratch)
+				}
+				if a.nGroups == 0 {
+					a.keysPacked = true
+				}
+				if a.keysPacked {
+					return a.appendGroupPacked(gk64)
+				}
 				a.keyScratch = a.keyScratch[:0]
 				for _, s := range a.keySlots {
 					a.keyScratch = append(a.keyScratch, m[s])
@@ -54,6 +68,7 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 		}
 	}
 	if idx < 0 {
+		a.demoteKeys()
 		a.keyScratch = a.keyScratch[:0]
 		for _, c := range a.groupC {
 			a.keyScratch = append(a.keyScratch, c.Eval(ctx, m, slots))
@@ -200,9 +215,18 @@ func (a *aggregator) finalize(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[stri
 // visible columns plus the hidden accumulator slots the post-aggregation
 // wrappers read).
 func (a *aggregator) emitGroup(ctx *eval.Ctx, proj *plan.ProjPlan, idx int, row []value.Value, postC []RowEval, postSlots map[string]int) {
-	keys := a.keysOf(idx)
-	for k, gi := range proj.GroupIdx {
-		row[gi] = keys[k]
+	if a.keysPacked {
+		// Packed regime: reconstruct the tuple straight into the row --
+		// value construction is inline, no slab read, no allocation.
+		a.keyScratch = appendUnpackedKey(a.keyScratch[:0], a.packedKeys[idx], len(a.groupC))
+		for k, gi := range proj.GroupIdx {
+			row[gi] = a.keyScratch[k]
+		}
+	} else {
+		keys := a.keysOf(idx)
+		for k, gi := range proj.GroupIdx {
+			row[gi] = keys[k]
+		}
 	}
 	states := a.statesOf(idx)
 	var mm []value.Value

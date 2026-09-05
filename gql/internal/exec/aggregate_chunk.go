@@ -65,6 +65,17 @@ func (a *aggSink) pushCandidates(row []value.Value, slot int, cands []graph.Node
 		}
 		if packed {
 			idx := agg.indexI.GetOrCreate(gk64, func() int {
+				// Mirror update's packed-key regime exactly: a chunk-path
+				// group created outside it would leave packedKeys one
+				// entry short and emitGroup out of range.
+				if !disablePackedKeys {
+					if agg.nGroups == 0 {
+						agg.keysPacked = true
+					}
+					if agg.keysPacked {
+						return agg.appendGroupPacked(gk64)
+					}
+				}
 				agg.keyScratch = agg.keyScratch[:0]
 				for _, s := range agg.keySlots {
 					agg.keyScratch = append(agg.keyScratch, row[s])
