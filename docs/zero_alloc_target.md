@@ -172,6 +172,19 @@ techniques land; cite the commit that proved the win.
    re-planning per hit (71cf3ac, 13 queries). Convention shared with
    rustychickpeas (their re-pricing-trigger framing; our finding).
 
+9. **A cross-engine (or cross-branch) corroboration inherits the weaker
+   instrument's validity.** Two independently-measured numbers landing
+   1.5ms apart read as confirmation and are exactly as seductive as
+   they are uninformative when one leg is confounded -- the sibling
+   engine's ic9 "convergence" was recorded as an established floor for
+   hours before their leg was retracted (branch based 201 commits
+   behind main, so their A/B measured drift plus the change). Two
+   rules: an A/B's legs must share a merge-base with current main,
+   checked BEFORE the run; and a conclusion drawn from someone else's
+   number carries that number's instrument note, so a retraction
+   upstream can be traced and unwound downstream (ours was, same-day
+   -- tasks 376/377/610/611).
+
 ## Where Go allocates, and what to do about it
 
 ### 1. Built-in maps in hot loops
