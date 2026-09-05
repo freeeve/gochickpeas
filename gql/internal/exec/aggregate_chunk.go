@@ -14,6 +14,14 @@ import (
 // path's engagement counter and differential pin: the counter proves a
 // test exercised the batch path, the toggle pins comparisons to the
 // per-row path.
+//
+// CONSTRAINT: these counters (and typedSinkRejects) are plain
+// package-level ints asserted for exact deltas in tests -- valid only
+// while the tests reading them run sequentially. A future t.Parallel on
+// any test that engages these paths will break the OLDER assertions in
+// their own names (the sibling engine hit exactly this on its second
+// reader; their 383). Parallelize those tests only after moving the
+// counters to per-test isolation.
 var (
 	chunkedFinalPushes  int
 	disableChunkedFinal bool

@@ -213,6 +213,20 @@ techniques land; cite the commit that proved the win.
     flag, adopted). A number without its engagement reading is not yet
     a measurement of the thing named.
 
+11. **When a fix has an exact discrete signature, pin the signature,
+    not the resource it happened to consume.** The sibling's flip-memo
+    pin is "0 plan builds across 5 warm hits" (reads 5 with the memo
+    disabled -- fails pre-fix for the right reason), NOT an allocation
+    bound: the two states the fix separates ("planned again" vs
+    "planned again but cheaply") differ by exactly one integer on the
+    build counter and are indistinguishable inside a 2x-headroom alloc
+    bound that would drift into noise and silently stop meaning
+    anything (their 383). Allocation counts are good motivation and
+    poor pins. Corollary for our own counters: a package-level counter
+    asserted exactly is a claim that its readers run sequentially --
+    the second test to engage it breaks the FIRST test's name; the
+    constraint is now documented at the counter sites.
+
 ## Where Go allocates, and what to do about it
 
 ### 1. Built-in maps in hot loops
