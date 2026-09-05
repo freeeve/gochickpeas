@@ -200,6 +200,19 @@ techniques land; cite the commit that proved the win.
    side with rejects on a separate counter, and any new counter must
    state which side it samples.
 
+10. **A control is a claim about the control, and needs its own
+    instrument reading.** The sibling engine's flip-cost probe used a
+    second literal of the same query shape as its quiet control; the
+    control was itself flipped, both legs were routed, and the
+    allocation column alone read "flipping is cheaper" -- a confident,
+    backwards conclusion from a clean-looking number, caught only by
+    the engagement counter sitting NEXT to it (their 382). Same family:
+    our DESC top-k case legitimately rejects zero candidates, which is
+    also what a deleted mechanism produces -- so the ASC twin asserts a
+    PREDICTED reject count alongside the engagement count (their 381
+    flag, adopted). A number without its engagement reading is not yet
+    a measurement of the thing named.
+
 ## Where Go allocates, and what to do about it
 
 ### 1. Built-in maps in hot loops

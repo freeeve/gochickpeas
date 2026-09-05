@@ -26,6 +26,11 @@ func ChunkedFinalPushes() int { return chunkedFinalPushes }
 // SetDisableChunkedFinal pins comparisons to the per-row path.
 func SetDisableChunkedFinal(v bool) { disableChunkedFinal = v }
 
+// TypedSinkRejects exposes the top-k typed-reject counter: read TOGETHER
+// with the engagement counter, a zero-drop run is distinguishable from a
+// deleted mechanism (the sibling engine's DESC-case lesson, their 381).
+func TypedSinkRejects() int { return typedSinkRejects }
+
 // chunkFloor gates the chunked final level per level-instance: below it
 // the per-candidate loop's fixed costs beat the batch setup (the
 // round-20 batch-sweep lane regressed IC9 30% on ~39-candidate fills;

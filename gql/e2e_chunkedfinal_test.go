@@ -95,12 +95,25 @@ func TestChunkedFinalTopKMatchesPerRow(t *testing.T) {
 	// path must reproduce the per-row gate's rows exactly, order
 	// included, across a threshold that tightens mid-chunk.
 	q := "MATCH (h:Hub {hid: 1})-[:T]->(l:Leaf) RETURN l.v AS v ORDER BY v ASC LIMIT 5"
+	// Leaves fill in v-order, so ASC LIMIT 5 fills the heap with 0..4
+	// and every later candidate strictly loses: the reject count is
+	// PREDICTED, not just observed, and asserting it alongside the
+	// engagement count distinguishes a zero-drop run from a deleted
+	// mechanism (a build with the typed reject ripped out returns
+	// identical rows and would pass the differential alone).
+	rejBefore := exec.TypedSinkRejects()
 	rows := chunkBoth(t, g, q)
 	if got := intCol(t, g, q, "v"); !slices.Equal(got, []int64{0, 1, 2, 3, 4}) {
 		t.Fatalf("top-k rows = %v", got)
 	}
 	_ = rows
-	// Descending too (threshold moves the other way).
+	ascRejects := exec.TypedSinkRejects() - rejBefore
+	if ascRejects < 95 {
+		t.Fatalf("ASC typed rejects = %d, want >= 95 (chunked leg alone predicts 95)", ascRejects)
+	}
+	// Descending: an ascending fill under a descending bound improves
+	// the threshold on every candidate -- near-zero rejects is CORRECT
+	// here, which is exactly why the ASC assertion above must exist.
 	chunkBoth(t, g, "MATCH (h:Hub {hid: 1})-[:T]->(l:Leaf) RETURN l.v AS v ORDER BY v DESC LIMIT 5")
 	// A key on the OUTER slot is chunk-constant; mixed with the
 	// candidate key it still must agree.
