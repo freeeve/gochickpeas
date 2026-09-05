@@ -217,7 +217,13 @@ techniques land; cite the commit that proved the win.
     differed 17x -- one counted a distinct-terminal fill, the other a
     top-k sink -- while the true populations matched to the unit once
     the seams aligned (their 384/our 616); query name and dataset are
-    not enough to make two counters comparable.
+    not enough to make two counters comparable. And before publishing
+    a DERIVED figure, name the denominator's scope and check it matches
+    the numerator's: a per-query total divided by output rows printed
+    as "fan-in" was wrong by four orders of magnitude the moment a
+    query had more than one aggregate stage -- and invisible on every
+    query where the stage count happened to be one (the sibling's 386,
+    their item 48, adopted).
 
 11. **When a fix has an exact discrete signature, pin the signature,
     not the resource it happened to consume.** The sibling's flip-memo
