@@ -180,7 +180,9 @@ techniques land; cite the commit that proved the win.
    hours before their leg was retracted (branch based 201 commits
    behind main, so their A/B measured drift plus the change). Two
    rules: an A/B's legs must share a merge-base with current main,
-   checked BEFORE the run; and a conclusion drawn from someone else's
+   checked BEFORE the run (`git rev-list --count $(git merge-base A
+   B)..A` -- a nonzero count on either leg voids the comparison;
+   the sibling's one-liner, adopted verbatim); and a conclusion drawn from someone else's
    number carries that number's instrument note, so a retraction
    upstream can be traced and unwound downstream (ours was, same-day
    -- tasks 376/377/610/611).
