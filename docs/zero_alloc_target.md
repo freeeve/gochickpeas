@@ -289,6 +289,29 @@ techniques land; cite the commit that proved the win.
     engine now has four similarly-named memos (MatcherMemo, compile.Memo,
     the decor shared store, the packed-key bank) -- price each against
     ITS own storage, never by name-analogy.
+14. **Ship a runtime A/B hatch on any lever you might later measure at
+    single-digit percent -- even one that looks obviously
+    one-directional.** Two prebuilt binaries answer "is there a
+    difference" but cannot ATTRIBUTE a small one to the source change,
+    because the binaries differ in more than the source: link order and
+    function alignment alone produce ~1.5% between independently built
+    artifacts, no source cause needed. Disjoint ABBA ranges rule out
+    run-to-run noise, not a systematic layout difference. Only a
+    same-binary toggle in ONE process separates the two. The sibling's
+    q4 aggregate levers went out without a hatch and their gated ABBA
+    landed at -1.5% disjoint -- unattributable between real gain and
+    layout, and by the time the box went quiet the cheap option was
+    gone (their 400). Our own q4 wall NULL had the same flaw from the
+    other direction: two-binary ABBA, legs interleaving, which is even
+    weaker evidence of no-effect than their disjoint 1.5%. Both agree
+    the CELL does not move, which is all that was at stake -- but
+    neither measurement can price the effect, because neither lever was
+    built A/B-able in one process. (Our packed-key half HAS the hatch
+    via disablePackedKeys; the slim-aggState half does not, having
+    removed the fat path it would toggle against.) The hatch costs two
+    lines at build time and is unavailable at measure time; add it
+    prospectively to any lever whose wall effect you might one day want
+    to attribute.
 
 ## Where Go allocates, and what to do about it
 
