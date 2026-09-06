@@ -111,6 +111,20 @@ func TestPackedEntityAndGroupKey2(t *testing.T) {
 	}
 }
 
+// accPair pairs an aggState with its numAcc so the split-out heavy
+// accumulators (numChunks, gated by hasNumAcc in the aggregator) are
+// exercised through the same per-kind arithmetic the streaming path
+// uses. Count-only aggregates never read the numAcc.
+type accPair struct {
+	s aggState
+	n numAcc
+}
+
+func newAcc(k plan.AggKind) *accPair { return &accPair{s: aggState{kind: k}} }
+
+func (p *accPair) update(v value.Value, present bool) { p.s.update(&p.n, v, present) }
+func (p *accPair) finalize() value.Value              { return p.s.finalize(&p.n) }
+
 // TestAggStateCountSumAvg pins the per-group accumulator arithmetic for the
 // scalar kinds: count(*) counts nulls while count(expr) skips them, sum
 // promotes to float on a mixed column and reports an int64-overflowing total
@@ -118,14 +132,14 @@ func TestPackedEntityAndGroupKey2(t *testing.T) {
 // empty group.
 func TestAggStateCountSumAvg(t *testing.T) {
 	// count(*) folds every row, present=false, including nulls.
-	star := &aggState{kind: plan.AggCount}
+	star := newAcc(plan.AggCount)
 	star.update(value.Null(), false)
 	star.update(value.Int(1), false)
 	if c, _ := star.finalize().AsInt(); c != 2 {
 		t.Fatalf("count(*) = %v, want 2", star.finalize())
 	}
 	// count(expr) skips null arguments, counts the rest.
-	cnt := &aggState{kind: plan.AggCount}
+	cnt := newAcc(plan.AggCount)
 	cnt.update(value.Null(), true)
 	cnt.update(value.Int(7), true)
 	cnt.update(value.Str("x"), true)
@@ -134,12 +148,12 @@ func TestAggStateCountSumAvg(t *testing.T) {
 	}
 
 	// An empty sum is Int(0), not Null.
-	empty := &aggState{kind: plan.AggSum}
+	empty := newAcc(plan.AggSum)
 	if v, ok := empty.finalize().AsInt(); !ok || v != 0 {
 		t.Fatalf("empty sum = %v, want Int(0)", empty.finalize())
 	}
 	// An all-int sum stays Int.
-	si := &aggState{kind: plan.AggSum}
+	si := newAcc(plan.AggSum)
 	for _, x := range []int64{2, 3, 5} {
 		si.update(value.Int(x), true)
 	}
@@ -147,14 +161,14 @@ func TestAggStateCountSumAvg(t *testing.T) {
 		t.Fatalf("int sum = %v, want Int(10)", si.finalize())
 	}
 	// A mixed int+float column promotes the total to Float.
-	mix := &aggState{kind: plan.AggSum}
+	mix := newAcc(plan.AggSum)
 	mix.update(value.Int(4), true)
 	mix.update(value.Float(0.5), true)
 	if f, ok := mix.finalize().AsFloat(); !ok || math.Abs(f-4.5) > 1e-12 {
 		t.Fatalf("mixed sum = %v, want Float(4.5)", mix.finalize())
 	}
 	// A total outside int64 range is Null (no per-row overflow error).
-	ov := &aggState{kind: plan.AggSum}
+	ov := newAcc(plan.AggSum)
 	ov.update(value.Int(math.MaxInt64), true)
 	ov.update(value.Int(math.MaxInt64), true)
 	if !ov.finalize().IsNull() {
@@ -162,11 +176,11 @@ func TestAggStateCountSumAvg(t *testing.T) {
 	}
 
 	// avg is Null over an empty group, else the arithmetic mean.
-	ea := &aggState{kind: plan.AggAvg}
+	ea := newAcc(plan.AggAvg)
 	if !ea.finalize().IsNull() {
 		t.Fatalf("empty avg = %v, want Null", ea.finalize())
 	}
-	av := &aggState{kind: plan.AggAvg}
+	av := newAcc(plan.AggAvg)
 	for _, x := range []int64{2, 4, 9} {
 		av.update(value.Int(x), true)
 	}
@@ -181,8 +195,8 @@ func TestAggStateCountSumAvg(t *testing.T) {
 // biased deviation otherwise. Fixture {2,4,4,4,5,5,7,9}: mean 5, squared
 // deviations sum 32, so pop var 4 (stddev 2) and sample var 32/7.
 func TestAggStateStddevWelford(t *testing.T) {
-	feed := func(k plan.AggKind, xs ...float64) *aggState {
-		s := &aggState{kind: k}
+	feed := func(k plan.AggKind, xs ...float64) *accPair {
+		s := newAcc(k)
 		for _, x := range xs {
 			s.update(value.Float(x), true)
 		}

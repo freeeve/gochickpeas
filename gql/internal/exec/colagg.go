@@ -266,6 +266,7 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 	}
 	index := map[groupKey]int{}
 	var states []aggState
+	var nums []numAcc
 	var groupKeys []groupKey
 	scan := func(id uint32) {
 		for _, p := range preds {
@@ -318,14 +319,16 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 			}
 			for _, a := range proj.Aggs {
 				states = append(states, aggState{kind: a.Kind})
+				nums = append(nums, numAcc{})
 			}
 		}
 		st := states[idx*len(proj.Aggs) : (idx+1)*len(proj.Aggs)]
+		nn := nums[idx*len(proj.Aggs) : (idx+1)*len(proj.Aggs)]
 		for j, a := range args {
 			if a.star {
-				st[j].update(value.Value{}, false)
+				st[j].update(&nn[j], value.Value{}, false)
 			} else {
-				st[j].update(a.read(id), true)
+				st[j].update(&nn[j], a.read(id), true)
 			}
 		}
 	}
@@ -422,15 +425,17 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 			}
 		}
 		groupKeys = append(groupKeys, gk)
+		base := len(states)
 		for _, a := range proj.Aggs {
 			states = append(states, aggState{kind: a.Kind})
+			nums = append(nums, numAcc{})
 		}
 		if ms.Optional {
 			for j, a := range args {
 				if a.star {
-					states[j].update(value.Value{}, false)
+					states[base+j].update(&nums[base+j], value.Value{}, false)
 				} else {
-					states[j].update(value.Null(), true)
+					states[base+j].update(&nums[base+j], value.Null(), true)
 				}
 			}
 		}
@@ -474,8 +479,9 @@ func tryColumnarAggChain(ctx *eval.Ctx, segments []*plan.Segment, i int, inputs 
 			ki++
 		}
 		st := states[idx*len(proj.Aggs) : (idx+1)*len(proj.Aggs)]
+		nn := nums[idx*len(proj.Aggs) : (idx+1)*len(proj.Aggs)]
 		for j := range proj.Aggs {
-			row[proj.Aggs[j].OutIdx] = st[j].finalize()
+			row[proj.Aggs[j].OutIdx] = st[j].finalize(&nn[j])
 		}
 		for pi, p := range proj.Post {
 			row[p.Col] = postC[pi].Eval(ctx, row, postSlots)

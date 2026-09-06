@@ -84,6 +84,10 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 	if a.hasMinMax {
 		mm = a.mmOf(idx)
 	}
+	var num []numAcc
+	if a.hasNumAcc {
+		num = a.numOf(idx)
+	}
 	var items [][]value.Value
 	if a.hasCollect {
 		items = a.itemsOf(idx)
@@ -128,9 +132,17 @@ func (a *aggregator) update(ctx *eval.Ctx, m []value.Value, proj *plan.ProjPlan,
 				items[j] = append(items[j], arg)
 			}
 		default:
-			states[j].update(arg, present)
+			states[j].update(numAt(num, j), arg, present)
 		}
 	}
+}
+
+// numAt returns &num[j] or nil when the slab is absent (count-only).
+func numAt(num []numAcc, j int) *numAcc {
+	if num == nil {
+		return nil
+	}
+	return &num[j]
 }
 
 // postCompile builds the post-aggregation wrapper scope and compiled
@@ -235,6 +247,10 @@ func (a *aggregator) emitGroup(ctx *eval.Ctx, proj *plan.ProjPlan, idx int, row 
 	if a.hasMinMax {
 		mm = a.mmOf(idx)
 	}
+	var num []numAcc
+	if a.hasNumAcc {
+		num = a.numOf(idx)
+	}
 	var items [][]value.Value
 	if a.hasCollect {
 		items = a.itemsOf(idx)
@@ -249,7 +265,7 @@ func (a *aggregator) emitGroup(ctx *eval.Ctx, proj *plan.ProjPlan, idx int, row 
 		case plan.AggPercentileCont, plan.AggPercentileDisc:
 			row[proj.Aggs[j].OutIdx] = percentileOf(ctx, a.pctC[j], items[j], a.kinds[j] == plan.AggPercentileCont)
 		default:
-			row[proj.Aggs[j].OutIdx] = states[j].finalize()
+			row[proj.Aggs[j].OutIdx] = states[j].finalize(numAt(num, j))
 		}
 	}
 	for i, p := range proj.Post {

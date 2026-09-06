@@ -20,26 +20,34 @@ import (
 )
 
 // aggState is one aggregate accumulator, allocated once per group per
-// aggregate. It carries only the count/sum/avg scalars -- the kind-specific
-// heavy state (a min/max extremum value.Value, a collect []value.Value) lives
-// in slabs allocated on the aggregator only when those kinds are present, so
-// the overwhelmingly common count/sum/avg grouping pays neither. Fields are
-// ordered wide-to-narrow so the booleans pack into one tail word.
+// aggregate. It carries ONLY the count and the kind (16 B): the
+// sum/avg/stddev numeric accumulators (64 B) live on numChunks, gated by
+// hasNumAcc, and min/max/collect on their own slabs -- so a count-only
+// grouping (14 of 24 LDBC aggregate stages, incl. the two largest) pays
+// 16 B/group instead of 72, saving ~68 MB on Q4's 1.07M-group stage.
 type aggState struct {
+	count int64
+	kind  plan.AggKind
+}
+
+// numAcc is the sum/avg/stddev heavy accumulator, on numChunks only when
+// a Sum/Avg/Stddev aggregate exists. Fields wide-to-narrow so the
+// booleans pack into the tail word.
+type numAcc struct {
 	sumI    acc128
-	count   int64
 	sumF    float64
 	avgSum  float64
 	avgN    int64
 	sdMean  float64
 	sdM2    float64
-	kind    plan.AggKind
 	isFloat bool
 	any     bool
 }
 
-// update folds one argument in (arg absent means count(*)).
-func (s *aggState) update(arg value.Value, present bool) {
+// update folds one argument in (arg absent means count(*)); na is the
+// group's numAcc (nil for a count-only aggregator, never touched by the
+// Count arm).
+func (s *aggState) update(na *numAcc, arg value.Value, present bool) {
 	switch s.kind {
 	case plan.AggCount:
 		if !present || !arg.IsNull() {
@@ -47,67 +55,68 @@ func (s *aggState) update(arg value.Value, present bool) {
 		}
 	case plan.AggSum:
 		if i, ok := arg.AsInt(); ok {
-			s.sumI.add(i)
-			s.any = true
+			na.sumI.add(i)
+			na.any = true
 		} else if arg.Kind() == value.KindFloat {
 			f, _ := arg.AsFloat()
-			s.sumF += f
-			s.isFloat = true
-			s.any = true
+			na.sumF += f
+			na.isFloat = true
+			na.any = true
 		}
 	case plan.AggAvg:
 		if f, ok := arg.AsFloat(); ok {
-			s.avgSum += f
-			s.avgN++
+			na.avgSum += f
+			na.avgN++
 		}
 	case plan.AggStddevSamp, plan.AggStddevPop:
 		// Welford: numerically stable single pass; non-numeric args skip,
 		// like avg.
 		if f, ok := arg.AsFloat(); ok {
-			s.avgN++
-			d := f - s.sdMean
-			s.sdMean += d / float64(s.avgN)
-			s.sdM2 += d * (f - s.sdMean)
+			na.avgN++
+			d := f - na.sdMean
+			na.sdMean += d / float64(na.avgN)
+			na.sdM2 += d * (f - na.sdMean)
 		}
 	}
 	// AggMin/AggMax/AggCollect are folded on the aggregator's overflow slabs,
 	// not here (their heavy state is off the per-group struct).
 }
 
-// finalize emits the accumulator's value.
-func (s *aggState) finalize() value.Value {
+// finalize emits the accumulator's value; na is the group's numAcc (nil
+// for count-only kinds, which never read it).
+func (s *aggState) finalize(na *numAcc) value.Value {
 	switch s.kind {
 	case plan.AggCount:
 		return value.Int(s.count)
 	case plan.AggSum:
 		switch {
-		case !s.any:
+		case !na.any:
 			return value.Int(0)
-		case s.isFloat:
-			return value.Float(s.sumF + s.sumI.float64())
+		case na.isFloat:
+			return value.Float(na.sumF + na.sumI.float64())
 		}
 		// A true total outside int64 range is Null, matching the engine's
 		// overflow policy (no per-row error channel) and the core
 		// aggregate's nil Sum.
-		if v, ok := s.sumI.int64(); ok {
+		if v, ok := na.sumI.int64(); ok {
 			return value.Int(v)
 		}
 		return value.Null()
 	case plan.AggAvg:
-		if s.avgN == 0 {
+		if na.avgN == 0 {
 			return value.Null()
 		}
-		return value.Float(s.avgSum / float64(s.avgN))
+		return value.Float(na.avgSum / float64(na.avgN))
 	case plan.AggStddevSamp:
-		if s.avgN < 2 {
+		if na.avgN < 2 {
 			return value.Float(0) // Neo4j's stdev: 0 on empty/single
 		}
-		return value.Float(math.Sqrt(s.sdM2 / float64(s.avgN-1)))
+		return value.Float(math.Sqrt(na.sdM2 / float64(na.avgN-1)))
 	case plan.AggStddevPop:
-		if s.avgN == 0 {
+		if na.avgN == 0 {
 			return value.Float(0)
 		}
-		return value.Float(math.Sqrt(s.sdM2 / float64(s.avgN)))
+		return value.Float(math.Sqrt(na.sdM2 / float64(na.avgN)))
 	}
 	// AggMin/AggMax/AggCollect finalize off the aggregator's overflow slabs.
 	return value.Null()
@@ -158,9 +167,11 @@ type aggregator struct {
 	keysChunks  [][]value.Value
 	stateChunks [][]aggState
 	seenChunks  [][]distinctSet   // filled only when a DISTINCT aggregate exists
+	numChunks   [][]numAcc        // sum/avg/stddev heavy state, filled only when such an aggregate exists
 	mmChunks    [][]value.Value   // min/max extrema, filled only when a min/max aggregate exists
 	itemsChunks [][][]value.Value // collect lists, filled only when a collect aggregate exists
 	hasDistinct bool
+	hasNumAcc   bool
 	hasMinMax   bool
 	hasCollect  bool
 	kinds       []plan.AggKind
@@ -224,6 +235,8 @@ func newAggregator(ctx *eval.Ctx, proj *plan.ProjPlan, slots map[string]int) *ag
 			a.hasDistinct = true
 		}
 		switch ac.Kind {
+		case plan.AggSum, plan.AggAvg, plan.AggStddevSamp, plan.AggStddevPop:
+			a.hasNumAcc = true
 		case plan.AggMin, plan.AggMax:
 			a.hasMinMax = true
 		case plan.AggCollect, plan.AggPercentileCont, plan.AggPercentileDisc:
@@ -297,6 +310,12 @@ func (a *aggregator) seenOf(idx int) []distinctSet {
 	return a.seenChunks[c][w*s : (w+1)*s]
 }
 
+func (a *aggregator) numOf(idx int) []numAcc {
+	s := len(a.aggC)
+	c, w := chunkWindow(idx)
+	return a.numChunks[c][w*s : (w+1)*s]
+}
+
 func (a *aggregator) mmOf(idx int) []value.Value {
 	s := len(a.aggC)
 	c, w := chunkWindow(idx)
@@ -358,6 +377,9 @@ func (a *aggregator) appendGroupSlots(packed bool) int {
 				seen[i].rels.Rec = a.rec
 			}
 			a.seenChunks = append(a.seenChunks, seen)
+		}
+		if a.hasNumAcc {
+			a.numChunks = append(a.numChunks, make([]numAcc, n*len(a.aggC)))
 		}
 		if a.hasMinMax {
 			a.mmChunks = append(a.mmChunks, make([]value.Value, n*len(a.aggC)))

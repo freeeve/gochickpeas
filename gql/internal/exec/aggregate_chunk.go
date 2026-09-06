@@ -134,6 +134,10 @@ func (a *aggSink) updateInto(idx int, states []aggState, seen []distinctSet, row
 	if agg.hasMinMax {
 		mm = agg.mmOf(idx)
 	}
+	var num []numAcc
+	if agg.hasNumAcc {
+		num = agg.numOf(idx)
+	}
 	var items [][]value.Value
 	if agg.hasCollect {
 		items = agg.itemsOf(idx)
@@ -173,7 +177,7 @@ func (a *aggSink) updateInto(idx int, states []aggState, seen []distinctSet, row
 				items[j] = append(items[j], arg)
 			}
 		default:
-			states[j].update(arg, present)
+			states[j].update(numAt(num, j), arg, present)
 		}
 	}
 }
