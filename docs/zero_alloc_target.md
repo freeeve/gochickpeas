@@ -270,6 +270,25 @@ techniques land; cite the commit that proved the win.
     evals, candidate-fill sweeps) before trusting the tree's order.
     Adjacent to item 5's "census the structure" and the engagement-
     census rule: the render tree is not an instrument, it is a display.
+13. **Before pricing a data structure, OPEN it -- and confirm the cost
+    model you are applying is THIS structure's, not a same-named
+    sibling's.** The sibling priced a futility gate as watching the
+    wrong quantity (keys vs completions) and put the waste at a third of
+    a query; the numbers were real but came from a DIFFERENT mechanism
+    -- their chain memo stores a Vec per completion (wide tail), while
+    the tail memo they measured stores into a per-KEY arena, so its
+    key-count gate is exactly right and the measured ceiling was 13%,
+    mostly on an instance worth keeping (their 397, item 50). Two
+    minutes reading the storage type would have shown it. Third
+    boundary-crossing cost model of the week: item 12's render-order-as-
+    execution-order, item 48's per-instance ratio over a per-query
+    total, and this storage-model-from-a-same-named-sibling. The general
+    failure: a cost model is valid only within the structure it was
+    derived from, and carrying it to a same-named or same-shaped neighbor
+    produces real arithmetic about the wrong thing. Local relevance: this
+    engine now has four similarly-named memos (MatcherMemo, compile.Memo,
+    the decor shared store, the packed-key bank) -- price each against
+    ITS own storage, never by name-analogy.
 
 ## Where Go allocates, and what to do about it
 
