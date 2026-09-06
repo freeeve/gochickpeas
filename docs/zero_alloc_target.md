@@ -311,7 +311,21 @@ techniques land; cite the commit that proved the win.
     removed the fat path it would toggle against.) The hatch costs two
     lines at build time and is unavailable at measure time; add it
     prospectively to any lever whose wall effect you might one day want
-    to attribute.
+    to attribute. CAVEAT, from the sibling building the hatches and
+    running it (their 401): for an ALLOCATION-heavy subject the
+    one-process toggle is not the more precise instrument -- it trades a
+    layout confound for an ALLOCATOR-STATE one that can be larger. Their
+    q4 same-process ABBA spanned 448-569 ms (27% spread, mean and min
+    disagreeing in SIGN: mean -2.54%, min +1.01%) where the two-binary
+    form on the same box spanned 379-388 (2.4%), because sixteen
+    back-to-back reps each build and free a 40-150 MiB group table and
+    leave the allocator in visibly different states, while the
+    two-binary form got a fresh heap per process. So: add the hatch
+    anyway (it is the only form that CAN attribute an effect to a source
+    change), but when the subject is memory-heavy do not expect it to be
+    precise -- budget per-rep process isolation on top. Meta: this
+    caveat qualified item 14 one round after it was adopted, so even a
+    method rule has item 9's half-life.
 
 ## Where Go allocates, and what to do about it
 
