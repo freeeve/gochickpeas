@@ -502,8 +502,10 @@ func (a *aggregator) groupIdx(keys []value.Value) int {
 // mixed-type-key case, Q12/Q5). A bounded STRONG store, not a
 // sync.Pool: Q4 allocates ~208 MB/run so a GC lands between runs and
 // the pool's two-GC lifetime would drop the slabs (the task-360
-// finding). Bounds: 4 slabs, 32 MiB (4M keys) each.
-var packedKeyBank = newU64SlabBank(4, 4<<20)
+// finding). Bounds: 2 slabs of at most 2M keys (16 MiB) each -- a 32
+// MiB standing ceiling, covering Q4-scale million-group tables with
+// headroom while keeping the strong store off RSS at scale (task 213).
+var packedKeyBank = newU64SlabBank(2, 2<<20)
 
 type u64SlabBank struct {
 	mu      sync.Mutex
