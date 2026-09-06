@@ -188,7 +188,14 @@ techniques land; cite the commit that proved the win.
    the RUN, and none of them inspect what the binaries CONTAIN); and a conclusion drawn from someone else's
    number carries that number's instrument note, so a retraction
    upstream can be traced and unwound downstream (ours was, same-day
-   -- tasks 376/377/610/611). Three corollaries from the sibling's
+   -- tasks 376/377/610/611). Confirmation has a HALF-LIFE, not a QED:
+   two cross-engine claims died on the second look this week after
+   surviving the first (the 610 convergence off a 201-commits-behind
+   branch; the "AggState tax is Rust-specific" agreement, confirmed by
+   both engines then falsified by an unsafe.Sizeof) -- "the other
+   engine checked and agrees" raises a claim's bar without closing it,
+   so a confirmed cross-engine fact is strong evidence to re-derive
+   before building ON, not a settled premise. Three corollaries from the sibling's
    full write-up (their 44/45): a parked branch's status label is a
    claim with a date on it -- price a revival by BUILDING in a
    worktree, not by reading the label; a port of a result-identical
