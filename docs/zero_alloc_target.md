@@ -35,8 +35,17 @@ techniques land; cite the commit that proved the win.
    colAggFired, topkPayloadBuilds, interpPinned) are this discipline in
    test form. Corollary from the same pass: a futility/eviction
    heuristic must measure YIELD, not hits -- a memo with one entry per
-   key looks productive by hit count while amortizing nothing. (Audited
-   2026-08-08: no hit-based futility heuristic exists in this engine.)
+   key looks productive by hit count while amortizing nothing. (Re-audited
+   2026-09-06 after the memo additions -- matcher/compiled-expr/decor/
+   packed-key-bank: the only futility gate is decorrelation's
+   decorBuilds>=64 self-disable, which is builds-based but NOT the
+   sibling's wide-tail defect [their 396] -- decor stores exactly ONE
+   table per anchor key, so builds IS the cost unit, and every other
+   memo here stores one artifact per key too. Measured decorOff to fire
+   ZERO times across the corpus [no query exceeds 64 distinct anchors],
+   so it is dormant rather than proven-good [a zero-count's two causes,
+   item further below]. No key-gated wide-tail memo exists to leak the
+   sibling's 58k-103k wasted completions.)
 6. **Census the PATH before the payload: a zero delta means you changed
    unreachable code.** When a measured fix produces exactly no change,
    the narrow reading is that the workload runs a different branch --
