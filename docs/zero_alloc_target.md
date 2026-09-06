@@ -246,6 +246,22 @@ techniques land; cite the commit that proved the win.
     the second test to engage it breaks the FIRST test's name; the
     constraint is now documented at the counter sites.
 
+12. **Before believing an operator-ORDERING claim, count the WORK you
+    think is misplaced, not the rows flowing past it.** A rendered plan
+    shows a Filter after three expands whose conjuncts reference only
+    the first expand's variables -- a textbook missed pushdown worth
+    ~90%% of the walk. It was already pushed: the render position is
+    display order, and hand-writing the pushed form gave IDENTICAL
+    predicate-evaluation counts (the sibling's q11, their item 49). The
+    failure is not a wrong number -- every row count printed was
+    correct -- it is a causal story ("the filter runs where it is
+    drawn") laid over correct counts, which is harder to catch because
+    there is nothing to distrust in the data. Two forms doing the same
+    work agree on a work-counter exactly; find that counter (predicate
+    evals, candidate-fill sweeps) before trusting the tree's order.
+    Adjacent to item 5's "census the structure" and the engagement-
+    census rule: the render tree is not an instrument, it is a display.
+
 ## Where Go allocates, and what to do about it
 
 ### 1. Built-in maps in hot loops
